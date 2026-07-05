@@ -1,0 +1,15 @@
+{
+  "name": "lifo-tunnel-server",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Tunnel server for exposing Lifo services to the host machine",
+  "scripts": {
+    "start": "node server.js",
+    "start:vite": "node server.js --port 5173",
+    "start:next": "node server.js --port 3000",
+    "start:multi": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

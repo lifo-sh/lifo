@@ -19,7 +19,7 @@ export interface SerializedNode {
   sz?: number;             // stored size (when chunked)
 }
 
-const EXCLUDED_PREFIXES = ['proc', 'dev'];
+const EXCLUDED_PREFIXES = ['proc', 'dev', 'mnt'];
 
 function toBase64(bytes: Uint8Array): string {
   let binary = '';

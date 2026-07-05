@@ -5,6 +5,21 @@ import { resolve, basename } from '../utils/path.js';
 import { encode, decode } from '../utils/encoding.js';
 import { Readable, Writable } from './stream.js';
 import { EventEmitter } from './events.js';
+import { Buffer } from './buffer.js';
+
+// ─── Dirent ───
+
+interface Dirent {
+  name: string;
+  path: string;
+  isFile: () => boolean;
+  isDirectory: () => boolean;
+  isSymbolicLink: () => boolean;
+  isBlockDevice: () => boolean;
+  isCharacterDevice: () => boolean;
+  isFIFO: () => boolean;
+  isSocket: () => boolean;
+}
 
 // ─── Stat conversion ───
 
@@ -164,7 +179,11 @@ export function createFs(vfs: VFS, cwd: string) {
     if (encoding) {
       return vfs.readFileString(abs);
     }
-    return vfs.readFile(abs);
+    // Return Buffer (not raw Uint8Array) so .toString() yields UTF-8 text.
+    // Many packages do JSON.parse(fs.readFileSync('package.json')) without
+    // encoding, expecting Buffer.toString() to return the file contents.
+    const raw = vfs.readFile(abs);
+    return Buffer.from(raw);
   }
 
   function writeFileSync(path: string | URL, data: string | Uint8Array, _options?: string | { encoding?: string }): void {
@@ -197,9 +216,22 @@ export function createFs(vfs: VFS, cwd: string) {
     vfs.mkdir(abs, { recursive: opts?.recursive });
   }
 
-  function readdirSync(path: string | URL, _options?: { encoding?: string; withFileTypes?: boolean }): string[] {
+  function readdirSync(path: string | URL, options?: { encoding?: string; withFileTypes?: boolean }): string[] | Dirent[] {
     const abs = resolvePath(cwd, path);
     const entries = vfs.readdir(abs);
+    if (options?.withFileTypes) {
+      return entries.map((e) => ({
+        name: e.name,
+        path: abs,
+        isFile: () => e.type === 'file',
+        isDirectory: () => e.type === 'directory',
+        isSymbolicLink: () => false,
+        isBlockDevice: () => false,
+        isCharacterDevice: () => false,
+        isFIFO: () => false,
+        isSocket: () => false,
+      }));
+    }
     return entries.map((e) => e.name);
   }
 
@@ -244,13 +276,24 @@ export function createFs(vfs: VFS, cwd: string) {
     }
   }
 
-  function realpathSync(path: string | URL): string {
-    const abs = resolvePath(cwd, path);
-    if (!vfs.exists(abs)) {
-      throw makeEnoent('realpath', abs);
-    }
-    return abs;
-  }
+  const realpathSync = Object.assign(
+    function realpathSync(path: string | URL): string {
+      const abs = resolvePath(cwd, path);
+      if (!vfs.exists(abs)) {
+        throw makeEnoent('realpath', abs);
+      }
+      return abs;
+    },
+    {
+      native: function realpathSyncNative(path: string | URL): string {
+        const abs = resolvePath(cwd, path);
+        if (!vfs.exists(abs)) {
+          throw makeEnoent('realpath', abs);
+        }
+        return abs;
+      },
+    },
+  );
 
   function truncateSync(path: string | URL, len?: number): void {
     const abs = resolvePath(cwd, path);
@@ -419,9 +462,10 @@ export function createFs(vfs: VFS, cwd: string) {
     wrapCallback(() => mkdirSync(path, options), callback);
   }
 
-  function readdir(path: string | URL, optionsOrCb: { encoding?: string } | Callback<string[]>, cb?: Callback<string[]>): void {
+  function readdir(path: string | URL, optionsOrCb: { encoding?: string; withFileTypes?: boolean } | Callback<string[]>, cb?: Callback<string[] | Dirent[]>): void {
+    const options = typeof optionsOrCb === 'function' ? undefined : optionsOrCb;
     const callback = typeof optionsOrCb === 'function' ? optionsOrCb : cb!;
-    wrapCallback(() => readdirSync(path), callback);
+    wrapCallback(() => readdirSync(path, options), callback);
   }
 
   function unlink(path: string | URL, cb: Callback<void>): void {
@@ -475,6 +519,19 @@ export function createFs(vfs: VFS, cwd: string) {
   function fstat(fd: number, cb: Callback<NodeStat>): void {
     wrapCallback(() => fstatSync(fd), cb);
   }
+
+  const realpath = Object.assign(
+    function realpath(path: string | URL, optOrCb: unknown, cb?: Callback<string>): void {
+      const callback = typeof optOrCb === 'function' ? optOrCb as Callback<string> : cb!;
+      wrapCallback(() => realpathSync(path), callback);
+    },
+    {
+      native: function realpathNative(path: string | URL, optOrCb: unknown, cb?: Callback<string>): void {
+        const callback = typeof optOrCb === 'function' ? optOrCb as Callback<string> : cb!;
+        wrapCallback(() => realpathSync(path), callback);
+      },
+    },
+  );
 
   // ─── Stream API ───
 
@@ -553,24 +610,83 @@ export function createFs(vfs: VFS, cwd: string) {
   function watch(filename: string | URL, optionsOrListener?: { persistent?: boolean; recursive?: boolean; encoding?: string } | ((eventType: string, filename: string) => void), listener?: (eventType: string, filename: string) => void): EventEmitter {
     const abs = resolvePath(cwd, filename);
     const cb = typeof optionsOrListener === 'function' ? optionsOrListener : listener;
+    const options = typeof optionsOrListener === 'object' && optionsOrListener !== null ? optionsOrListener : {};
 
     const watcher = new EventEmitter();
 
-    // Use VFS onChange to detect changes (coarse-grained)
-    const origOnChange = vfs.onChange;
-    vfs.onChange = () => {
-      origOnChange?.();
-      const eventType = 'change';
-      const name = basename(abs);
+    // Scoped, per-path subscription on the VFS event bus.
+    // Node semantics: eventType is 'change' (content modified) or 'rename'
+    // (created / deleted / renamed); filename is relative to the watched path.
+    const emit = (eventPath: string, type: string) => {
+      const eventType = type === 'modify' ? 'change' : 'rename';
+      let name: string;
+      if (eventPath === abs) {
+        name = basename(abs);
+      } else {
+        name = eventPath.slice(abs.length + 1);
+        // Without { recursive: true }, only direct children are reported.
+        if (!options.recursive && name.includes('/')) return;
+      }
       if (cb) cb(eventType, name);
       watcher.emit('change', eventType, name);
     };
 
+    const unsubscribe = vfs.watch(abs, (event) => {
+      emit(event.path === abs || event.path.startsWith(abs + '/') ? event.path : event.oldPath!, event.type);
+    });
+
     (watcher as unknown as Record<string, unknown>).close = () => {
-      vfs.onChange = origOnChange;
+      unsubscribe();
+      watcher.emit('close');
     };
 
     return watcher;
+  }
+
+  // Stat-polling API (chokidar fallback) — event-driven here, no actual polling.
+  const watchFileSubs = new Map<string, Map<(curr: unknown, prev: unknown) => void, () => void>>();
+
+  function statOrZero(abs: string): ReturnType<typeof statSync> | { mtimeMs: number; size: number; ino: number; mtime: Date; ctimeMs: number; isFile(): boolean; isDirectory(): boolean } {
+    try {
+      return statSync(abs);
+    } catch {
+      return { mtimeMs: 0, size: 0, ino: 0, mtime: new Date(0), ctimeMs: 0, isFile: () => false, isDirectory: () => false };
+    }
+  }
+
+  function watchFile(filename: string | URL, optionsOrListener?: { persistent?: boolean; interval?: number } | ((curr: unknown, prev: unknown) => void), listener?: (curr: unknown, prev: unknown) => void): void {
+    const abs = resolvePath(cwd, filename);
+    const cb = typeof optionsOrListener === 'function' ? optionsOrListener : listener;
+    if (!cb) return;
+
+    let prev = statOrZero(abs);
+    const unsubscribe = vfs.watch(abs, () => {
+      const curr = statOrZero(abs);
+      const p = prev;
+      prev = curr;
+      cb(curr, p);
+    });
+
+    let subs = watchFileSubs.get(abs);
+    if (!subs) {
+      subs = new Map();
+      watchFileSubs.set(abs, subs);
+    }
+    subs.set(cb, unsubscribe);
+  }
+
+  function unwatchFile(filename: string | URL, listener?: (curr: unknown, prev: unknown) => void): void {
+    const abs = resolvePath(cwd, filename);
+    const subs = watchFileSubs.get(abs);
+    if (!subs) return;
+    if (listener) {
+      subs.get(listener)?.();
+      subs.delete(listener);
+    } else {
+      for (const unsub of subs.values()) unsub();
+      subs.clear();
+    }
+    if (subs.size === 0) watchFileSubs.delete(abs);
   }
 
   // ─── Promises API ───
@@ -582,7 +698,7 @@ export function createFs(vfs: VFS, cwd: string) {
     stat: async (path: string | URL) => statSync(path),
     lstat: async (path: string | URL) => lstatSync(path),
     mkdir: async (path: string | URL, options?: { recursive?: boolean }) => { mkdirSync(path, options); },
-    readdir: async (path: string | URL) => readdirSync(path),
+    readdir: async (path: string | URL, options?: { encoding?: string; withFileTypes?: boolean }) => readdirSync(path, options),
     unlink: async (path: string | URL) => unlinkSync(path),
     rmdir: async (path: string | URL, options?: { recursive?: boolean }) => rmdirSync(path, options),
     rename: async (oldPath: string | URL, newPath: string | URL) => renameSync(oldPath, newPath),
@@ -691,11 +807,14 @@ export function createFs(vfs: VFS, cwd: string) {
     close,
     read,
     fstat,
+    realpath,
     // Streams
     createReadStream,
     createWriteStream,
     // Watch
     watch,
+    watchFile,
+    unwatchFile,
     // Promises
     promises,
     // Constants

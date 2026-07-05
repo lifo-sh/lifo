@@ -1,24 +1,70 @@
 import { EventEmitter } from './events.js';
 
-export class Readable extends EventEmitter {
-  private _buffer: string[] = [];
-  protected _ended = false;
-  readable = true;
+export interface ReadableOptions {
+  objectMode?: boolean;
+  highWaterMark?: number;
+  autoDestroy?: boolean;
+  encoding?: string;
+}
 
-  push(chunk: string | null): void {
-    if (chunk === null) {
-      this._ended = true;
-      this.readable = false;
-      this.emit('end');
-    } else {
-      this._buffer.push(chunk);
-      this.emit('data', chunk);
-    }
+/**
+ * Readable with a working pull protocol: subclasses may implement `_read(size)`
+ * (sync or async) and produce data via `push()`, ending with `push(null)`.
+ * Flow starts when a 'data' listener attaches or `resume()` is called —
+ * matching Node semantics closely enough for readdirp/chokidar-style streams.
+ */
+export class Readable extends EventEmitter {
+  private _buffer: unknown[] = [];
+  protected _ended = false;
+  private _endEmitted = false;
+  private _flowing = false;
+  private _reading = false;
+  private _pushCount = 0;
+  destroyed = false;
+  readable = true;
+  readonly _objectMode: boolean;
+  readonly _highWaterMark: number;
+
+  constructor(opts?: ReadableOptions) {
+    super();
+    this._objectMode = !!opts?.objectMode;
+    this._highWaterMark = opts?.highWaterMark ?? (this._objectMode ? 16 : 65536);
   }
 
-  read(): string | null {
-    if (this._buffer.length > 0) return this._buffer.shift()!;
+  /** Subclasses override to produce data on demand. May be async. */
+  _read(_size: number): void | Promise<void> {
+    // Default: passive stream fed externally via push().
+  }
+
+  push(chunk: unknown): boolean {
+    if (this.destroyed) return false;
+    if (chunk === null) {
+      this._ended = true;
+      this._maybeEmitEnd();
+      return false;
+    }
+    this._pushCount++;
+    if (this._flowing && this._buffer.length === 0) {
+      this.emit('data', chunk);
+    } else {
+      this._buffer.push(chunk);
+    }
+    return this._buffer.length < this._highWaterMark;
+  }
+
+  read(): unknown {
+    if (this._buffer.length > 0) {
+      const chunk = this._buffer.shift();
+      this._maybeEmitEnd();
+      return chunk;
+    }
     return null;
+  }
+
+  override on(event: string, listener: (...args: unknown[]) => void): this {
+    super.on(event, listener);
+    if (event === 'data') this.resume();
+    return this;
   }
 
   pipe<T extends Writable>(dest: T): T {
@@ -27,9 +73,12 @@ export class Readable extends EventEmitter {
     return dest;
   }
 
-  destroy(): this {
+  destroy(err?: unknown): this {
+    if (this.destroyed) return this;
+    this.destroyed = true;
     this._ended = true;
     this.readable = false;
+    if (err) this.emit('error', err);
     this.emit('close');
     return this;
   }
@@ -39,36 +88,108 @@ export class Readable extends EventEmitter {
   }
 
   resume(): this {
+    if (this.destroyed || this._flowing) return this;
+    this._flowing = true;
+    queueMicrotask(() => void this._flow());
     return this;
   }
 
   pause(): this {
+    this._flowing = false;
     return this;
+  }
+
+  private async _flow(): Promise<void> {
+    if (!this._flowing || this.destroyed) return;
+    while (this._flowing && this._buffer.length > 0) {
+      this.emit('data', this._buffer.shift());
+    }
+    if (this._ended) {
+      this._maybeEmitEnd();
+      return;
+    }
+    if (this._reading) return;
+    this._reading = true;
+    const before = this._pushCount;
+    try {
+      await this._read(this._highWaterMark);
+    } catch (err) {
+      this._reading = false;
+      this.destroy(err);
+      return;
+    }
+    this._reading = false;
+    // Only keep pulling if _read produced something (or ended) — a passive
+    // stream's no-op _read must not spin the microtask queue forever.
+    if (this._ended || this._buffer.length > 0 || this._pushCount > before) {
+      queueMicrotask(() => void this._flow());
+    }
+  }
+
+  private _maybeEmitEnd(): void {
+    if (this._endEmitted || !this._ended || this._buffer.length > 0) return;
+    this._endEmitted = true;
+    this.readable = false;
+    this.emit('end');
+    this.emit('close');
   }
 }
 
 export class Writable extends EventEmitter {
   private _ended = false;
+  destroyed = false;
   writable = true;
+  /** Node-internal-shaped state some libraries poke directly (e.g. ws). */
+  _writableState = { finished: false, errorEmitted: false, ended: false };
 
-  write(chunk: string, _encoding?: string, cb?: () => void): boolean {
-    if (this._ended) return false;
+  constructor(_opts?: { objectMode?: boolean; highWaterMark?: number; autoDestroy?: boolean }) {
+    super();
+  }
+
+  /**
+   * Subclass hook (Node Writable protocol). When a subclass overrides _write
+   * (e.g. ws's frame Receiver), write() routes chunks through it; the base
+   * implementation preserves the legacy behavior of emitting 'data'.
+   */
+  _write(chunk: unknown, _encoding: string, callback: (err?: Error | null) => void): void {
     this.emit('data', chunk);
-    if (cb) cb();
+    callback();
+  }
+
+  write(chunk: unknown, encodingOrCb?: string | ((err?: Error | null) => void), cb?: (err?: Error | null) => void): boolean {
+    if (this._ended || this.destroyed) return false;
+    const callback = typeof encodingOrCb === 'function' ? encodingOrCb : cb;
+    const encoding = typeof encodingOrCb === 'string' ? encodingOrCb : 'buffer';
+    this._write(chunk, encoding, (err) => {
+      if (err) {
+        if (callback) callback(err);
+        this.emit('error', err);
+        return;
+      }
+      if (callback) callback();
+    });
     return true;
   }
 
-  end(chunk?: string): void {
-    if (chunk) this.write(chunk);
+  end(chunk?: unknown): void {
+    if (chunk !== undefined && chunk !== null) this.write(chunk);
     this._ended = true;
     this.writable = false;
+    this._writableState.ended = true;
+    this._writableState.finished = true;
     this.emit('finish');
     this.emit('close');
   }
 
-  destroy(): this {
+  destroy(err?: unknown): this {
+    if (this.destroyed) return this;
+    this.destroyed = true;
     this._ended = true;
     this.writable = false;
+    if (err) {
+      this._writableState.errorEmitted = true;
+      this.emit('error', err);
+    }
     this.emit('close');
     return this;
   }

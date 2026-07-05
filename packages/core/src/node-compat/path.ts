@@ -59,9 +59,16 @@ export const posix = {
   normalize, isAbsolute, join, resolve: (...args: string[]) => resolve('/', ...args),
   dirname, basename, extname, relative, parse, format, sep, delimiter,
 };
+// Minimal win32 path — Lifo is posix-only but packages like vite reference win32.sep
+export const win32 = {
+  normalize, isAbsolute, join, resolve: (...args: string[]) => resolve('/', ...args),
+  dirname, basename, extname, relative, parse, format,
+  sep: '\\',
+  delimiter: ';',
+};
 
 export { normalize, isAbsolute, join, resolve, dirname, basename, extname };
 export default {
   normalize, isAbsolute, join, resolve: (...args: string[]) => resolve('/', ...args),
-  dirname, basename, extname, relative, parse, format, sep, delimiter, posix,
+  dirname, basename, extname, relative, parse, format, sep, delimiter, posix, win32,
 };

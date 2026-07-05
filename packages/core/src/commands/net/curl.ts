@@ -1,8 +1,8 @@
 import type { Command } from '../types.js';
 import { resolve } from '../../utils/path.js';
-import type { VirtualRequestHandler } from '../../kernel/index.js';
+import type { Kernel } from '../../kernel/index.js';
 
-function createCurlImpl(portRegistry?: Map<number, VirtualRequestHandler>): Command {
+function createCurlImpl(kernel?: Kernel): Command {
   return async (ctx) => {
     let method = 'GET';
     const headers: Record<string, string> = {};
@@ -69,14 +69,24 @@ function createCurlImpl(portRegistry?: Map<number, VirtualRequestHandler>): Comm
     }
 
     // Check for virtual server
-    if (portRegistry) {
+    if (kernel?.portRegistry) {
       try {
         const parsed = new URL(url);
-        const host = parsed.hostname;
+        let host = parsed.hostname;
         const port = parsed.port ? Number(parsed.port) : (parsed.protocol === 'http:' ? 80 : 443);
 
-        if ((host === 'localhost' || host === '127.0.0.1') && portRegistry.has(port)) {
-          const handler = portRegistry.get(port)!;
+        // Try DNS resolution first
+        if (kernel.networkStack && host !== '127.0.0.1' && host !== 'localhost') {
+          try {
+            const resolved = await kernel.networkStack.resolveHostname(host);
+            host = resolved;
+          } catch {
+            // DNS resolution failed, keep original hostname
+          }
+        }
+
+        if ((host === 'localhost' || host === '127.0.0.1') && kernel.portRegistry.has(port)) {
+          const handler = kernel.portRegistry.get(port)!;
           const vReq = {
             method,
             url: parsed.pathname + parsed.search,
@@ -87,9 +97,21 @@ function createCurlImpl(portRegistry?: Map<number, VirtualRequestHandler>): Comm
             statusCode: 200,
             headers: {} as Record<string, string>,
             body: '',
-          };
+          } as { statusCode: number; headers: Record<string, string>; body: string; _donePromise?: Promise<void> };
 
           handler(vReq, vRes);
+
+          // Wait for async middleware to complete (e.g., Vite, Express)
+          if (vRes._donePromise) {
+            const timeout = new Promise<'timeout'>((resolve) =>
+              setTimeout(() => resolve('timeout'), 30000)
+            );
+            const result = await Promise.race([vRes._donePromise.then(() => 'done' as const), timeout]);
+            if (result === 'timeout') {
+              ctx.stderr.write('curl: request timeout after 30s\n');
+              return 7;
+            }
+          }
 
           if (headOnly) {
             ctx.stdout.write(`HTTP/${vRes.statusCode} OK\n`);
@@ -171,11 +193,11 @@ function createCurlImpl(portRegistry?: Map<number, VirtualRequestHandler>): Comm
   };
 }
 
-export function createCurlCommand(portRegistry: Map<number, VirtualRequestHandler>): Command {
-  return createCurlImpl(portRegistry);
+export function createCurlCommand(kernel: Kernel): Command {
+  return createCurlImpl(kernel);
 }
 
-// Default command (no port registry -- always uses fetch)
+// Default command (no kernel -- always uses fetch)
 const command: Command = createCurlImpl();
 
 export default command;

@@ -1,6 +1,6 @@
 {
   "name": "lifo-sh",
-  "version": "0.5.0",
+  "version": "0.5.7",
   "description": "Run Lifo (a Linux-like OS) in your terminal -- npx lifo-sh",
   "license": "MIT",
   "repository": {
@@ -19,11 +19,16 @@
   ],
   "type": "module",
   "bin": {
-    "lifo-sh": "./dist/index.js",
-    "lifo": "./dist/index.js"
+    "lifo-sh": "./dist/index.js"
   },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js",
+    "./session": "./dist/session.js",
+    "./daemon": "./dist/daemon.js",
+    "./auth": "./dist/auth.js"
+  },
   "files": [
     "dist"
   ],
@@ -32,10 +37,14 @@
     "dev": "NODE_ENV=development tsx src/index.ts"
   },
   "dependencies": {
-    "@lifo-sh/core": "workspace:*"
+    "@lifo-sh/core": "workspace:*",
+    "adm-zip": "^0.5.10",
+    "ws": "^8.19.0"
   },
   "devDependencies": {
+    "@types/adm-zip": "^0.5.5",
     "@types/node": "^22.0.0",
+    "@types/ws": "^8.18.1",
     "tsup": "^8.0.0",
     "tsx": "^4.0.0",
     "typescript": "^5.7.0"

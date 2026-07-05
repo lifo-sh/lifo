@@ -61,4 +61,17 @@ export function resolve(from: string, to: string): string {
   return new URL(to, from).href;
 }
 
-export default { URL, URLSearchParams, parse, format, resolve };
+export function fileURLToPath(url: string | URL): string {
+  const urlStr = typeof url === 'string' ? url : url.href;
+  if (!urlStr.startsWith('file://')) {
+    throw new TypeError('The URL must be of scheme file');
+  }
+  // Remove file:// prefix and decode percent-encoded characters
+  return decodeURIComponent(urlStr.slice(7));
+}
+
+export function pathToFileURL(path: string): URL {
+  return new URL('file://' + encodeURI(path));
+}
+
+export default { URL, URLSearchParams, parse, format, resolve, fileURLToPath, pathToFileURL };

@@ -32,6 +32,10 @@ export class CommandRegistry {
     return undefined;
   }
 
+  has(name: string): boolean {
+    return this.commands.has(name) || this.lazy.has(name);
+  }
+
   list(): string[] {
     const names = new Set([...this.commands.keys(), ...this.lazy.keys()]);
     return [...names].sort();

@@ -1,7 +1,7 @@
 import type { Command } from '../types.js';
-import type { JobTable } from '../../shell/jobs.js';
+import type { ProcessRegistry } from '../../shell/ProcessRegistry.js';
 
-export function createTopCommand(jobTable: JobTable): Command {
+export function createTopCommand(processRegistry: ProcessRegistry): Command {
   return async (ctx) => {
     const now = new Date();
     const hours = String(now.getHours()).padStart(2, '0');
@@ -22,31 +22,24 @@ export function createTopCommand(jobTable: JobTable): Command {
     const freeMem = totalMem - usedMem;
 
     // Process list
-    const jobs = jobTable.list();
-    const runningCount = jobs.filter(j => j.status === 'running').length;
-    const stoppedCount = jobs.filter(j => j.status === 'stopped').length;
-    const totalTasks = jobs.length + 2; // + shell + top itself
+    const processes = processRegistry.getAll();
+    const runningCount = processes.filter(p => p.status === 'running' || p.status === 'sleeping').length;
+    const stoppedCount = processes.filter(p => p.status === 'stopped').length;
+    const totalTasks = processes.length;
 
     ctx.stdout.write(`top - ${hours}:${mins}:${secs} up ${uptimeMin} min,  1 user\n`);
-    ctx.stdout.write(`Tasks: ${String(totalTasks).padStart(3, ' ')} total, ${String(runningCount + 2).padStart(3, ' ')} running, ${String(stoppedCount).padStart(3, ' ')} stopped\n`);
+    ctx.stdout.write(`Tasks: ${String(totalTasks).padStart(3, ' ')} total, ${String(runningCount).padStart(3, ' ')} running, ${String(stoppedCount).padStart(3, ' ')} stopped\n`);
     ctx.stdout.write(`%Cpu(s): ${cpuCores} cores\n`);
     ctx.stdout.write(`MiB Mem: ${String(totalMem).padStart(7, ' ')} total ${String(usedMem).padStart(7, ' ')} used ${String(freeMem).padStart(7, ' ')} free\n`);
     ctx.stdout.write('\n');
     ctx.stdout.write('  PID CMD            STATUS\n');
 
-    // Shell
-    ctx.stdout.write('    1 sh             running\n');
-
-    // Background jobs
-    for (const job of jobs) {
-      const pid = String(job.id + 1).padStart(5, ' ');
-      const cmdName = job.command.split(/\s+/)[0].padEnd(15, ' ');
-      ctx.stdout.write(`${pid} ${cmdName}${job.status}\n`);
+    // All processes
+    for (const proc of processes) {
+      const pid = String(proc.pid).padStart(5, ' ');
+      const cmdName = proc.command.padEnd(15, ' ').slice(0, 15);
+      ctx.stdout.write(`${pid} ${cmdName}${proc.status}\n`);
     }
-
-    // top itself
-    const topPid = String(jobs.length + 2).padStart(5, ' ');
-    ctx.stdout.write(`${topPid} top            running\n`);
 
     return 0;
   };

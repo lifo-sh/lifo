@@ -1,33 +1,52 @@
 // Sandbox (high-level API)
 export { Sandbox } from './sandbox/index.js';
 export type {
-  SandboxOptions,
-  RunOptions,
-  CommandResult,
-  SandboxCommands,
-  SandboxFs,
+	SandboxOptions,
+	RunOptions,
+	CommandResult,
+	SandboxCommands,
+	SandboxFs,
 } from './sandbox/index.js';
 
 // Kernel
 export { Kernel } from './kernel/index.js';
 export type { VirtualRequest, VirtualResponse, VirtualRequestHandler } from './kernel/index.js';
 
+// Network Stack
+export { NetworkStack } from './kernel/network/index.js';
+export type {
+	IPAddress,
+	SocketType,
+	SocketAddress,
+	NetworkInterface as INetworkInterface,
+	RouteEntry,
+	NetworkTunnel,
+	TunnelType,
+} from './kernel/network/index.js';
+
+// Tunnels
+export { VETHPair } from './kernel/network/tunnel/VETHPair.js';
+export { WebSocketTunnel } from './kernel/network/tunnel/WebSocketTunnel.js';
+
+// Bridge
+export { Bridge } from './kernel/network/Bridge.js';
+
 // VFS
 export { VFS, VFSError, ErrorCode } from './kernel/vfs/index.js';
 export { getMimeType, getFileCategory, isBinaryMime } from './kernel/vfs/index.js';
 export { NativeFsProvider } from './kernel/vfs/index.js';
 export type {
-  INode,
-  Stat,
-  Dirent,
-  FileType,
-  ErrorCodeType,
-  VirtualProvider,
-  MountProvider,
-  NativeFsModule,
-  VFSWatchEvent,
-  VFSWatchListener,
-  VFSEventType,
+	INode,
+	Stat,
+	Dirent,
+	FileType,
+	ErrorCodeType,
+	VirtualProvider,
+	MountProvider,
+	NativeFsModule,
+	VFSWatchEvent,
+	VFSWatchListener,
+	VFSEventType,
 } from './kernel/vfs/index.js';
 
 // Blob storage & content store
@@ -39,14 +58,16 @@ export type { BlobStore } from './kernel/storage/index.js';
 export { PersistenceManager } from './kernel/persistence/index.js';
 export { IndexedDBPersistenceBackend, MemoryPersistenceBackend } from './kernel/persistence/index.js';
 export type { PersistenceBackend } from './kernel/persistence/index.js';
+export { serialize, deserialize } from './kernel/persistence/index.js';
+export type { SerializedNode } from './kernel/persistence/index.js';
 
 // Commands
 export { CommandRegistry, createDefaultRegistry } from './commands/registry.js';
 export type {
-  Command,
-  CommandContext,
-  CommandOutputStream,
-  CommandInputStream,
+	Command,
+	CommandContext,
+	CommandOutputStream,
+	CommandInputStream,
 } from './commands/types.js';
 
 // Factory commands
@@ -55,15 +76,35 @@ export { createTopCommand } from './commands/system/top.js';
 export { createKillCommand } from './commands/system/kill.js';
 export { createWatchCommand } from './commands/system/watch.js';
 export { createHelpCommand } from './commands/system/help.js';
-export { createNodeCommand } from './commands/system/node.js';
+export { createNodeCommand, transformEsmToCjs } from './commands/system/node.js';
 export { createCurlCommand } from './commands/net/curl.js';
-export { createLifoPkgCommand, bootLifoPackages } from './commands/system/lifo.js';
-export { createNpmCommand } from './commands/system/npm.js';
+export { createTunnelCommandV2 } from './commands/net/tunnel-v2.js';
+export { createIfconfigCommand } from './commands/net/ifconfig.js';
+export { createRouteCommand } from './commands/net/route.js';
+export { createNetstatCommand } from './commands/net/netstat.js';
+export { createHostCommand } from './commands/net/host.js';
+export { createIPCommand } from './commands/net/ip.js';
+export { createTunnelCommand } from './commands/net/tunnel.js';
+export { createForwardCommand, createUnforwardCommand } from './commands/net/forward.js';
+export { createPortsCommand } from './commands/net/ports.js';
+export { createTestRegistryCommand } from './commands/net/test-registry.js';
+export { createLifoPkgCommand, bootLifoPackages, rehydrateGlobalPackages } from './commands/system/lifo.js';
+export { createNpmCommand, createNpxCommand } from './commands/system/npm.js';
 export { createLogoutCommand } from './commands/system/logout.js';
+export { createSystemctlCommand } from './commands/system/systemctl.js';
+export { createNewtabCommand } from './commands/system/newtab.js';
+
+// Service manager
+export { ServiceManager } from './kernel/ServiceManager.js';
+export type { ServiceInfo } from './kernel/ServiceManager.js';
+export type { UnitFile } from './kernel/unit-parser.js';
+export { parseUnitFile } from './kernel/unit-parser.js';
 
 // Shell
 export { Shell } from './shell/Shell.js';
 export { JobTable } from './shell/jobs.js';
+export { ProcessRegistry } from './shell/ProcessRegistry.js';
+export type { Process, SpawnOptions } from './shell/ProcessRegistry.js';
 
 // Terminal
 export type { ITerminal } from './terminal/ITerminal.js';
@@ -85,30 +126,30 @@ export { resolve, dirname, join, normalize, basename, extname } from './utils/pa
 
 // Color utilities
 export {
-  RESET,
-  BOLD,
-  DIM,
-  ITALIC,
-  UNDERLINE,
-  RED,
-  GREEN,
-  YELLOW,
-  BLUE,
-  MAGENTA,
-  CYAN,
-  WHITE,
-  BRIGHT_RED,
-  BRIGHT_GREEN,
-  BRIGHT_YELLOW,
-  BRIGHT_BLUE,
-  BRIGHT_MAGENTA,
-  BRIGHT_CYAN,
-  red,
-  green,
-  yellow,
-  blue,
-  magenta,
-  cyan,
-  bold,
-  dim,
+	RESET,
+	BOLD,
+	DIM,
+	ITALIC,
+	UNDERLINE,
+	RED,
+	GREEN,
+	YELLOW,
+	BLUE,
+	MAGENTA,
+	CYAN,
+	WHITE,
+	BRIGHT_RED,
+	BRIGHT_GREEN,
+	BRIGHT_YELLOW,
+	BRIGHT_BLUE,
+	BRIGHT_MAGENTA,
+	BRIGHT_CYAN,
+	red,
+	green,
+	yellow,
+	blue,
+	magenta,
+	cyan,
+	bold,
+	dim,
 } from './utils/colors.js';

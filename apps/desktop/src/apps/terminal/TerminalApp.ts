@@ -40,8 +40,8 @@ class TerminalInstance implements AppInstance {
     registry.register('kill', createKillCommand(jobTable));
     registry.register('watch', createWatchCommand(registry));
     registry.register('help', createHelpCommand(registry));
-    registry.register('node', createNodeCommand(this.ctx.kernel.portRegistry));
-    registry.register('curl', createCurlCommand(this.ctx.kernel.portRegistry));
+    registry.register('node', createNodeCommand(this.ctx.kernel));
+    registry.register('curl', createCurlCommand(this.ctx.kernel));
 
     // Source profile files then start interactive
     (async () => {

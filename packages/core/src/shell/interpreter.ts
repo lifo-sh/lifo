@@ -24,6 +24,7 @@ import { parse } from './parser.js';
 import { expandWords, expandWord, type ExpandContext } from './expander.js';
 import { PipeChannel } from './pipe.js';
 import { JobTable } from './jobs.js';
+import { ProcessRegistry } from './ProcessRegistry.js';
 import { resolve } from '../utils/path.js';
 import { globMatch } from '../utils/glob.js';
 import type { TerminalStdin } from './terminal-stdin.js';
@@ -57,6 +58,7 @@ export interface InterpreterConfig {
   registry: CommandRegistry;
   builtins: Map<string, BuiltinFn>;
   jobTable: JobTable;
+  processRegistry: ProcessRegistry;
   writeToTerminal: (text: string) => void;
   aliases?: Map<string, string>;
   /** Override default stdout for programmatic capture */
@@ -65,6 +67,8 @@ export interface InterpreterConfig {
   defaultStderr?: CommandOutputStream;
   /** Returns the current abort signal for foreground commands */
   getAbortSignal?: () => AbortSignal;
+  /** Internal flag: true when executing background job (don't register individual commands) */
+  isBackgroundContext?: boolean;
 }
 
 export class Interpreter {
@@ -111,10 +115,37 @@ export class Interpreter {
       const abortController = new AbortController();
       const commandText = this.getListCommandText(list);
 
+      // Set background context and override abort signal
+      const wasBackgroundContext = this.config.isBackgroundContext;
+      const wasGetAbortSignal = this.config.getAbortSignal;
+      this.config.isBackgroundContext = true;
+      this.config.getAbortSignal = () => abortController.signal;
+
       // Background jobs don't get terminal stdin
       const promise = this.executeListEntries(list.entries);
+
+      // Restore config
+      this.config.isBackgroundContext = wasBackgroundContext;
+      this.config.getAbortSignal = wasGetAbortSignal;
+
       const jobId = this.config.jobTable.add(commandText, promise, abortController);
-      this.config.writeToTerminal(`[${jobId}] (background)\n`);
+
+      // Register in ProcessRegistry as single background job
+      const pid = this.config.processRegistry.spawn({
+        command: commandText.split(' ')[0] || 'unknown',
+        args: commandText.split(' '),
+        cwd: this.config.getCwd(),
+        env: { ...this.config.env },
+        isForeground: false,
+        promise,
+        abortController,
+      });
+
+      this.config.writeToTerminal(`[${jobId}] ${pid} (background)\n`);
+
+      // Don't auto-reap - let Shell collect zombies before next prompt
+      // This matches Linux behavior where zombies persist until reaped
+
       return 0;
     }
 
@@ -506,7 +537,28 @@ export class Interpreter {
             this.config.writeToTerminal(`${name}: command not found\n`);
             exitCode = 127;
           } else {
-            const signal = this.config.getAbortSignal?.() ?? new AbortController().signal;
+            // Only register if NOT part of a background job (which has its own registration)
+            const shouldRegister = !this.config.isBackgroundContext;
+            let pid: number | undefined;
+            let abortController: AbortController;
+
+            // Get shell signal (may be from background job's abortController)
+            const shellSignal = this.config.getAbortSignal?.() ?? new AbortController().signal;
+
+            if (shouldRegister) {
+              // Register process so it's visible in ps from other shells
+              abortController = new AbortController();
+
+              // Combine shell abort signal with process abort signal
+              if (shellSignal) {
+                shellSignal.addEventListener('abort', () => abortController.abort(), { once: true });
+              }
+            } else {
+              // Background context: use shell's abort controller (which is the background job's controller)
+              abortController = new AbortController();
+              shellSignal.addEventListener('abort', () => abortController.abort(), { once: true });
+            }
+
             const ctx: CommandContext = {
               args,
               env: { ...this.config.env },
@@ -514,21 +566,67 @@ export class Interpreter {
               vfs: this.config.vfs,
               stdout,
               stderr,
-              signal,
+              signal: abortController.signal,
               stdin,
               setRawMode: terminalStdin
                 ? (v: boolean) => { terminalStdin.rawMode = v; }
                 : undefined,
             };
 
+            // Register process BEFORE executing so ps can see itself
+            let commandPromise: Promise<number>;
+
+            if (shouldRegister) {
+              // Create a promise that will be resolved when command completes
+              let resolvePromise: (code: number) => void;
+              let rejectPromise: (err: any) => void;
+              const registeredPromise = new Promise<number>((resolve, reject) => {
+                resolvePromise = resolve;
+                rejectPromise = reject;
+              });
+
+              // Register the process FIRST
+              pid = this.config.processRegistry.spawn({
+                command: name,
+                args: [name, ...args],
+                cwd: this.config.getCwd(),
+                env: { ...this.config.env },
+                isForeground: true,
+                promise: registeredPromise,
+                abortController,
+              });
+
+              // Now execute the command and wire it to the registered promise
+              commandPromise = command(ctx).then(
+                (code) => {
+                  resolvePromise!(code);
+                  return code;
+                },
+                (err) => {
+                  const code = (err instanceof Error && err.name === 'AbortError') ? 130 : 1;
+                  rejectPromise!(err);
+                  return code;
+                }
+              );
+            } else {
+              // Background context - just execute
+              commandPromise = command(ctx);
+            }
+
             try {
-              exitCode = await command(ctx);
+              exitCode = await commandPromise;
             } catch (e) {
               if (e instanceof Error && e.name === 'AbortError') {
                 exitCode = 130;
               } else {
                 stderr.write(`${name}: ${e instanceof Error ? e.message : String(e)}\n`);
                 exitCode = 1;
+              }
+            } finally {
+              if (shouldRegister && pid !== undefined) {
+                // Wait for microtasks (status update) to complete before reaping
+                await Promise.resolve();
+                this.config.processRegistry.reap(pid);
               }
             }
           }

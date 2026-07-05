@@ -15,7 +15,7 @@ import type { Command, CommandContext, CommandOutputStream } from '../types.js';
 import type { CommandRegistry } from '../registry.js';
 import type { VFS } from '../../kernel/vfs/index.js';
 import type { ShellExecuteFn } from './npm.js';
-import { npmInstallGlobal } from './npm.js';
+import { npmInstallGlobal, getBinEntries, registerBinCommand } from './npm.js';
 import { resolve, join } from '../../utils/path.js';
 import {
   linkPackage,
@@ -450,14 +450,28 @@ export function createLifoPkgCommand(
  * Boot-time loader: restores dev-linked commands + re-registers
  * installed lifo packages with the lifo runtime.
  */
-export function bootLifoPackages(vfs: VFS, registry: CommandRegistry): void {
+/**
+ * Re-register all globally installed packages into the command registry.
+ *
+ * Handles two kinds of packages:
+ *   - lifo packages (have a lifo.json manifest) → registered via the lifo runtime
+ *   - regular npm packages (have a "bin" field in package.json) → registered via node runner
+ *
+ * Called on every daemon boot so that packages installed via `npm install -g`
+ * or `lifo install` are available as shell commands, including after a snapshot
+ * restore where the VFS has the files but the registry is freshly created.
+ *
+ * Also restores dev-linked packages.
+ *
+ * Safe to call on a fresh VM — it is a no-op when /usr/lib/node_modules is empty.
+ */
+export function rehydrateGlobalPackages(vfs: VFS, registry: CommandRegistry): void {
   // 1. Restore dev links
   loadDevLinks(vfs, registry);
 
-  // 2. Scan global node_modules for lifo packages and upgrade their
-  //    registration from the plain node runner to the lifo runtime.
   if (!vfs.exists(GLOBAL_MODULES)) return;
 
+  // 2. Scan every package in /usr/lib/node_modules
   for (const entry of vfs.readdir(GLOBAL_MODULES)) {
     if (entry.type !== 'directory') continue;
 
@@ -473,15 +487,37 @@ export function bootLifoPackages(vfs: VFS, registry: CommandRegistry): void {
 
     for (const dirName of dirs) {
       const pkgDir = join(GLOBAL_MODULES, dirName);
-      const manifest = readLifoManifest(vfs, pkgDir);
-      if (!manifest) continue;
 
-      for (const [cmdName, entryRelPath] of Object.entries(manifest.commands)) {
-        const entryPath = join(pkgDir, entryRelPath);
-        if (vfs.exists(entryPath)) {
-          registry.register(cmdName, createLifoCommand(entryPath, vfs));
+      // lifo package: has a lifo manifest → use the lifo runtime
+      const manifest = readLifoManifest(vfs, pkgDir);
+      if (manifest) {
+        for (const [cmdName, entryRelPath] of Object.entries(manifest.commands)) {
+          const entryPath = join(pkgDir, entryRelPath);
+          if (vfs.exists(entryPath)) {
+            registry.register(cmdName, createLifoCommand(entryPath, vfs));
+          }
+        }
+        continue; // lifo manifest takes priority — skip npm bin check
+      }
+
+      // regular npm package: has "bin" in package.json → use node runner
+      const pkgJsonPath = join(pkgDir, 'package.json');
+      if (!vfs.exists(pkgJsonPath)) continue;
+
+      let pkg: { name?: string; bin?: string | Record<string, string> };
+      try { pkg = JSON.parse(vfs.readFileString(pkgJsonPath)); } catch { continue; }
+
+      for (const [binName, binPath] of Object.entries(getBinEntries(pkg))) {
+        const scriptPath = resolve(pkgDir, binPath);
+        if (vfs.exists(scriptPath)) {
+          registerBinCommand(registry, binName, scriptPath);
         }
       }
     }
   }
+}
+
+/** @deprecated Use rehydrateGlobalPackages() instead. */
+export function bootLifoPackages(vfs: VFS, registry: CommandRegistry): void {
+  rehydrateGlobalPackages(vfs, registry);
 }

@@ -13,8 +13,10 @@ import { hashBytes } from './BlobStore.js';
 
 // ─── Constants ───
 
-/** Files at or above this size are chunked rather than stored inline. */
-export const CHUNK_THRESHOLD = 1 * 1024 * 1024; // 1 MB
+/** Files at or above this size are chunked rather than stored inline.
+ *  Set high to avoid LRU eviction silently losing file data during npm install
+ *  (many packages installed back-to-back can exceed the ContentStore budget). */
+export const CHUNK_THRESHOLD = 50 * 1024 * 1024; // 50 MB
 
 /** Size of each chunk for large files. */
 export const CHUNK_SIZE = 256 * 1024; // 256 KB

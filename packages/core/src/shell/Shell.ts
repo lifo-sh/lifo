@@ -8,6 +8,7 @@ import { VFSError } from '../kernel/vfs/index.js';
 import { Interpreter, type BuiltinFn, type InterpreterConfig } from './interpreter.js';
 import { HistoryManager } from './history.js';
 import { JobTable } from './jobs.js';
+import { ProcessRegistry } from './ProcessRegistry.js';
 import { complete, type CompletionContext } from './completer.js';
 import { evaluateTest } from './test-builtin.js';
 import { TerminalStdin } from './terminal-stdin.js';
@@ -33,6 +34,7 @@ export class Shell {
   // Line editing state
   private lineBuffer: string = '';
   private cursorPos: number = 0;
+  private screenCursorRow: number = 0; // tracks the actual terminal row (relative to prompt start)
 
   // History (legacy array kept for backward compat with tests)
   private history: string[] = [];
@@ -51,16 +53,21 @@ export class Shell {
   private interpreterConfig: InterpreterConfig;
   private historyManager: HistoryManager;
   private jobTable: JobTable;
+  private processRegistry: ProcessRegistry;
   private builtins: Map<string, BuiltinFn>;
 
   // Tab completion state
   private tabCount: number = 0;
+
+  // Paste queue for multiline paste support
+  private pasteQueue: string[] = [];
 
   constructor(
     terminal: ITerminal,
     vfs: VFS,
     registry: CommandRegistry,
     env: Record<string, string>,
+    processRegistry: ProcessRegistry,
   ) {
     this.terminal = terminal;
     this.vfs = vfs;
@@ -72,8 +79,11 @@ export class Shell {
     this.builtins = new Map<string, BuiltinFn>();
     this.registerBuiltins();
 
-    // Initialize job table
+    // Initialize job table (legacy - still used for backward compat)
     this.jobTable = new JobTable();
+
+    // Use shared process registry from Kernel
+    this.processRegistry = processRegistry;
 
     // Initialize history manager
     this.historyManager = new HistoryManager(vfs);
@@ -88,6 +98,7 @@ export class Shell {
       registry: this.registry,
       builtins: this.builtins,
       jobTable: this.jobTable,
+      processRegistry: this.processRegistry,
       writeToTerminal: (text: string) => this.writeToTerminal(text),
       aliases: this.aliases,
       getAbortSignal: () => this.abortController?.signal ?? new AbortController().signal,
@@ -122,6 +133,10 @@ export class Shell {
     return this.jobTable;
   }
 
+  getProcessRegistry(): ProcessRegistry {
+    return this.processRegistry;
+  }
+
   getCwd(): string {
     return this.cwd;
   }
@@ -146,10 +161,19 @@ export class Shell {
    * Programmatic command execution with captured stdout/stderr.
    * Used by Sandbox.commands.run() for headless mode.
    */
+  private _executeDepth = 0;
+
   async execute(
     cmd: string,
     options?: ExecuteOptions,
   ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+    this._executeDepth++;
+    if (this._executeDepth > 10) {
+      this._executeDepth--;
+      const msg = `shell.execute: recursion depth exceeded (cmd="${cmd}")\n`;
+      options?.onStderr?.(msg);
+      return { stdout: '', stderr: msg, exitCode: 1 };
+    }
     let stdoutBuf = '';
     let stderrBuf = '';
 
@@ -200,10 +224,12 @@ export class Shell {
       const exitCode = await this.interpreter.executeLine(cmd, terminalStdin);
       return { stdout: stdoutBuf, stderr: stderrBuf, exitCode };
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = e instanceof Error ? (e.stack || e.message) : String(e);
       stderrBuf += msg + '\n';
+      options?.onStderr?.(msg + '\n');
       return { stdout: stdoutBuf, stderr: stderrBuf, exitCode: 1 };
     } finally {
+      this._executeDepth--;
       // Restore state
       this.interpreterConfig.defaultStdout = prevDefaultStdout;
       this.interpreterConfig.defaultStderr = prevDefaultStderr;
@@ -215,6 +241,21 @@ export class Shell {
   }
 
   start(): void {
+    // Register this shell instance as a process
+    // First shell gets PID 1, subsequent shells get PID 2, 3, etc.
+    const shellPromise = new Promise<number>(() => {}); // Never resolves (shell runs forever)
+    const shellAbortController = new AbortController();
+
+    this.processRegistry.spawn({
+      command: 'shell',
+      args: ['shell'],
+      cwd: this.cwd,
+      env: this.env,
+      isForeground: true,
+      promise: shellPromise,
+      abortController: shellAbortController,
+    });
+
     this.terminal.onData((data) => this.handleInput(data));
 
     // Source rc files on startup (like bash/zsh)
@@ -245,11 +286,15 @@ export class Shell {
   }
 
   private printPrompt(): void {
-    // Report finished background jobs
+    // Report finished background jobs from JobTable (legacy)
     const doneJobs = this.jobTable.collectDone();
     for (const job of doneJobs) {
       this.writeToTerminal(`[${job.id}] Done    ${job.command}\n`);
     }
+
+    // Collect and reap zombie processes from ProcessRegistry
+    this.processRegistry.collectZombies();
+    // Zombies are already logged by JobTable above, so no need to log again
 
     const home = this.env['HOME'] ?? '/home/user';
     let displayPath = this.cwd;
@@ -268,6 +313,60 @@ export class Shell {
     // Raw mode: bypass all shell line editing, deliver keypresses directly
     if (this.running && this.terminalStdin?.rawMode) {
       this.terminalStdin.feed(data);
+      return;
+    }
+
+    // Multiline paste detection: if data contains newlines and has multiple chars,
+    // split into lines and execute them sequentially via the paste queue
+    if (!this.running && data.length > 1 && /[\r\n]/.test(data)) {
+      const lines = data.split(/\r\n|\r|\n/);
+      for (let i = 0; i < lines.length; i++) {
+        const segment = lines[i];
+        if (i === 0) {
+          // First segment: append to current lineBuffer and execute
+          if (segment) {
+            this.lineBuffer = this.lineBuffer.slice(0, this.cursorPos) + segment + this.lineBuffer.slice(this.cursorPos);
+            this.cursorPos += segment.length;
+          }
+          if (i < lines.length - 1) {
+            // There's a newline after this segment, execute it
+            this.redrawLine();
+            this.terminal.write('\r\n');
+            const line = this.lineBuffer.trim();
+            this.lineBuffer = '';
+            this.cursorPos = 0;
+            this.historyIndex = -1;
+            if (line) {
+              this.history.push(line);
+              // Queue remaining lines before executing
+              for (let j = 1; j < lines.length - 1; j++) {
+                if (lines[j]) this.pasteQueue.push(lines[j]);
+              }
+              // Last segment (after final newline) goes into lineBuffer without executing
+              const lastSegment = lines[lines.length - 1];
+              if (lastSegment) {
+                this.pasteQueue.push(lastSegment);
+              }
+              this.executeLine(line);
+              return;
+            } else {
+              // Empty first line, queue the rest
+              for (let j = 1; j < lines.length - 1; j++) {
+                if (lines[j]) this.pasteQueue.push(lines[j]);
+              }
+              const lastSegment = lines[lines.length - 1];
+              if (lastSegment) {
+                this.pasteQueue.push(lastSegment);
+              }
+              this.drainPasteQueue();
+              return;
+            }
+          }
+        }
+      }
+      // If we get here, data had newlines but only one segment (shouldn't happen)
+      // Fall through to normal handling
+      if (this.lineBuffer) this.redrawLine();
       return;
     }
 
@@ -290,6 +389,7 @@ export class Shell {
         this.terminal.write('^C\r\n');
         this.lineBuffer = '';
         this.cursorPos = 0;
+        this.screenCursorRow = 0;
         this.printPrompt();
       }
       return;
@@ -317,9 +417,10 @@ export class Shell {
         this.stdinCursorPos = 0;
         return;
       }
-      this.clearLine();
+      // Use redrawLine to clear wrapped content, then reset
       this.lineBuffer = '';
       this.cursorPos = 0;
+      this.redrawLine();
       return;
     }
 
@@ -346,6 +447,7 @@ export class Shell {
       const line = this.lineBuffer.trim();
       this.lineBuffer = '';
       this.cursorPos = 0;
+      this.screenCursorRow = 0;
       this.historyIndex = -1;
 
       if (line) {
@@ -532,19 +634,32 @@ export class Shell {
     this.redrawLine();
   }
 
-  private clearLine(): void {
-    // Move to start of input, clear to end of line
-    if (this.cursorPos > 0) {
-      this.terminal.write(`\x1b[${this.cursorPos}D`);
-    }
-    this.terminal.write('\x1b[K');
+  private getPromptWidth(): number {
+    const home = this.env['HOME'] ?? '/home/user';
+    let displayPath = this.cwd;
+    if (this.cwd === home) displayPath = '~';
+    else if (this.cwd.startsWith(home + '/')) displayPath = '~' + this.cwd.slice(home.length);
+    const user = this.env['USER'] ?? 'user';
+    const host = this.env['HOSTNAME'] ?? 'lifo';
+    // "user@host:path$ " — count visible chars only (no ANSI codes)
+    return user.length + 1 + host.length + 1 + displayPath.length + 2;
   }
 
   private redrawLine(): void {
-    // Save cursor, move to start of input area, clear, rewrite, restore cursor
-    // Move cursor to start of input (back by old visual cursor pos is tricky, so just use \r and rewrite prompt)
+    const cols = this.terminal.cols;
+    const promptWidth = this.getPromptWidth();
+    const totalLen = promptWidth + this.lineBuffer.length;
+
+    // Move up from wherever the cursor actually is to the prompt start row
+    if (this.screenCursorRow > 0) {
+      this.terminal.write(`\x1b[${this.screenCursorRow}A`);
+    }
     this.terminal.write('\r');
-    // Rewrite prompt
+
+    // Clear from here to end of screen
+    this.terminal.write('\x1b[J');
+
+    // Rewrite prompt + buffer
     const home = this.env['HOME'] ?? '/home/user';
     let displayPath = this.cwd;
     if (this.cwd === home) {
@@ -556,12 +671,49 @@ export class Shell {
     const host = this.env['HOSTNAME'] ?? 'lifo';
     this.terminal.write(`${BOLD}${GREEN}${user}@${host}${RESET}:${BOLD}${BLUE}${displayPath}${RESET}$ `);
     this.terminal.write(this.lineBuffer);
-    this.terminal.write('\x1b[K'); // Clear anything after
 
-    // Move cursor to correct position
-    const diff = this.lineBuffer.length - this.cursorPos;
-    if (diff > 0) {
-      this.terminal.write(`\x1b[${diff}D`);
+    // After writing all content, figure out which row the cursor is on.
+    // If content exactly fills N rows, the terminal auto-wraps cursor to the next row.
+    let endRow: number;
+    if (totalLen > 0 && totalLen % cols === 0) {
+      endRow = totalLen / cols; // cursor wraps to one row past the last content row
+    } else {
+      endRow = Math.floor(totalLen / cols);
+    }
+
+    // Position cursor at the desired column
+    const desiredCol = promptWidth + this.cursorPos;
+    const desiredRow = Math.floor(desiredCol / cols);
+
+    // Move up from content end to desired row
+    const rowDiff = endRow - desiredRow;
+    if (rowDiff > 0) {
+      this.terminal.write(`\x1b[${rowDiff}A`);
+    }
+    // Move to correct column within the row
+    const colInRow = desiredCol % cols;
+    this.terminal.write('\r');
+    if (colInRow > 0) {
+      this.terminal.write(`\x1b[${colInRow}C`);
+    }
+
+    // Track where we left the cursor
+    this.screenCursorRow = desiredRow;
+  }
+
+  private drainPasteQueue(): void {
+    const next = this.pasteQueue.shift();
+    if (next !== undefined) {
+      const line = next.trim();
+      if (line) {
+        this.terminal.write(line);
+        this.terminal.write('\r\n');
+        this.history.push(line);
+        this.executeLine(line);
+      } else {
+        // Skip empty lines, try next
+        this.drainPasteQueue();
+      }
     }
   }
 
@@ -655,6 +807,7 @@ export class Shell {
     }
 
     this.printPrompt();
+    this.drainPasteQueue();
   }
 
   // ─── Builtins (now with stdout/stderr params for pipe support) ───
