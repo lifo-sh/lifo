@@ -79,6 +79,7 @@ export { createHelpCommand } from './commands/system/help.js';
 export { createNodeCommand, transformEsmToCjs } from './commands/system/node.js';
 export { createCurlCommand } from './commands/net/curl.js';
 export { createTunnelCommandV2 } from './commands/net/tunnel-v2.js';
+export { ServiceWorkerBridge } from './kernel/network/ServiceWorkerBridge.js';
 export { createIfconfigCommand } from './commands/net/ifconfig.js';
 export { createRouteCommand } from './commands/net/route.js';
 export { createNetstatCommand } from './commands/net/netstat.js';
