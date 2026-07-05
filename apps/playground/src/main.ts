@@ -398,6 +398,65 @@ sandbox.kernel.vfs.<span class="code-fn">mount</span>(
   <span class="code-string">'ls /mnt/host'</span>
 )`;
 
+const CODE_VITE_REACT = `\
+<span class="code-comment"># A real Vite dev server with React fast-refresh,</span>
+<span class="code-comment"># running entirely in your browser.</span>
+<span class="code-comment"># Prereq on the host: node apps/tunnel-server/server.js</span>
+
+<span class="code-fn">cd</span> react-app
+<span class="code-fn">npm</span> install          <span class="code-comment"># real npm registry, in-browser</span>
+<span class="code-fn">npm</span> run dev &        <span class="code-comment"># vite on virtual port 5173</span>
+
+<span class="code-comment"># open http://localhost:3005 in a new browser tab, then:</span>
+<span class="code-fn">sed</span> -i <span class="code-string">'s/React inside Lifo/Hello HMR/'</span> src/App.jsx
+
+<span class="code-comment"># the page hot-updates via react-refresh —</span>
+<span class="code-comment"># click the counter first and watch state survive</span>`;
+
+const CODE_VITE_REACT_TS = `\
+<span class="code-comment"># Vite + React + TypeScript, same stack as the JS</span>
+<span class="code-comment"># example: tsx transforms, fast-refresh, tunnel serving.</span>
+<span class="code-comment"># Prereq on the host: node apps/tunnel-server/server.js</span>
+
+<span class="code-fn">cd</span> react-ts-app
+<span class="code-fn">npm</span> install
+<span class="code-fn">npm</span> run dev &
+
+<span class="code-comment"># open http://localhost:3005 in a new browser tab, then:</span>
+<span class="code-fn">sed</span> -i <span class="code-string">'s/React inside Lifo/Hello HMR/'</span> src/App.tsx`;
+
+const CODE_CREATE_VITE = `\
+<span class="code-comment"># Prove it's the real Vite: scaffold an untouched app</span>
+<span class="code-comment"># with create-vite and run it 1:1 — its own vite.config.js,</span>
+<span class="code-comment"># its own scripts, zero Lifo-specific changes.</span>
+<span class="code-comment"># Prereq on the host: node apps/tunnel-server/server.js</span>
+
+<span class="code-fn">npx</span> create-vite@7.1.3 my-app --template react
+<span class="code-fn">cd</span> my-app
+<span class="code-fn">npm</span> install
+<span class="code-fn">npm</span> run dev &
+
+<span class="code-comment"># open http://localhost:3005 — the scaffolded app served</span>
+<span class="code-comment"># by unmodified Vite from inside your browser, HMR and</span>
+<span class="code-comment"># all: the browser speaks real WebSocket frames to the</span>
+<span class="code-comment"># ws server running inside the VM.</span>`;
+
+const CODE_PGLITE = `\
+<span class="code-comment"># PostgreSQL compiled to wasm (PGlite), running in the VM</span>
+
+<span class="code-fn">npm</span> install          <span class="code-comment"># @electric-sql/pglite</span>
+<span class="code-fn">node</span> test.mjs        <span class="code-comment"># DB + RLS + jsonb tests</span>
+
+<span class="code-comment"># test.mjs boots postgres, creates a table, enables</span>
+<span class="code-comment"># ROW LEVEL SECURITY and verifies policy-filtered</span>
+<span class="code-comment"># queries via SET ROLE — real postgres semantics:</span>
+
+<span class="code-keyword">ALTER TABLE</span> docs <span class="code-keyword">ENABLE ROW LEVEL SECURITY</span>;
+<span class="code-keyword">CREATE POLICY</span> own_docs <span class="code-keyword">ON</span> docs
+  <span class="code-keyword">FOR SELECT USING</span> (owner = current_user);
+<span class="code-keyword">SET ROLE</span> alice;
+<span class="code-keyword">SELECT</span> body <span class="code-keyword">FROM</span> docs;  <span class="code-comment">-- only alice's rows</span>`;
+
 const codeSnippets: Record<string, string> = {
 	interactive: CODE_INTERACTIVE,
 	headless: CODE_HEADLESS,
@@ -410,11 +469,15 @@ const codeSnippets: Record<string, string> = {
 	cli: CODE_CLI,
 	'lifo-pkg': CODE_LIFO_PKG,
 	'build-pkg': CODE_BUILD_PKG,
+	'vite-react': CODE_VITE_REACT,
+	'vite-react-ts': CODE_VITE_REACT_TS,
+	'create-vite': CODE_CREATE_VITE,
+	pglite: CODE_PGLITE,
 };
 
 // ─── State ───
 
-type ExampleId = 'interactive' | 'headless' | 'multi' | 'http' | 'explorer' | 'git' | 'ffmpeg' | 'npm' | 'cli' | 'lifo-pkg' | 'build-pkg';
+type ExampleId = 'interactive' | 'headless' | 'multi' | 'http' | 'explorer' | 'git' | 'ffmpeg' | 'npm' | 'cli' | 'lifo-pkg' | 'build-pkg' | 'vite-react' | 'vite-react-ts' | 'create-vite' | 'pglite';
 
 const examples: Record<ExampleId, { booted: boolean; boot: () => Promise<void> }> = {
 	interactive: { booted: false, boot: bootInteractive },
@@ -428,6 +491,10 @@ const examples: Record<ExampleId, { booted: boolean; boot: () => Promise<void> }
 	cli: { booted: false, boot: bootCli },
 	'lifo-pkg': { booted: false, boot: bootLifoPkg },
 	'build-pkg': { booted: false, boot: bootBuildPkg },
+	'vite-react': { booted: false, boot: bootViteReact },
+	'vite-react-ts': { booted: false, boot: bootViteReactTs },
+	'create-vite': { booted: false, boot: bootCreateVite },
+	pglite: { booted: false, boot: bootPglite },
 };
 
 let activeExample: ExampleId = 'interactive';
@@ -574,12 +641,11 @@ WantedBy=multi-user.target
 		version: '1.0.0',
 		type: 'module',
 		scripts: {
-			dev: 'vite --port 5173 --host localhost',
+			dev: 'vite',
 			build: 'vite build',
-			start: 'node vite-direct.js'
 		},
 		dependencies: {
-			vite: '^5.0.0',
+			vite: '^7.3.1',
 		},
 	}, null, 2));
 
@@ -605,6 +671,13 @@ WantedBy=multi-user.target
 
 console.log('Vite app loaded successfully!');
 `);
+
+	// ── React example (react-app) — shared with the Vite with React sidebar example
+	for (const [p, c] of Object.entries(viteReactAppFiles('/home/user/react-app', false))) {
+		const dir = p.slice(0, p.lastIndexOf('/'));
+		vfs.mkdir(dir, { recursive: true });
+		vfs.writeFile(p, c);
+	}
 
 	// NOTE: We intentionally DO NOT create vite.config.js because esbuild-wasm
 	// cannot handle config file loading in the VFS (directory traversal issues).
@@ -1831,6 +1904,181 @@ async function bootBuildPkg() {
   <span style="color:#565f89">  - Depends on isomorphic-git</span>
   <span style="color:#565f89">  - Install: lifo install git</span>
   <span style="color:#565f89">  - Or import: import gitCommand from 'lifo-pkg-git'</span>`;
+}
+
+// ─── Vite / React / PGlite project examples ───
+
+const TUNNEL_SERVICE_UNIT = `[Unit]
+Description=WebSocket Tunnel Service
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=tunnel --server ws://localhost:3005 --port 5173
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+`;
+
+// No custom dev server and no Lifo-specific plugins anywhere: HMR flows
+// through the real WebSocket pipe (relay ⟷ tunnel ⟷ in-VM ws server), so
+// the seeded apps are exactly what a stock Vite setup looks like.
+function viteReactAppFiles(root: string, ts: boolean): Record<string, string> {
+	const x = ts ? 'tsx' : 'jsx';
+	const files: Record<string, string> = {};
+
+	files[`${root}/package.json`] = JSON.stringify({
+		name: root.split('/').pop(),
+		version: '1.0.0',
+		type: 'module',
+		scripts: { dev: 'vite', build: 'vite build' },
+		dependencies: {
+			react: '^18.3.1',
+			'react-dom': '^18.3.1',
+			vite: '^7.3.1',
+			'@vitejs/plugin-react': '^5.0.0',
+			...(ts ? { typescript: '~5.9.3', '@types/react': '^18.3.12', '@types/react-dom': '^18.3.1' } : {}),
+		},
+	}, null, 2);
+
+	// Stock Vite config — identical in shape to what create-vite scaffolds.
+	files[`${root}/vite.config.js`] = `import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+
+// https://vite.dev/config/
+export default defineConfig({
+  plugins: [react()],
+})
+`;
+
+	files[`${root}/index.html`] = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>React in Lifo</title>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="module" src="/src/main.${x}"></script>
+</body>
+</html>`;
+
+	files[`${root}/src/main.${x}`] = `import React from 'react';
+import { createRoot } from 'react-dom/client';
+import App from './App.${x}';
+
+createRoot(document.getElementById('root')${ts ? '!' : ''}).render(<App />);
+`;
+
+	files[`${root}/src/App.${x}`] = `import { useState } from 'react';
+
+export default function App() {
+  const [count, setCount] = useState${ts ? '<number>' : ''}(0);
+  return (
+    <div style={{ fontFamily: 'system-ui', textAlign: 'center', marginTop: '4rem' }}>
+      <h1>React inside Lifo 🚀</h1>
+      <p>This React app is served by a Vite dev server running in your browser${ts ? ' — in TypeScript' : ''}.</p>
+      <button onClick={() => setCount(count + 1)} style={{ padding: '0.6em 1.2em', fontSize: '1em' }}>
+        count is {count}
+      </button>
+    </div>
+  );
+}
+`;
+
+	if (ts) {
+		files[`${root}/tsconfig.json`] = JSON.stringify({
+			compilerOptions: {
+				target: 'ES2022',
+				module: 'ESNext',
+				moduleResolution: 'bundler',
+				jsx: 'react-jsx',
+				strict: true,
+				noEmit: true,
+				lib: ['ES2022', 'DOM', 'DOM.Iterable'],
+			},
+			include: ['src'],
+		}, null, 2);
+	}
+
+	return files;
+}
+
+function pgliteFiles(root: string): Record<string, string> {
+	return {
+		[`${root}/package.json`]: JSON.stringify({
+			name: 'pg-demo',
+			version: '1.0.0',
+			type: 'module',
+			dependencies: { '@electric-sql/pglite': '^0.5.4' },
+		}, null, 2),
+		[`${root}/test.mjs`]: `import { PGlite } from '@electric-sql/pglite';
+
+const db = new PGlite(); // in-memory postgres (wasm)
+console.log('booting postgres...');
+
+await db.exec(\`CREATE TABLE docs (id serial primary key, owner text NOT NULL, body text NOT NULL);\`);
+await db.exec(\`INSERT INTO docs (owner, body) VALUES ('alice', 'alice doc 1'), ('alice', 'alice doc 2'), ('bob', 'bob doc');\`);
+const all = await db.query('SELECT count(*)::int AS n FROM docs');
+console.log('total rows:', all.rows[0].n);
+
+// Row Level Security
+await db.exec(\`
+  CREATE ROLE alice LOGIN;
+  GRANT SELECT ON docs TO alice;
+  ALTER TABLE docs ENABLE ROW LEVEL SECURITY;
+  CREATE POLICY own_docs ON docs FOR SELECT USING (owner = current_user);
+\`);
+await db.exec('SET ROLE alice');
+const mine = await db.query('SELECT body FROM docs ORDER BY id');
+console.log('alice sees:', JSON.stringify(mine.rows));
+await db.exec('RESET ROLE');
+
+const ver = await db.query('SELECT version()');
+console.log('version:', ver.rows[0].version);
+const j = await db.query(\`SELECT jsonb_build_object('ok', true) AS j\`);
+console.log('jsonb:', JSON.stringify(j.rows[0].j));
+console.log('ALL TESTS PASSED ✅');
+`,
+	};
+}
+
+async function bootProjectExample(id: string, files: Record<string, string>, cwd: string, withTunnel: boolean): Promise<void> {
+	const sandbox = await Sandbox.create({
+		terminal: document.getElementById(`terminal-${id}`) as HTMLElement,
+		files: {
+			...files,
+			...(withTunnel ? { '/etc/systemd/system/tunnel.service': TUNNEL_SERVICE_UNIT } : {}),
+		},
+		cwd,
+	});
+	if (withTunnel && sandbox.kernel.serviceManager) {
+		sandbox.kernel.serviceManager.enable('tunnel');
+		try {
+			await sandbox.kernel.serviceManager.start('tunnel');
+		} catch (error) {
+			console.warn(`[${id}] tunnel service failed to start (is the relay running on :3005?)`, error);
+		}
+	}
+}
+
+async function bootViteReact() {
+	await bootProjectExample('vite-react', viteReactAppFiles('/home/user/react-app', false), '/home/user/react-app', true);
+}
+
+async function bootViteReactTs() {
+	await bootProjectExample('vite-react-ts', viteReactAppFiles('/home/user/react-ts-app', true), '/home/user/react-ts-app', true);
+}
+
+async function bootCreateVite() {
+	await bootProjectExample('create-vite', {}, '/home/user', true);
+}
+
+async function bootPglite() {
+	await bootProjectExample('pglite', pgliteFiles('/home/user/pg-demo'), '/home/user/pg-demo', false);
 }
 
 // ─── Boot ───
