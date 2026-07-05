@@ -660,10 +660,10 @@ RestartSec=5
 WantedBy=multi-user.target
 `);
 
-	// Enable the tunnel service
-	if (interactiveKernel.serviceManager) {
-		interactiveKernel.serviceManager.enable('tunnel');
-	}
+	// The tunnel service unit is available for users who run a relay + `tunnel`
+	// manually, but it is NOT auto-enabled: in the browser there's no relay at
+	// ws://localhost:3005, so starting it just floods the terminal with
+	// reconnect errors. The service worker is the browser transport.
 
 	// Create sample Vite app for testing
 	const vfs = interactiveKernel.vfs;
@@ -1263,10 +1263,9 @@ RestartSec=5
 WantedBy=multi-user.target
 `);
 
-	// Enable the tunnel service so it can be started with systemctl
-	if (httpKernel.serviceManager) {
-		httpKernel.serviceManager.enable('tunnel');
-	}
+	// The tunnel service unit is available (users can `systemctl start tunnel`
+	// if they run a relay), but not auto-enabled — no relay exists in the
+	// browser, so auto-starting only floods the terminal with reconnect errors.
 
 	// Write server.js to VFS
 	httpKernel.vfs.writeFile('/home/user/server.js', `const http = require('http');
@@ -1329,15 +1328,6 @@ server.listen(5173, () => {
 	await addHttpTab('Server 5173');
 	await addHttpTab('New Tab');
 
-	// Start the tunnel service automatically
-	if (httpKernel.serviceManager) {
-		try {
-			await httpKernel.serviceManager.start('tunnel');
-			console.log('Tunnel service started automatically');
-		} catch (error) {
-			console.error('Failed to start tunnel service:', error);
-		}
-	}
 }
 
 async function addHttpTab(label: string): Promise<HttpTab> {
@@ -1940,20 +1930,6 @@ async function bootBuildPkg() {
 
 // ─── Vite / React / PGlite project examples ───
 
-const TUNNEL_SERVICE_UNIT = `[Unit]
-Description=WebSocket Tunnel Service
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=tunnel --server ws://localhost:3005 --port 5173
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-`;
-
 // No custom dev server and no Lifo-specific plugins anywhere: HMR flows
 // through the real WebSocket pipe (relay ⟷ tunnel ⟷ in-VM ws server), so
 // the seeded apps are exactly what a stock Vite setup looks like.
@@ -2350,18 +2326,12 @@ async function bootProjectExample(opts: ProjectExampleOpts): Promise<void> {
 	const { id, files, cwd, previewPort } = opts;
 	const sandbox = await Sandbox.create({
 		terminal: document.getElementById(`terminal-${id}`) as HTMLElement,
-		files: {
-			...files,
-			...(previewPort ? { '/etc/systemd/system/tunnel.service': TUNNEL_SERVICE_UNIT } : {}),
-		},
+		files,
 		cwd,
 	});
-	if (previewPort && sandbox.kernel.serviceManager) {
-		// The tunnel service is optional (needs a host relay); the SW preview
-		// below is the zero-setup path. Enable but don't fail if the relay is down.
-		sandbox.kernel.serviceManager.enable('tunnel');
-		sandbox.kernel.serviceManager.start('tunnel').catch(() => {});
-	}
+	// Note: no tunnel service here. The service worker below is the browser
+	// transport; a relay (ws://localhost:3005) only exists for the CLI, so
+	// starting the tunnel in the playground just spams reconnect errors.
 
 	// Service-worker transport: serve /_sw/<port>/ with no host process.
 	// Last-booted example hosts it (like the relay's last-client-wins).
