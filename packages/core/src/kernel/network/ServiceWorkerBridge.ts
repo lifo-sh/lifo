@@ -156,10 +156,21 @@ export class ServiceWorkerBridge {
 	 * re-requests a host when it wakes without one ({type:'lifo-need-host'}) and
 	 * we also reconnect on controllerchange — the page re-announces on demand.
 	 */
-	async connect(swUrl = '/sw.js'): Promise<boolean> {
+	/**
+	 * @param swUrl   Path to the worker script. When the app is served under a
+	 *                base path (e.g. /playground/), pass the base-prefixed URL
+	 *                so the file resolves.
+	 * @param scope   Desired control scope. Defaults to '/' so previews at
+	 *                /_sw/<port>/ (and the inner apps' root-absolute asset URLs)
+	 *                are intercepted even when the outer app lives under a base
+	 *                path. A worker served from a subdirectory needs the host to
+	 *                send `Service-Worker-Allowed: /` for the broader scope to
+	 *                be granted.
+	 */
+	async connect(swUrl = '/sw.js', scope = '/'): Promise<boolean> {
 		if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return false;
 		try {
-			this.registration = await navigator.serviceWorker.register(swUrl);
+			this.registration = await navigator.serviceWorker.register(swUrl, { scope });
 			await navigator.serviceWorker.ready;
 			activeBridge = this;
 
