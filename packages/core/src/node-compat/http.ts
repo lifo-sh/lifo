@@ -325,6 +325,27 @@ class ServerResponse extends EventEmitter {
 // Symbol used to track active server promises on the http module instance
 export const ACTIVE_SERVERS = Symbol.for('lifo.http.activeServers');
 
+/**
+ * Upgrade handlers, keyed by port, attached to the shared portRegistry map.
+ * Consumers (the tunnel) invoke these with (req, socket, head) to deliver a
+ * WebSocket upgrade into the virtual server — the Server re-emits 'upgrade',
+ * which libraries like ws (bundled in Vite for HMR) listen on and then speak
+ * the real WebSocket frame protocol over the provided socket object.
+ */
+export const UPGRADE_HANDLERS = Symbol.for('lifo.http.upgradeHandlers');
+
+export type UpgradeHandler = (
+  req: { method: string; url: string; headers: Record<string, string> },
+  socket: unknown,
+  head: Uint8Array,
+) => boolean;
+
+export function getUpgradeHandlers(portRegistry: Map<number, VirtualRequestHandler>): Map<number, UpgradeHandler> {
+  const holder = portRegistry as unknown as Record<symbol, Map<number, UpgradeHandler>>;
+  if (!holder[UPGRADE_HANDLERS]) holder[UPGRADE_HANDLERS] = new Map();
+  return holder[UPGRADE_HANDLERS];
+}
+
 class Server extends EventEmitter {
   private portRegistry: Map<number, VirtualRequestHandler>;
   private _port: number | null = null;
@@ -389,6 +410,17 @@ class Server extends EventEmitter {
     this.portRegistry.set(port, handler);
     console.log(`[lifo-http] ✅ Registered port ${port} in portRegistry (size: ${this.portRegistry.size})`);
 
+    // WebSocket upgrade delivery (e.g. Vite's HMR server attaches an
+    // 'upgrade' listener and runs the ws frame protocol over the socket).
+    getUpgradeHandlers(this.portRegistry).set(port, (req, socket, head) => {
+      if (this.listenerCount('upgrade') === 0) return false;
+      const msg = new IncomingMessage(0, '', req.headers);
+      msg.method = req.method;
+      msg.url = req.url;
+      this.emit('upgrade', msg, socket, head);
+      return true;
+    });
+
     // Track this server
     this._activeServers.push(this);
 
@@ -407,6 +439,7 @@ class Server extends EventEmitter {
 
     if (this._port !== null) {
       this.portRegistry.delete(this._port);
+      getUpgradeHandlers(this.portRegistry).delete(this._port);
       console.log(`[lifo-http] Deleted port ${this._port} from registry (size now: ${this.portRegistry.size})`);
     }
 
@@ -498,11 +531,33 @@ export function createHttp(portRegistry?: Map<number, VirtualRequestHandler>, pr
     ClientRequest,
     Server,
     ServerResponse,
+    STATUS_CODES,
+    METHODS,
     [ACTIVE_SERVERS]: activeServers,
   };
 
   return mod;
 }
+
+/** Standard reason phrases — required by ws's handshake abort path, among others. */
+export const STATUS_CODES: Record<number, string> = {
+  100: 'Continue', 101: 'Switching Protocols', 102: 'Processing', 103: 'Early Hints',
+  200: 'OK', 201: 'Created', 202: 'Accepted', 203: 'Non-Authoritative Information',
+  204: 'No Content', 205: 'Reset Content', 206: 'Partial Content',
+  300: 'Multiple Choices', 301: 'Moved Permanently', 302: 'Found', 303: 'See Other',
+  304: 'Not Modified', 307: 'Temporary Redirect', 308: 'Permanent Redirect',
+  400: 'Bad Request', 401: 'Unauthorized', 402: 'Payment Required', 403: 'Forbidden',
+  404: 'Not Found', 405: 'Method Not Allowed', 406: 'Not Acceptable',
+  407: 'Proxy Authentication Required', 408: 'Request Timeout', 409: 'Conflict',
+  410: 'Gone', 411: 'Length Required', 412: 'Precondition Failed', 413: 'Payload Too Large',
+  414: 'URI Too Long', 415: 'Unsupported Media Type', 416: 'Range Not Satisfiable',
+  417: 'Expectation Failed', 426: 'Upgrade Required', 428: 'Precondition Required',
+  429: 'Too Many Requests', 431: 'Request Header Fields Too Large',
+  500: 'Internal Server Error', 501: 'Not Implemented', 502: 'Bad Gateway',
+  503: 'Service Unavailable', 504: 'Gateway Timeout', 505: 'HTTP Version Not Supported',
+};
+
+export const METHODS = ['DELETE', 'GET', 'HEAD', 'OPTIONS', 'PATCH', 'POST', 'PUT'];
 
 // --- Legacy static exports (for backward compatibility) ---
 

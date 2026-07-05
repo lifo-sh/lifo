@@ -610,24 +610,83 @@ export function createFs(vfs: VFS, cwd: string) {
   function watch(filename: string | URL, optionsOrListener?: { persistent?: boolean; recursive?: boolean; encoding?: string } | ((eventType: string, filename: string) => void), listener?: (eventType: string, filename: string) => void): EventEmitter {
     const abs = resolvePath(cwd, filename);
     const cb = typeof optionsOrListener === 'function' ? optionsOrListener : listener;
+    const options = typeof optionsOrListener === 'object' && optionsOrListener !== null ? optionsOrListener : {};
 
     const watcher = new EventEmitter();
 
-    // Use VFS onChange to detect changes (coarse-grained)
-    const origOnChange = vfs.onChange;
-    vfs.onChange = () => {
-      origOnChange?.();
-      const eventType = 'change';
-      const name = basename(abs);
+    // Scoped, per-path subscription on the VFS event bus.
+    // Node semantics: eventType is 'change' (content modified) or 'rename'
+    // (created / deleted / renamed); filename is relative to the watched path.
+    const emit = (eventPath: string, type: string) => {
+      const eventType = type === 'modify' ? 'change' : 'rename';
+      let name: string;
+      if (eventPath === abs) {
+        name = basename(abs);
+      } else {
+        name = eventPath.slice(abs.length + 1);
+        // Without { recursive: true }, only direct children are reported.
+        if (!options.recursive && name.includes('/')) return;
+      }
       if (cb) cb(eventType, name);
       watcher.emit('change', eventType, name);
     };
 
+    const unsubscribe = vfs.watch(abs, (event) => {
+      emit(event.path === abs || event.path.startsWith(abs + '/') ? event.path : event.oldPath!, event.type);
+    });
+
     (watcher as unknown as Record<string, unknown>).close = () => {
-      vfs.onChange = origOnChange;
+      unsubscribe();
+      watcher.emit('close');
     };
 
     return watcher;
+  }
+
+  // Stat-polling API (chokidar fallback) — event-driven here, no actual polling.
+  const watchFileSubs = new Map<string, Map<(curr: unknown, prev: unknown) => void, () => void>>();
+
+  function statOrZero(abs: string): ReturnType<typeof statSync> | { mtimeMs: number; size: number; ino: number; mtime: Date; ctimeMs: number; isFile(): boolean; isDirectory(): boolean } {
+    try {
+      return statSync(abs);
+    } catch {
+      return { mtimeMs: 0, size: 0, ino: 0, mtime: new Date(0), ctimeMs: 0, isFile: () => false, isDirectory: () => false };
+    }
+  }
+
+  function watchFile(filename: string | URL, optionsOrListener?: { persistent?: boolean; interval?: number } | ((curr: unknown, prev: unknown) => void), listener?: (curr: unknown, prev: unknown) => void): void {
+    const abs = resolvePath(cwd, filename);
+    const cb = typeof optionsOrListener === 'function' ? optionsOrListener : listener;
+    if (!cb) return;
+
+    let prev = statOrZero(abs);
+    const unsubscribe = vfs.watch(abs, () => {
+      const curr = statOrZero(abs);
+      const p = prev;
+      prev = curr;
+      cb(curr, p);
+    });
+
+    let subs = watchFileSubs.get(abs);
+    if (!subs) {
+      subs = new Map();
+      watchFileSubs.set(abs, subs);
+    }
+    subs.set(cb, unsubscribe);
+  }
+
+  function unwatchFile(filename: string | URL, listener?: (curr: unknown, prev: unknown) => void): void {
+    const abs = resolvePath(cwd, filename);
+    const subs = watchFileSubs.get(abs);
+    if (!subs) return;
+    if (listener) {
+      subs.get(listener)?.();
+      subs.delete(listener);
+    } else {
+      for (const unsub of subs.values()) unsub();
+      subs.clear();
+    }
+    if (subs.size === 0) watchFileSubs.delete(abs);
   }
 
   // ─── Promises API ───
@@ -754,6 +813,8 @@ export function createFs(vfs: VFS, cwd: string) {
     createWriteStream,
     // Watch
     watch,
+    watchFile,
+    unwatchFile,
     // Promises
     promises,
     // Constants

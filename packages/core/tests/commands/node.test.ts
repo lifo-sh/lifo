@@ -431,7 +431,7 @@ export const extra = 'bonus';
     vfs.writeFile('/tmp/test.mjs', `
 import mixed from './mixed.mjs';
 import { extra } from './mixed.mjs';
-console.log(mixed.default + ' ' + mixed.extra);
+console.log(mixed + ' ' + extra);
     `);
     const ctx = createContext(vfs, ['/tmp/test.mjs']);
     const code = await node(ctx);

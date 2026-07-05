@@ -42,6 +42,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "acorn": "^8.17.0",
     "ws": "^8.19.0"
   },
   "peerDependencies": {
@@ -58,5 +59,8 @@
     "vite": "^6.0.0",
     "vite-plugin-dts": "^4.5.0",
     "vitest": "^3.0.0"
+  },
+  "optionalDependencies": {
+    "esbuild": "^0.28.1"
   }
 }

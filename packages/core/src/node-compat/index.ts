@@ -283,7 +283,7 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
 
   // npm package shims
   map.rimraf = () => createRimraf(ctx.vfs, ctx.cwd);
-  map.esbuild = () => createEsbuild();
+  map.esbuild = () => createEsbuild({ vfs: ctx.vfs, cwd: ctx.cwd });
 
   return map;
 }

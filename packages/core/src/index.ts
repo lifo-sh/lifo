@@ -76,7 +76,7 @@ export { createTopCommand } from './commands/system/top.js';
 export { createKillCommand } from './commands/system/kill.js';
 export { createWatchCommand } from './commands/system/watch.js';
 export { createHelpCommand } from './commands/system/help.js';
-export { createNodeCommand } from './commands/system/node.js';
+export { createNodeCommand, transformEsmToCjs } from './commands/system/node.js';
 export { createCurlCommand } from './commands/net/curl.js';
 export { createTunnelCommandV2 } from './commands/net/tunnel-v2.js';
 export { createIfconfigCommand } from './commands/net/ifconfig.js';

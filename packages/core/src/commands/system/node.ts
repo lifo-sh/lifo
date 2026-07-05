@@ -6,6 +6,8 @@ import { createProcess } from '../../node-compat/process.js';
 import { createConsole } from '../../node-compat/console.js';
 import { Buffer } from '../../node-compat/buffer.js';
 import { VFSError } from '../../kernel/vfs/index.js';
+import { createRollupParseShim } from '../../node-compat/rollup-parse.js';
+import { wrapBabelSync } from '../../node-compat/babel-sync.js';
 import { ACTIVE_SERVERS } from '../../node-compat/http.js';
 import type { VirtualRequestHandler, Kernel } from '../../kernel/index.js';
 
@@ -108,6 +110,127 @@ function cjsDecl(name: string): string {
 }
 
 /**
+ * Classify whether the '/' at position i starts a regex literal.
+ * - 'strong': preceded by an operator or keyword — reliably a regex.
+ * - 'weak': preceded by ')', ']' or '}' — could be division. Callers must
+ *   validate the scanned candidate with isPlausibleRegex(); in minified
+ *   single-line code a mis-detected division swallows everything up to the
+ *   next '/' (there is no newline to stop at) and desyncs string masking.
+ * Under-detection is also dangerous (a backtick inside an undetected regex
+ * triggers the template parser), hence scan-then-validate instead of
+ * dropping the weak preceders.
+ */
+function isRegexStart(src: string, i: number): 'strong' | 'weak' | false {
+	let k = i - 1;
+	while (k >= 0 && (src[k] === ' ' || src[k] === '\t' || src[k] === '\n' || src[k] === '\r')) k--;
+	const prev = k >= 0 ? src[k] : '\0';
+	if ('\0=([{,;!&|^~?:+-*%<>/'.includes(prev) ||
+		(k >= 1 && /\b(?:return|typeof|void|delete|throw|new|case|of|in|yield|await)\s*$/.test(src.slice(Math.max(0, k - 11), k + 1)))) {
+		return 'strong';
+	}
+	if (')]}'.includes(prev)) return 'weak';
+	return false;
+}
+
+/** Sanity check for a scanned regex candidate (leading slash..trailing slash+flags). */
+function isPlausibleRegex(candidate: string): boolean {
+	const lastSlash = candidate.lastIndexOf('/');
+	if (lastSlash <= 0) return false;
+	const body = candidate.slice(1, lastSlash);
+	if (body.length === 0 || body.length > 500 || body.includes('\n')) return false;
+	try {
+		new RegExp(body);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/** Scan a regex literal starting at i ('/'); returns the index just past it. */
+function scanRegexLiteral(src: string, i: number): number {
+	i++; // skip opening /
+	while (i < src.length && src[i] !== '\n') {
+		if (src[i] === '\\') { i += 2; continue; }
+		if (src[i] === '/') { i++; break; }
+		if (src[i] === '[') { // character class — / doesn't end regex inside [...]
+			i++;
+			while (i < src.length && src[i] !== ']' && src[i] !== '\n') {
+				if (src[i] === '\\') i++;
+				i++;
+			}
+			if (i < src.length && src[i] === ']') i++;
+			continue;
+		}
+		i++;
+	}
+	while (i < src.length && /[gimsuyv]/.test(src[i])) i++; // flags
+	return i;
+}
+
+/** Scan a '...' or "..." literal starting at i (the quote); returns the index just past the closing quote. */
+function scanQuoteLiteral(src: string, i: number): number {
+	const quote = src[i];
+	i++;
+	while (i < src.length) {
+		if (src[i] === '\\') { i += 2; continue; }
+		if (src[i] === quote) { i++; break; }
+		i++;
+	}
+	return i;
+}
+
+/** Scan a template literal starting at i (backtick); returns the index just past the closing backtick. */
+function scanTemplateLiteral(src: string, i: number): number {
+	i++;
+	while (i < src.length) {
+		if (src[i] === '\\') { i += 2; continue; }
+		if (src[i] === '`') { i++; break; }
+		if (src[i] === '$' && i + 1 < src.length && src[i + 1] === '{') {
+			i = scanBracedExpr(src, i + 2);
+			continue;
+		}
+		i++;
+	}
+	return i;
+}
+
+/**
+ * Scan a ${...} expression body starting just after '${'; returns the index
+ * just past the matching '}'. Brace depth must ignore braces inside comments,
+ * strings, nested templates, and regex literals (e.g. /^[{[]/ in an
+ * expression would otherwise desync the depth and swallow the file).
+ */
+function scanBracedExpr(src: string, i: number): number {
+	let depth = 1;
+	while (i < src.length && depth > 0) {
+		const c = src[i];
+		if (c === '/' && i + 1 < src.length && src[i + 1] === '/') {
+			const nl = src.indexOf('\n', i);
+			i = nl === -1 ? src.length : nl;
+			continue;
+		}
+		if (c === '/' && i + 1 < src.length && src[i + 1] === '*') {
+			const end = src.indexOf('*/', i + 2);
+			i = end === -1 ? src.length : end + 2;
+			continue;
+		}
+		if (c === '/') {
+			const kind = isRegexStart(src, i);
+			if (kind) {
+				const end = scanRegexLiteral(src, i);
+				if (kind === 'strong' || isPlausibleRegex(src.slice(i, end))) { i = end; continue; }
+			}
+		}
+		if (c === "'" || c === '"') { i = scanQuoteLiteral(src, i); continue; }
+		if (c === '`') { i = scanTemplateLiteral(src, i); continue; }
+		if (c === '{') depth++;
+		else if (c === '}') depth--;
+		i++;
+	}
+	return i;
+}
+
+/**
  * Mask string/template literals with safe placeholders so that
  * import/export regexes don't match keywords inside string content.
  * Returns the masked source and an array of original literals for restoration.
@@ -138,80 +261,22 @@ function maskStringLiterals(src: string): { masked: string; literals: string[] }
 		}
 
 		// Regex literals — skip to avoid confusing backticks inside /regex/ with templates
-		if (ch === '/' && i + 1 < src.length && src[i + 1] !== '/' && src[i + 1] !== '*') {
-			// Heuristic: '/' is a regex if preceded by an operator, keyword, or start-of-line.
-			// IMPORTANT: We include ')' and '}' even though they can precede division too,
-			// because under-detection is catastrophic: a backtick inside an undetected
-			// regex triggers the template-literal parser which can eat the rest of the file.
-			// Over-detection is harmless: the regex scanner copies content as-is and stops
-			// at newline, so the output is identical either way.
-			let k = i - 1;
-			while (k >= 0 && (src[k] === ' ' || src[k] === '\t' || src[k] === '\n' || src[k] === '\r')) k--;
-			const prev = k >= 0 ? src[k] : '\0';
-			if ('\0=([{,;!&|^~?:+-*%<>/)]}'.includes(prev) ||
-				(k >= 1 && /\b(?:return|typeof|void|delete|throw|new|case|of|in|yield|await)\s*$/.test(src.slice(Math.max(0, k - 11), k + 1)))) {
-				const regStart = i;
-				i++; // skip opening /
-				while (i < src.length && src[i] !== '\n') {
-					if (src[i] === '\\') { i += 2; continue; }
-					if (src[i] === '/') { i++; break; }
-					if (src[i] === '[') { // character class — / doesn't end regex inside [...]
-						i++;
-						while (i < src.length && src[i] !== ']' && src[i] !== '\n') {
-							if (src[i] === '\\') i++;
-							i++;
-						}
-						if (i < src.length && src[i] === ']') i++;
-						continue;
-					}
-					i++;
+		if (ch === '/') {
+			const kind = isRegexStart(src, i);
+			if (kind) {
+				const end = scanRegexLiteral(src, i);
+				if (kind === 'strong' || isPlausibleRegex(src.slice(i, end))) {
+					masked += src.slice(i, end);
+					i = end;
+					continue;
 				}
-				while (i < src.length && /[gimsuyv]/.test(src[i])) i++; // flags
-				masked += src.slice(regStart, i);
-				continue;
 			}
 		}
 
 		// String/template literals
 		if (ch === '"' || ch === "'" || ch === '`') {
 			const start = i;
-			const quote = ch;
-			i++; // skip opening quote
-			while (i < src.length) {
-				if (src[i] === '\\') { i += 2; continue; }
-				if (src[i] === quote) { i++; break; }
-				// Template literal ${...} expressions — skip with depth tracking
-				if (quote === '`' && src[i] === '$' && i + 1 < src.length && src[i + 1] === '{') {
-					let depth = 1;
-					i += 2;
-					while (i < src.length && depth > 0) {
-						if (src[i] === '{') depth++;
-						else if (src[i] === '}') depth--;
-						else if (src[i] === '\\') i++;
-						else if (src[i] === "'" || src[i] === '"') {
-							const q = src[i]; i++;
-							while (i < src.length && src[i] !== q) {
-								if (src[i] === '\\') i++;
-								i++;
-							}
-							if (i < src.length) i++; // skip closing quote
-							continue;
-						} else if (src[i] === '`') {
-							// Nested template literal inside expression
-							i++;
-							while (i < src.length && src[i] !== '`') {
-								if (src[i] === '\\') i++;
-								i++;
-							}
-							if (i < src.length) i++;
-							continue;
-						}
-						i++;
-					}
-					continue;
-				}
-				i++;
-			}
+			i = ch === '`' ? scanTemplateLiteral(src, i) : scanQuoteLiteral(src, i);
 
 			const literal = src.slice(start, i);
 			const idx = literals.length;
@@ -219,7 +284,7 @@ function maskStringLiterals(src: string): { masked: string; literals: string[] }
 
 			// Placeholder uses same quote style so import regexes that capture
 			// ['"][^'"]+['"] still work (they see e.g. "__LIFO_S0__").
-			masked += quote + '__LIFO_S' + idx + '__' + quote;
+			masked += ch + '__LIFO_S' + idx + '__' + ch;
 			continue;
 		}
 
@@ -228,6 +293,59 @@ function maskStringLiterals(src: string): { masked: string; literals: string[] }
 	}
 
 	return { masked, literals };
+}
+
+/** import.meta → CJS-wrapper identifier replacements (plain text, ordered). */
+function replaceImportMeta(code: string): string {
+	return code
+		.split('import.meta.url').join('__importMetaUrl')
+		.split('import.meta.dirname').join('__dirname')
+		.split('import.meta.filename').join('__filename')
+		.split('import.meta.require').join('require')
+		.split('import.meta.resolve').join('__importMetaResolve')
+		// Bare import.meta (catch-all, must come AFTER specific property replacements)
+		.split('import.meta').join('__importMeta');
+}
+
+/**
+ * Apply import.meta replacements inside the ${...} expression spans of a
+ * template literal. Expressions are code and must be transformed; the static
+ * text chunks are left untouched — they may be client-facing source (e.g.
+ * Vite emitting `import.meta.hot.accept()` into served modules) that must
+ * keep `import.meta` intact.
+ */
+function replaceImportMetaInTemplateExprs(template: string): string {
+	let out = '';
+	let i = 0;
+	while (i < template.length) {
+		const ch = template[i];
+		if (ch === '\\') { out += template.slice(i, i + 2); i += 2; continue; }
+		if (ch === '$' && template[i + 1] === '{') {
+			const end = scanBracedExpr(template, i + 2);
+			const expr = template.slice(i + 2, end - 1);
+			out += '${' + replaceImportMetaSafely(expr) + '}';
+			i = end;
+			continue;
+		}
+		out += ch;
+		i++;
+	}
+	return out;
+}
+
+/**
+ * Apply import.meta replacements to a code fragment while leaving string
+ * literal contents untouched (template ${...} expressions are recursed into).
+ */
+function replaceImportMetaSafely(code: string): string {
+	const { masked, literals } = maskStringLiterals(code);
+	const replaced = replaceImportMeta(masked);
+	for (let i = 0; i < literals.length; i++) {
+		if (literals[i].startsWith('`')) {
+			literals[i] = replaceImportMetaInTemplateExprs(literals[i]);
+		}
+	}
+	return unmaskStringLiterals(replaced, literals);
 }
 
 /**
@@ -240,34 +358,63 @@ function unmaskStringLiterals(src: string, literals: string[]): string {
 	);
 }
 
+/**
+ * Build the CJS wrapper parameter list for a module. Injected globals whose
+ * name the module itself declares at top level (class/let/const) must be
+ * renamed — a like-named parameter would be a SyntaxError (e.g.
+ * @babel/generator declares `class Buffer`). The module's own declaration
+ * then wins; positional arguments are unaffected.
+ */
+const SHADOWABLE_WRAPPER_PARAMS = ['console', 'process', 'Buffer', 'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'global'];
+
+function buildWrapperParams(source: string): string {
+	const params = ['exports', 'require', 'module', '__filename', '__dirname', 'console', 'process', 'Buffer', 'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'global', '__importMetaUrl', '__importMeta', '__importMetaResolve'];
+	return params.map((p) => {
+		if (!SHADOWABLE_WRAPPER_PARAMS.includes(p)) return p;
+		const re = new RegExp(`(?:^|\\n)[ \\t]*(?:class|let|const)\\s+${p}\\b`);
+		return re.test(source) ? `__lifo_shadowed_${p}` : p;
+	}).join(', ');
+}
+
 /** Transform ESM import/export syntax to CJS require/exports equivalents */
-function transformEsmToCjs(source: string): string {
+// Exported for tests and debugging.
+export function transformEsmToCjs(source: string): string {
 	// Normalize \r\n → \n so regexes anchored on \n work with Windows line endings
 	let result = source.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-
-	// import.meta.* replacements MUST run before masking.
-	// The masker may incorrectly consume code regions (e.g. regex literals with
-	// backticks), so import.meta must be replaced on the raw source first.
-	// These are safe on raw source: replacements are plain identifiers that won't
-	// cause issues even if they accidentally match inside string literals.
-	result = result.split('import.meta.url').join('__importMetaUrl');
-	result = result.split('import.meta.dirname').join('__dirname');
-	result = result.split('import.meta.filename').join('__filename');
-	result = result.split('import.meta.require').join('require');
-	result = result.split('import.meta.resolve').join('__importMetaResolve');
-	// Bare import.meta (catch-all, must come AFTER specific property replacements)
-	result = result.split('import.meta').join('__importMeta');
 
 	// Mask string/template literal contents so import/export regexes don't
 	// match keywords inside strings (e.g. const HELPERS = `export function ...`)
 	const { masked, literals } = maskStringLiterals(result);
 
 	result = masked;
+
+	// import.meta.* replacements run on the MASKED source: string literal
+	// contents must survive untouched. Code that builds client-facing source
+	// out of strings (e.g. Vite emitting `import.meta.hot.accept()` into
+	// served modules) would otherwise ship broken `__importMeta` references
+	// to the browser. A masker miss would leave `import.meta` behind and
+	// fail the CJS wrapper at parse time — if that resurfaces, fix the
+	// masker rather than moving these back before masking.
+	result = replaceImportMeta(result);
+	// Template literal ${...} expressions are code too, but they were masked
+	// away with their literal — transform them inside the stored literals.
+	for (let li = 0; li < literals.length; li++) {
+		if (literals[li].startsWith('`')) {
+			literals[li] = replaceImportMetaInTemplateExprs(literals[li]);
+		}
+	}
 	// Split semicolon-separated import/export onto their own lines
 	// so that the (?:^|\n) anchored regexes below can find them in minified code
 	result = result.replace(
 		/;([ \t]*(?:import\s*[\w${*('".]|export[\s{*]))/g,
 		';\n$1'
+	);
+	// Same for a closing brace directly followed by import/export (ASI in
+	// minified bundles, e.g. Emscripten output: `...}export{a as b};`).
+	// Runs on masked source, so string contents can't false-positive.
+	result = result.replace(
+		/\}([ \t]*(?:import\s*[\w${*('".]|export[\s{*]))/g,
+		'}\n$1'
 	);
 	const trailingExports: string[] = [];
 	let hasDefaultExport = false;
@@ -336,9 +483,15 @@ function transformEsmToCjs(source: string): string {
 	);
 
 	// import X from 'mod' (default import)
+	// ESM-transformed modules put the default on exports.default; plain CJS
+	// modules ARE the default. Prefer .default when present (matches the
+	// interop of the combined import rules above).
 	result = result.replace(
 		/(?:^|\n)([ \t]*)import\s+([\w$]+)\s+from\s*(['"][^'"]+['"])[ \t]*;?/g,
-		(_match, indent, name, mod) => `\n${indent}${cjsDecl(name)} ${name} = require(${mod});`
+		(_match, indent, name, mod) => {
+			const tmp = '__mod_' + name;
+			return `\n${indent}${cjsDecl(tmp)} ${tmp} = require(${mod});\n${indent}${cjsDecl(name)} ${name} = ${tmp} && ${tmp}.default !== undefined ? ${tmp}.default : ${tmp};`;
+		}
 	);
 
 	// import 'mod' (side-effect)
@@ -431,10 +584,16 @@ function transformEsmToCjs(source: string): string {
 				const local = parts[0].trim();
 				const exported = parts.length === 2 ? parts[1].trim() : local;
 				if (!local) return;
+				// ES2022 arbitrary string export names (export { x as "module.exports" })
+				// arrive here quoted (masked); they need bracket/computed access.
+				const isStringName = exported.startsWith('"') || exported.startsWith("'");
 				const src = importSources.get(local);
 				if (src) {
 					// Imported name → lazy getter reading from source module reference
-					trailingExports.push(`Object.defineProperty(exports, '${exported}', { get: function() { return ${src.modRef}.${src.prop}; }, enumerable: true, configurable: true });`);
+					const key = isStringName ? exported : `'${exported}'`;
+					trailingExports.push(`Object.defineProperty(exports, ${key}, { get: function() { return ${src.modRef}.${src.prop}; }, enumerable: true, configurable: true });`);
+				} else if (isStringName) {
+					trailingExports.push(`exports[${exported}] = ${local};`);
 				} else {
 					// Locally defined → direct assignment at end of file
 					trailingExports.push(`exports.${exported} = ${local};`);
@@ -448,9 +607,13 @@ function transformEsmToCjs(source: string): string {
 
 	// Dynamic import() with string literal → Promise.resolve(require())
 	// Negative lookbehind: skip obj.import('...') where '.' precedes import
+	// Uses __lifoRequire (aliased below) instead of bare require: modules may
+	// declare their own `var require` inside a factory scope (e.g. Emscripten's
+	// `var require = createRequire(import.meta.url)`), which hoists and shadows
+	// the wrapper parameter as undefined right where the import() executes.
 	result = result.replace(
 		/(?<!\.)(?<!\w)\bimport\s*\(\s*(['"][^'"]+['"])\s*\)/g,
-		(_match, mod) => `Promise.resolve(require(${mod}))`
+		(_match, mod) => `Promise.resolve(__lifoRequire(${mod}))`
 	);
 
 	// Dynamic import() with any expression (variables, template literals, nested parens, etc.)
@@ -502,7 +665,7 @@ function transformEsmToCjs(source: string): string {
 			}
 			if (depth === 0) {
 				const arg = result.slice(importIdx + 7, j - 1);
-				out += `Promise.resolve().then(function() { return require(${arg}); })`;
+				out += `Promise.resolve().then(function() { return __lifoRequire(${arg}); })`;
 			} else {
 				// Unbalanced — leave as-is
 				out += result.slice(importIdx, j);
@@ -529,6 +692,12 @@ function transformEsmToCjs(source: string): string {
 
 	// Restore original string/template literal contents
 	result = unmaskStringLiterals(result, literals);
+
+	// Stable require alias for the dynamic-import transforms above — captured
+	// at wrapper scope before any module-level `var require` shadow can hoist.
+	if (result.includes('__lifoRequire(')) {
+		result = 'var __lifoRequire = require;\n' + result;
+	}
 
 	return result;
 }
@@ -616,6 +785,8 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 		// These can't work in a browser environment. Provide shims for the exported functions.
 		// Vite's dev server primarily uses es-module-lexer, not rollup's parser, so these
 		// may never be called. If they are, hash stubs return safe defaults; parse stubs throw.
+		const rollupParseShim = createRollupParseShim();
+		let loadingBabelSync = false;
 		const rollupNativeStub = {
 			parse: () => { throw new Error('[lifo] rollup native parser is not available in browser'); },
 			parseAsync: () => Promise.reject(new Error('[lifo] rollup native parser is not available in browser')),
@@ -644,6 +815,29 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 		function nodeRequire(name: string): unknown {
 			// Strip node: prefix
 			if (name.startsWith('node:')) name = name.slice(5);
+			// file:// URLs (e.g. vite importing its bundled config) → plain paths
+			if (name.startsWith('file://')) name = decodeURIComponent(name.slice('file://'.length));
+
+			// rollup/parseAst is a native NAPI binding — serve the acorn-backed shim
+			if (name === 'rollup/parseAst' || name === 'rollup/parseAst.js') return rollupParseShim;
+
+			// @babel/core: answer the async API with sync execution (see babel-sync.ts)
+			if (name === '@babel/core') {
+				const key = '__lifo:babel-sync';
+				const cached = moduleCache.get(key);
+				if (cached) return cached;
+				if (!loadingBabelSync) {
+					loadingBabelSync = true;
+					try {
+						const wrapped = wrapBabelSync(nodeRequire('@babel/core') as Record<string, unknown>);
+						moduleCache.set(key, wrapped);
+						return wrapped;
+					} finally {
+						loadingBabelSync = false;
+					}
+				}
+				// re-entrant (babel loading itself) — fall through to normal resolution
+			}
 
 			// Check cache
 			if (moduleCache.has(name)) return moduleCache.get(name);
@@ -954,6 +1148,29 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			function modRequire(name: string): unknown {
 				// Strip node: prefix
 				if (name.startsWith('node:')) name = name.slice(5);
+				// file:// URLs (e.g. vite importing its bundled config) → plain paths
+				if (name.startsWith('file://')) name = decodeURIComponent(name.slice('file://'.length));
+
+				// rollup/parseAst is a native NAPI binding — serve the acorn-backed shim
+				if (name === 'rollup/parseAst' || name === 'rollup/parseAst.js') return rollupParseShim;
+
+				// @babel/core: answer the async API with sync execution (see babel-sync.ts)
+				if (name === '@babel/core') {
+					const key = '__lifo:babel-sync';
+					const cached = moduleCache.get(key);
+					if (cached) return cached;
+					if (!loadingBabelSync) {
+						loadingBabelSync = true;
+						try {
+							const wrapped = wrapBabelSync(modRequire('@babel/core') as Record<string, unknown>);
+							moduleCache.set(key, wrapped);
+							return wrapped;
+						} finally {
+							loadingBabelSync = false;
+						}
+					}
+					// re-entrant (babel loading itself) — fall through to normal resolution
+				}
 
 				// Built-in modules from child context
 				if (modModuleMap[name]) {
@@ -1033,7 +1250,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			if (shouldTreatAsEsm(cleanSource, modFilename, ctx.vfs)) {
 				cleanSource = transformEsmToCjs(cleanSource);
 			}
-			const wrapped = `(function(exports, require, module, __filename, __dirname, console, process, Buffer, setTimeout, setInterval, clearTimeout, clearInterval, global, __importMetaUrl, __importMeta, __importMetaResolve) {\n${cleanSource}\n})`;
+			const wrapped = `(function(${buildWrapperParams(cleanSource)}) {\n${cleanSource}\n})`;
 
 			let fn: (...args: unknown[]) => void;
 			try {
@@ -1135,7 +1352,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 		// Use async IIFE for ESM (supports top-level await)
 		const wrapped = isEsm
 			? `(async function(exports, require, module, __filename, __dirname, console, process, Buffer, setTimeout, setInterval, clearTimeout, clearInterval, global, __importMetaUrl, __importMeta, __importMetaResolve) {\n${cleanMainSource}\n})`
-			: `(function(exports, require, module, __filename, __dirname, console, process, Buffer, setTimeout, setInterval, clearTimeout, clearInterval, global, __importMetaUrl, __importMeta, __importMetaResolve) {\n${cleanMainSource}\n})`;
+			: `(function(${buildWrapperParams(cleanMainSource)}) {\n${cleanMainSource}\n})`;
 
 		// Many npm bundles access globalThis.process directly (not the wrapper param).
 		// Only override in browser-like envs; skip in real Node.js (test runner).

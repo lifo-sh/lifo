@@ -15,8 +15,12 @@ export interface SandboxOptions {
   cwd?: string;
   /** Pre-populate files: path → content */
   files?: Record<string, string | Uint8Array>;
-  /** Attach a pre-created ITerminal for visual mode */
-  terminal?: ITerminal;
+  /**
+   * Visual mode: a pre-created ITerminal, a container HTMLElement, or a CSS
+   * selector string — the latter two lazily create an xterm.js Terminal from
+   * @lifo-sh/ui (matches what Sandbox.create actually supports at runtime).
+   */
+  terminal?: ITerminal | HTMLElement | string;
   /**
    * Mount native filesystem directories into the virtual filesystem at boot time.
    * Only works in Node.js environments (or when a custom fsModule is provided).
