@@ -55,6 +55,12 @@ Environment Variables:
 const { port: PORT, host: HOST, tunnelPort: TUNNEL_PORT } = parseArgs();
 
 const pendingRequests = new Map();
+// Browser vite-hmr sockets parked at the relay, fed by in-VM hmr-broadcast messages
+// (fallback path — used only when the VM refuses raw ws piping)
+const hmrSockets = new Set();
+// Raw-piped browser WebSocket connections, by connId: browser bytes ⟷ tunnel
+// messages ⟷ in-VM WebSocket server (real end-to-end frame protocol).
+const wsPipes = new Map();
 let tunnelClient = null;
 
 // Create HTTP server
@@ -154,8 +160,78 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-// Create WebSocket server
-const wss = new WebSocketServer({ server });
+// Create WebSocket server in noServer mode: upgrades are routed manually so
+// browser WebSocket connections (e.g. Vite HMR, subprotocol "vite-hmr") can
+// be piped RAW through the tunnel to the in-VM WebSocket server, while the
+// tunnel client itself (no subprotocol) is handled by the ws library.
+const wss = new WebSocketServer({
+  noServer: true,
+  handleProtocols: (protocols) => (protocols.has("vite-hmr") ? "vite-hmr" : false),
+});
+
+server.on("upgrade", (req, socket, head) => {
+  const proto = req.headers["sec-websocket-protocol"] || "";
+  if (proto.includes("vite-hmr")) {
+    rawPipeUpgrade(req, socket, head);
+    return;
+  }
+  wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
+});
+
+/**
+ * Pipe a browser WebSocket connection raw through the tunnel: the in-VM
+ * server (Vite's bundled ws) performs the actual handshake and speaks the
+ * real frame protocol with the browser. The relay only moves bytes.
+ */
+function rawPipeUpgrade(req, socket, head) {
+  if (!tunnelClient || tunnelClient.readyState !== 1) {
+    socket.end("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n");
+    return;
+  }
+  const connId = crypto.randomUUID();
+  const url = TUNNEL_PORT ? `/${TUNNEL_PORT}${req.url}` : req.url;
+  const pipe = { socket, req, head, receivedBytes: 0 };
+  wsPipes.set(connId, pipe);
+  console.log(`\n◆ Raw WS pipe opened (${req.url}) → VM`);
+
+  tunnelClient.send(JSON.stringify({
+    type: "ws-upgrade",
+    connId,
+    url,
+    method: req.method,
+    headers: req.headers,
+  }));
+  if (head && head.length > 0) {
+    tunnelClient.send(JSON.stringify({ type: "ws-data", connId, data: head.toString("base64") }));
+  }
+  socket.on("data", (chunk) => {
+    if (tunnelClient && tunnelClient.readyState === 1) {
+      tunnelClient.send(JSON.stringify({ type: "ws-data", connId, data: chunk.toString("base64") }));
+    }
+  });
+  const closePipe = () => {
+    if (wsPipes.delete(connId) && tunnelClient && tunnelClient.readyState === 1) {
+      tunnelClient.send(JSON.stringify({ type: "ws-close", connId }));
+    }
+  };
+  socket.on("close", closePipe);
+  socket.on("error", closePipe);
+}
+
+/** Fallback: park a browser HMR socket fed by in-VM hmr-broadcast messages. */
+function parkHmrClient(ws) {
+  console.log(`\n○ Browser HMR client parked (${hmrSockets.size + 1} total) — VM refused raw WS`);
+  hmrSockets.add(ws);
+  try { ws.send(JSON.stringify({ type: "connected" })); } catch {}
+  ws.on("message", (data) => {
+    try {
+      const msg = JSON.parse(data.toString());
+      if (msg.type === "ping") ws.send(JSON.stringify({ type: "pong" }));
+    } catch {}
+  });
+  ws.on("close", () => hmrSockets.delete(ws));
+  ws.on("error", () => hmrSockets.delete(ws));
+}
 
 wss.on("connection", (ws) => {
   console.log(`\n✓ Tunnel client connected!`);
@@ -180,6 +256,35 @@ wss.on("connection", (ws) => {
             body: message.body,
           });
         }
+      } else if (message.type === "hmr-broadcast") {
+        // In-VM dev server pushed an HMR payload — fan out to parked browser
+        // HMR sockets (fallback path when raw WS piping is unavailable).
+        const json = JSON.stringify(message.payload);
+        if (hmrSockets.size > 0) {
+          console.log(`[HMR] broadcast to ${hmrSockets.size} parked client(s): ${json.slice(0, 80)}`);
+          for (const sock of hmrSockets) {
+            try { sock.send(json); } catch {}
+          }
+        }
+      } else if (message.type === "ws-data") {
+        const pipe = wsPipes.get(message.connId);
+        if (pipe) {
+          pipe.receivedBytes += message.data.length;
+          pipe.socket.write(Buffer.from(message.data, "base64"));
+        }
+      } else if (message.type === "ws-close") {
+        const pipe = wsPipes.get(message.connId);
+        if (pipe) {
+          wsPipes.delete(message.connId);
+          if (pipe.receivedBytes === 0) {
+            // VM refused the upgrade before answering (e.g. older core, or a
+            // plain HTTP server on that port) — fall back to parking the
+            // browser socket and serving hmr-broadcast payloads.
+            wss.handleUpgrade(pipe.req, pipe.socket, pipe.head, (client) => parkHmrClient(client));
+          } else {
+            pipe.socket.destroy();
+          }
+        }
       }
     } catch (error) {
       console.error("[WebSocket] Error parsing message:", error);
@@ -197,6 +302,12 @@ wss.on("connection", (ws) => {
     for (const [requestId, pending] of pendingRequests.entries()) {
       pending.reject(new Error("Tunnel client disconnected"));
       pendingRequests.delete(requestId);
+    }
+
+    // Tear down raw WS pipes — their VM endpoint is gone
+    for (const [connId, pipe] of wsPipes.entries()) {
+      wsPipes.delete(connId);
+      try { pipe.socket.destroy(); } catch {}
     }
   });
 

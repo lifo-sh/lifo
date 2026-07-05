@@ -3,6 +3,85 @@ import type { NetworkStack } from '../NetworkStack.js';
 import { BaseTunnel } from './BaseTunnel.js';
 import { Buffer } from '../../../node-compat/buffer.js';
 import type { VirtualResponseWithDone } from '../../../node-compat/http.js';
+import { getUpgradeHandlers } from '../../../node-compat/http.js';
+import { EventEmitter } from '../../../node-compat/events.js';
+
+function bytesToBase64(bytes: Uint8Array): string {
+	let bin = '';
+	for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+	return btoa(bin);
+}
+
+function base64ToBytes(b64: string): Uint8Array {
+	const bin = atob(b64);
+	const out = new Uint8Array(bin.length);
+	for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+	return out;
+}
+
+const textEncoder = new TextEncoder();
+
+/**
+ * Duplex-socket stand-in handed to in-VM WebSocket servers (e.g. Vite's
+ * bundled `ws` HMR server) via the http shim's 'upgrade' event. Bytes written
+ * by the server (handshake response + WS frames) are relayed to the real
+ * browser socket through the tunnel; browser bytes arrive via emit('data').
+ */
+class VirtualUpgradeSocket extends EventEmitter {
+	readable = true;
+	writable = true;
+	destroyed = false;
+	remoteAddress = '127.0.0.1';
+	/** Node-internal-shaped state that ws pokes directly on socket close. */
+	_readableState = { endEmitted: false, ended: false };
+	_writableState = { finished: false, errorEmitted: false, ended: false };
+
+	constructor(
+		private sendBytes: (data: Uint8Array) => void,
+		private sendClose: () => void,
+	) {
+		super();
+	}
+
+	write(data: string | Uint8Array, encodingOrCb?: unknown, cb?: () => void): boolean {
+		const callback = typeof encodingOrCb === 'function' ? (encodingOrCb as () => void) : cb;
+		if (!this.destroyed) {
+			this.sendBytes(typeof data === 'string' ? textEncoder.encode(data) : data);
+		}
+		callback?.();
+		return true;
+	}
+
+	end(data?: string | Uint8Array): void {
+		if (data !== undefined && !this.destroyed) this.write(data);
+		this.destroy();
+	}
+
+	destroy(): this {
+		if (this.destroyed) return this;
+		this.destroyed = true;
+		this.readable = false;
+		this.writable = false;
+		this._readableState.endEmitted = true;
+		this._readableState.ended = true;
+		this._writableState.finished = true;
+		this.sendClose();
+		this.emit('close');
+		return this;
+	}
+
+	/** Pull-mode read — ws drains remaining bytes on close; nothing is buffered here. */
+	read(): null { return null; }
+	unshift(_chunk: unknown): void {}
+
+	setTimeout(): this { return this; }
+	setNoDelay(): this { return this; }
+	setKeepAlive(): this { return this; }
+	pause(): this { return this; }
+	resume(): this { return this; }
+	cork(): void {}
+	uncork(): void {}
+}
 
 /**
  * WebSocket Tunnel - Bridge virtual network to external WebSocket server
@@ -154,6 +233,14 @@ export class WebSocketTunnel extends BaseTunnel {
 
 				this.ws.addEventListener('open', () => {
 					this.isReconnecting = false;
+					// Global HMR bridge: in-VM dev servers (e.g. a Vite plugin) call
+					// this to broadcast HMR payloads to browser clients parked at the
+					// tunnel relay (which serves the page over plain HTTP forwarding).
+					(globalThis as Record<string, unknown>).__lifoHmrBroadcast = (payload: unknown) => {
+						if (this.ws && this.ws.readyState === 1) {
+							this.ws.send(JSON.stringify({ type: 'hmr-broadcast', payload }));
+						}
+					};
 					resolve();
 				});
 
@@ -211,9 +298,87 @@ export class WebSocketTunnel extends BaseTunnel {
 			} else if (message.type === 'response') {
 				// Handle response (if we're acting as client)
 				this.handleHttpResponse(message);
+			} else if (message.type === 'ws-upgrade') {
+				this.handleWsUpgrade(message);
+			} else if (message.type === 'ws-data') {
+				this.wsConns.get(message.connId)?.emit('data', Buffer.from(base64ToBytes(message.data)));
+			} else if (message.type === 'ws-close') {
+				const sock = this.wsConns.get(message.connId);
+				this.wsConns.delete(message.connId);
+				sock?.destroy();
 			}
 		} catch (error) {
 			console.error('Error handling WebSocket message:', error);
+		}
+	}
+
+	/** Live browser WebSocket connections piped through the tunnel, by connId. */
+	private wsConns = new Map<string, VirtualUpgradeSocket>();
+
+	/**
+	 * Handle a WebSocket upgrade forwarded raw from the tunnel server: hand a
+	 * virtual socket to the in-VM server's 'upgrade' listener and pipe bytes
+	 * both ways. The in-VM ws library and the real browser then speak the
+	 * actual WebSocket frame protocol end-to-end.
+	 */
+	private handleWsUpgrade(message: { connId: string; url: string; method?: string; headers: Record<string, string> }): void {
+		const { connId, url, method, headers } = message;
+		const refuse = () => {
+			if (this.ws && this.ws.readyState === 1) {
+				this.ws.send(JSON.stringify({ type: 'ws-close', connId }));
+			}
+		};
+
+		let port: number;
+		let path: string;
+		if (this.defaultPort) {
+			port = this.defaultPort;
+			path = url || '/';
+		} else {
+			const match = url.match(/^\/(\d+)(\/.*)?$/);
+			if (!match) { refuse(); return; }
+			port = parseInt(match[1], 10);
+			path = match[2] || '/';
+		}
+
+		const upgradeHandler = this.portRegistry ? getUpgradeHandlers(this.portRegistry).get(port) : undefined;
+		if (!upgradeHandler) { refuse(); return; }
+
+		let closeSent = false;
+		const socket = new VirtualUpgradeSocket(
+			(bytes) => {
+				if (this.ws && this.ws.readyState === 1) {
+					this.ws.send(JSON.stringify({ type: 'ws-data', connId, data: bytesToBase64(bytes) }));
+				}
+			},
+			() => {
+				this.wsConns.delete(connId);
+				if (!closeSent) {
+					closeSent = true;
+					refuse();
+				}
+			},
+		);
+		this.wsConns.set(connId, socket);
+
+		// The browser's Origin is the relay's (e.g. http://localhost:3005) and its
+		// Host targets the relay too — in-VM servers with origin validation
+		// (Vite's HMR server compares Origin against its own host) rightly
+		// reject that pair. The tunnel relay is loopback-only dev tooling, so
+		// present the connection the way a local non-browser client would:
+		// without an Origin header.
+		const fwdHeaders = { ...headers };
+		delete fwdHeaders.origin;
+		delete fwdHeaders.Origin;
+
+		const delivered = upgradeHandler(
+			{ method: method || 'GET', url: path, headers: fwdHeaders },
+			socket,
+			new Uint8Array(0),
+		);
+		if (!delivered) {
+			this.wsConns.delete(connId);
+			socket.destroy();
 		}
 	}
 
