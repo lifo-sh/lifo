@@ -371,8 +371,12 @@ function buildWrapperParams(source: string): string {
 	const params = ['exports', 'require', 'module', '__filename', '__dirname', 'console', 'process', 'Buffer', 'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'global', '__importMetaUrl', '__importMeta', '__importMetaResolve'];
 	return params.map((p) => {
 		if (!SHADOWABLE_WRAPPER_PARAMS.includes(p)) return p;
-		const re = new RegExp(`(?:^|\\n)[ \\t]*(?:class|let|const)\\s+${p}\\b`);
-		return re.test(source) ? `__lifo_shadowed_${p}` : p;
+		// Direct declaration, e.g. `const Buffer = ...` / `class Buffer {}`
+		const direct = new RegExp(`(?:^|\\n)[ \\t]*(?:class|let|const)\\s+${p}\\b`);
+		// Destructuring declaration, e.g. `const { Buffer } = require('node:buffer')` (undici).
+		// A const/let re-binding a wrapper param name is a SyntaxError, so rename the param.
+		const destructured = new RegExp(`(?:^|\\n)[ \\t]*(?:let|const)\\s*\\{[^{}]*\\b${p}\\b[^{}]*\\}`);
+		return direct.test(source) || destructured.test(source) ? `__lifo_shadowed_${p}` : p;
 	}).join(', ');
 }
 
@@ -817,6 +821,12 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			if (name.startsWith('node:')) name = name.slice(5);
 			// file:// URLs (e.g. vite importing its bundled config) → plain paths
 			if (name.startsWith('file://')) name = decodeURIComponent(name.slice('file://'.length));
+			// Metro's `--for-<purpose>` distinct-instance marker (e.g.
+			// `@babel/traverse--for-generate-function-map`) → real package.
+			if (!name.startsWith('.') && !name.startsWith('/')) {
+				const m = name.indexOf('--for-');
+				if (m !== -1) name = name.slice(0, m);
+			}
 
 			// rollup/parseAst is a native NAPI binding — serve the acorn-backed shim
 			if (name === 'rollup/parseAst' || name === 'rollup/parseAst.js') return rollupParseShim;
@@ -1218,6 +1228,13 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 				if (name.startsWith('node:')) name = name.slice(5);
 				// file:// URLs (e.g. vite importing its bundled config) → plain paths
 				if (name.startsWith('file://')) name = decodeURIComponent(name.slice('file://'.length));
+				// Metro appends `--for-<purpose>` to force a distinct module instance
+				// (e.g. `@babel/traverse--for-generate-function-map`). The real target is
+				// the package before the marker.
+				if (!name.startsWith('.') && !name.startsWith('/')) {
+					const m = name.indexOf('--for-');
+					if (m !== -1) name = name.slice(0, m);
+				}
 
 				// rollup/parseAst is a native NAPI binding — serve the acorn-backed shim
 				if (name === 'rollup/parseAst' || name === 'rollup/parseAst.js') return rollupParseShim;
@@ -1326,10 +1343,14 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 				cleanSource = transformEsmToCjs(cleanSource);
 			}
 			const wrapped = `(function(${buildWrapperParams(cleanSource)}) {\n${cleanSource}\n})`;
+			// Give the eval'd module a real filename in stack traces (CallSite.getFileName).
+			// Tools like caller-path/importFresh (used by cosmiconfig) derive paths from the
+			// call stack and break with anonymous eval frames.
+			const sourceUrl = `\n//# sourceURL=${modFilename}`;
 
 			let fn: (...args: unknown[]) => void;
 			try {
-				fn = new Function('return ' + wrapped)();
+				fn = new Function('return ' + wrapped + sourceUrl)();
 			} catch (e) {
 				const err = e instanceof Error ? e : new Error(String(e));
 				ctx.stderr.write(`[ESM-FAIL] file=${modFilename} srcLen=${modSource.length} err=${err.message}\n`);
@@ -1459,7 +1480,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 		const mainImportMeta = { url: mainImportMetaUrl, dirname: dir, filename };
 		const mainImportMetaResolve = (specifier: string) => { throw new Error(`import.meta.resolve('${specifier}') is not supported`); };
 		try {
-			const fn = new Function('return ' + wrapped)();
+			const fn = new Function('return ' + wrapped + `\n//# sourceURL=${filename}`)();
 			const result = fn(
 				exports, nodeRequire, module, filename, dir,
 				nodeConsole, process, Buffer,

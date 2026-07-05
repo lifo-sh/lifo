@@ -151,6 +151,26 @@ export class Readable extends EventEmitter {
     return r;
   }
 
+  /** Convert a Node Readable into a WHATWG ReadableStream (Node's Readable.toWeb). */
+  static toWeb(streamReadable: Readable): ReadableStream {
+    return new ReadableStream({
+      start(controller) {
+        streamReadable.on('data', (chunk) => {
+          try { controller.enqueue(chunk as Uint8Array); } catch { /* closed */ }
+        });
+        streamReadable.on('end', () => {
+          try { controller.close(); } catch { /* already closed */ }
+        });
+        streamReadable.on('error', (err) => {
+          try { controller.error(err); } catch { /* already errored */ }
+        });
+      },
+      cancel() {
+        streamReadable.destroy();
+      },
+    });
+  }
+
   /** Convert a WHATWG ReadableStream into a Node Readable (Node's Readable.fromWeb). */
   static fromWeb(webStream: ReadableStream, opts?: ReadableOptions): Readable {
     const r = new Readable(opts);
@@ -251,6 +271,68 @@ export class Duplex extends Readable {
   }
 }
 
-export class PassThrough extends Duplex {}
+type TransformCallback = (error?: Error | null, data?: unknown) => void;
 
-export default { Readable, Writable, Duplex, PassThrough };
+/**
+ * Transform stream: writes flow through `_transform` and pushed results become
+ * readable output. Subclasses (e.g. undici's InflateStream, zlib streams)
+ * override `_transform`/`_flush`.
+ */
+export class Transform extends Duplex {
+  constructor(opts?: ReadableOptions & { transform?: (chunk: unknown, enc: string, cb: TransformCallback) => void; flush?: (cb: TransformCallback) => void }) {
+    super(opts);
+    if (opts?.transform) this._transform = opts.transform;
+    if (opts?.flush) this._flush = opts.flush;
+  }
+
+  _transform(chunk: unknown, _encoding: string, callback: TransformCallback): void {
+    callback(null, chunk);
+  }
+
+  _flush(callback: TransformCallback): void {
+    callback();
+  }
+
+  override write(chunk: unknown, encoding?: string | (() => void), cb?: (err?: Error | null) => void): boolean {
+    const enc = typeof encoding === 'string' ? encoding : 'buffer';
+    const done = typeof encoding === 'function' ? encoding : cb;
+    try {
+      this._transform(chunk, enc, (err, data) => {
+        if (err) { this.emit('error', err); if (done) done(err); return; }
+        if (data !== null && data !== undefined) this.push(data);
+        if (done) done();
+      });
+    } catch (err) {
+      this.emit('error', err);
+    }
+    return true;
+  }
+
+  override end(chunk?: unknown, encoding?: string | (() => void), cb?: () => void): void {
+    const done = typeof chunk === 'function' ? chunk
+      : typeof encoding === 'function' ? encoding
+      : cb;
+    const finish = () => {
+      try {
+        this._flush((err, data) => {
+          if (err) { this.emit('error', err); return; }
+          if (data !== null && data !== undefined) this.push(data);
+          this.push(null); // close the readable side → 'end'
+          this.emit('finish');
+          if (done) done();
+        });
+      } catch (err) {
+        this.emit('error', err);
+      }
+    };
+    if (chunk !== undefined && typeof chunk !== 'function') {
+      this.write(chunk, typeof encoding === 'string' ? encoding : undefined, finish);
+    } else {
+      finish();
+    }
+  }
+}
+
+export class PassThrough extends Transform {}
+
+export default { Readable, Writable, Duplex, Transform, PassThrough };

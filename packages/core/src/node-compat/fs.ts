@@ -207,13 +207,18 @@ export function createFs(vfs: VFS, cwd: string) {
     return vfs.exists(abs);
   }
 
-  function statSync(path: string | URL): NodeStat {
+  function statSync(path: string | URL, options?: { throwIfNoEntry?: boolean }): NodeStat | undefined {
     const abs = resolvePath(cwd, path);
+    // Node's `throwIfNoEntry: false` returns undefined instead of throwing on
+    // a missing path. expo's directoryExistsSync relies on this.
+    if (options && options.throwIfNoEntry === false && !vfs.exists(abs)) {
+      return undefined;
+    }
     return toNodeStat(vfs.stat(abs));
   }
 
-  function lstatSync(path: string | URL): NodeStat {
-    return statSync(path);
+  function lstatSync(path: string | URL, options?: { throwIfNoEntry?: boolean }): NodeStat | undefined {
+    return statSync(path, options);
   }
 
   function mkdirSync(path: string | URL, options?: { recursive?: boolean; mode?: number } | number): void {
