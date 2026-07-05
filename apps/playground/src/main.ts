@@ -2366,7 +2366,11 @@ async function bootProjectExample(opts: ProjectExampleOpts): Promise<void> {
 	// Service-worker transport: serve /_sw/<port>/ with no host process.
 	// Last-booted example hosts it (like the relay's last-client-wins).
 	const swBridge = new ServiceWorkerBridge(sandbox.kernel.portRegistry);
-	const swReady = await swBridge.connect();
+	// sw.js sits next to the app (root on the dev server, /playground/ on the
+	// hosted site); request root scope so /_sw/<port>/ previews are intercepted
+	// regardless of the base path. The hosted site must send
+	// `Service-Worker-Allowed: /` for /playground/sw.js.
+	const swReady = await swBridge.connect(`${import.meta.env.BASE_URL}sw.js`, '/');
 
 	if (previewPort) {
 		const mount = document.getElementById(`preview-${id}`);
