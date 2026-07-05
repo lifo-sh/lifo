@@ -66,8 +66,11 @@ function stripShebang(src: string): string {
 
 /** Check if source contains ESM import/export syntax */
 function isEsmSource(source: string): boolean {
+	// Mask strings/comments first so example import/export syntax inside them
+	// (common in babel plugin sources) doesn't misflag a CJS file as ESM.
+	const { masked } = maskStringLiterals(source);
 	// Match import/export at line start, after semicolon, or minified (import{, import*)
-	return /(?:^|\n|;)\s*(?:import\s*[\w{*('".]|export\s+|export\s*\{)/.test(source);
+	return /(?:^|\n|;)\s*(?:import\s*[\w{*('".]|export\s+|export\s*\{)/.test(masked);
 }
 
 /** Determine if source should be treated as ESM based on filename, content, and package.json type */
@@ -243,19 +246,24 @@ function maskStringLiterals(src: string): { masked: string; literals: string[] }
 	while (i < src.length) {
 		const ch = src[i];
 
-		// Skip single-line comments (may contain unmatched quotes)
+		// Single-line comments — mask so ESM regexes don't match example code
+		// inside them (e.g. babel-preset-expo's `// export { foo as default }`).
 		if (ch === '/' && i + 1 < src.length && src[i + 1] === '/') {
 			const nl = src.indexOf('\n', i);
 			const end = nl === -1 ? src.length : nl;
-			masked += src.slice(i, end);
+			const idx = literals.length;
+			literals.push(src.slice(i, end));
+			masked += '/*__LIFO_C' + idx + '__*/';
 			i = end;
 			continue;
 		}
-		// Skip multi-line comments
+		// Multi-line comments — mask likewise
 		if (ch === '/' && i + 1 < src.length && src[i + 1] === '*') {
 			const end = src.indexOf('*/', i + 2);
 			const close = end === -1 ? src.length : end + 2;
-			masked += src.slice(i, close);
+			const idx = literals.length;
+			literals.push(src.slice(i, close));
+			masked += '/*__LIFO_C' + idx + '__*/';
 			i = close;
 			continue;
 		}
@@ -352,10 +360,15 @@ function replaceImportMetaSafely(code: string): string {
  * Restore original string/template literals from masked placeholders.
  */
 function unmaskStringLiterals(src: string, literals: string[]): string {
-	return src.replace(
-		/(['"`])__LIFO_S(\d+)__\1/g,
-		(_match, _quote, idxStr) => literals[parseInt(idxStr, 10)]
-	);
+	return src
+		.replace(
+			/(['"`])__LIFO_S(\d+)__\1/g,
+			(_match, _quote, idxStr) => literals[parseInt(idxStr, 10)]
+		)
+		.replace(
+			/\/\*__LIFO_C(\d+)__\*\//g,
+			(_match, idxStr) => literals[parseInt(idxStr, 10)]
+		);
 }
 
 /**

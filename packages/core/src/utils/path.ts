@@ -48,11 +48,24 @@ export function resolve(cwd: string, ...segments: string[]): string {
 }
 
 export function dirname(path: string): string {
-  const normalized = normalize(path);
-  const lastSlash = normalized.lastIndexOf('/');
-  if (lastSlash === -1) return '.';
-  if (lastSlash === 0) return '/';
-  return normalized.slice(0, lastSlash);
+  // Matches Node's path.posix.dirname: strips the last path segment WITHOUT
+  // normalizing. Normalizing first is wrong — dirname('/a/b/.') is '/a/b' in
+  // Node (Metro passes origin paths like '/project/.'), but normalize-then-slice
+  // would collapse '/.' and yield '/a'.
+  if (path.length === 0) return '.';
+  const hasRoot = path.charCodeAt(0) === 47; // '/'
+  let end = -1;
+  let matchedSlash = true;
+  for (let i = path.length - 1; i >= 1; --i) {
+    if (path.charCodeAt(i) === 47) {
+      if (!matchedSlash) { end = i; break; }
+    } else {
+      matchedSlash = false;
+    }
+  }
+  if (end === -1) return hasRoot ? '/' : '.';
+  if (hasRoot && end === 1) return '//';
+  return path.slice(0, end);
 }
 
 export function basename(path: string, ext?: string): string {

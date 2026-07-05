@@ -470,6 +470,11 @@ class Server extends EventEmitter {
     return this;
   }
 
+  // Node 18.2+ graceful-shutdown helpers. There are no real sockets in the VM,
+  // so these are no-ops (metro calls closeAllConnections when stopping its server).
+  closeAllConnections(): void { /* no-op */ }
+  closeIdleConnections(): void { /* no-op */ }
+
   address(): { port: number; address: string; family: string } | null {
     if (this._port === null) return null;
     return { port: this._port, address: '127.0.0.1', family: 'IPv4' };
