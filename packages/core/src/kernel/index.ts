@@ -62,7 +62,10 @@ export interface VirtualRequest {
 export interface VirtualResponse {
 	statusCode: number;
 	headers: Record<string, string>;
+	/** Text view of the body (best-effort UTF-8). Use bodyBytes for binary-safe data. */
 	body: string;
+	/** Canonical binary body. Set for all responses; transports should prefer this. */
+	bodyBytes?: Uint8Array;
 }
 
 export type VirtualRequestHandler = (req: VirtualRequest, res: VirtualResponse) => void;

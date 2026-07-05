@@ -9,6 +9,8 @@ const GLOBAL_MODULES = '/usr/lib/node_modules';
 const GLOBAL_BIN = '/usr/bin';
 const DEFAULT_REGISTRY = 'https://registry.npmjs.org';
 const NPM_VERSION = '10.0.0';
+// Max simultaneous package downloads across the whole install tree.
+const INSTALL_CONCURRENCY = 10;
 
 // ─── Types ───
 
@@ -282,6 +284,28 @@ export function registerBinCommand(registry: CommandRegistry, binName: string, s
 
 // ─── Install logic ───
 
+/** Bounded-concurrency runner — caps simultaneous network operations. */
+type Limiter = <T>(task: () => Promise<T>) => Promise<T>;
+
+function createLimiter(max: number): Limiter {
+	let active = 0;
+	const queue: (() => void)[] = [];
+	const release = () => {
+		active--;
+		const next = queue.shift();
+		if (next) next();
+	};
+	return async function limit<T>(task: () => Promise<T>): Promise<T> {
+		if (active >= max) await new Promise<void>((r) => queue.push(r));
+		active++;
+		try {
+			return await task();
+		} finally {
+			release();
+		}
+	};
+}
+
 async function installSinglePackage(
 	name: string,
 	version: string | null,
@@ -294,8 +318,11 @@ async function installSinglePackage(
 	isGlobal: boolean,
 	registry: CommandRegistry,
 	seen: Set<string>,
+	limit: Limiter,
 	kernel?: Kernel,
 ): Promise<number> {
+	// Claim the name synchronously (before any await) so concurrent installs of
+	// the same dependency dedupe correctly.
 	if (seen.has(name)) return 0;
 	seen.add(name);
 
@@ -308,9 +335,12 @@ async function installSinglePackage(
 
 	stdout.write(`  ${name}${version ? '@' + version : ''}...\n`);
 
-	const info = await fetchPackageInfo(npmRegistry, name, version, signal);
-
-	await downloadAndExtract(info.dist.tarball, targetDir, vfs, signal);
+	// Fetch metadata + tarball under the concurrency limit (the slow part).
+	const info = await limit(async () => {
+		const meta = await fetchPackageInfo(npmRegistry, name, version, signal);
+		await downloadAndExtract(meta.dist.tarball, targetDir, vfs, signal);
+		return meta;
+	});
 
 	let installed = 1;
 
@@ -329,18 +359,21 @@ async function installSinglePackage(
 
 	}
 
-	// Recursively install dependencies (flat into the same targetBase)
+	// Install dependencies in parallel (flat into the same targetBase). The
+	// limiter bounds actual concurrent downloads across the whole tree.
 	if (info.dependencies) {
-		for (const [depName, depRange] of Object.entries(info.dependencies)) {
-			try {
-				installed += await installSinglePackage(
+		const results = await Promise.all(
+			Object.entries(info.dependencies).map(([depName, depRange]) =>
+				installSinglePackage(
 					depName, depRange, targetBase, vfs, npmRegistry, signal,
-					stdout, stderr, isGlobal, registry, seen, kernel,
-				);
-			} catch (e) {
-				stderr.write(`  warn: could not install ${depName}: ${e instanceof Error ? e.message : String(e)}\n`);
-			}
-		}
+					stdout, stderr, isGlobal, registry, seen, limit, kernel,
+				).catch((e) => {
+					stderr.write(`  warn: could not install ${depName}: ${e instanceof Error ? e.message : String(e)}\n`);
+					return 0;
+				}),
+			),
+		);
+		for (const n of results) installed += n;
 	}
 
 	return installed;
@@ -442,26 +475,30 @@ async function npmInstall(ctx: CommandContext, registry: CommandRegistry, kernel
 
 		ctx.stdout.write('Installing dependencies...\n');
 		const seen = new Set<string>();
-		for (const [name, range] of Object.entries(allDeps)) {
-			try {
-				installed += await installSinglePackage(
+		const limit = createLimiter(INSTALL_CONCURRENCY);
+		const results = await Promise.all(
+			Object.entries(allDeps).map(([name, range]) =>
+				installSinglePackage(
 					name, range, targetBase, ctx.vfs, npmRegistry, ctx.signal,
-					ctx.stdout, ctx.stderr, false, registry, seen, kernel,
-				);
-			} catch (e) {
-				ctx.stderr.write(`npm ERR! ${name}: ${e instanceof Error ? e.message : String(e)}\n`);
-			}
-		}
+					ctx.stdout, ctx.stderr, false, registry, seen, limit, kernel,
+				).catch((e) => {
+					ctx.stderr.write(`npm ERR! ${name}: ${e instanceof Error ? e.message : String(e)}\n`);
+					return 0;
+				}),
+			),
+		);
+		for (const n of results) installed += n;
 	} else {
 		// Install specified packages
 		ctx.stdout.write('Installing packages...\n');
 		const seen = new Set<string>();
+		const limit = createLimiter(INSTALL_CONCURRENCY);
 		for (const spec of packages) {
 			const { name, version } = parsePackageSpec(spec);
 			try {
 				installed += await installSinglePackage(
 					name, version, targetBase, ctx.vfs, npmRegistry, ctx.signal,
-					ctx.stdout, ctx.stderr, isGlobal, registry, seen,
+					ctx.stdout, ctx.stderr, isGlobal, registry, seen, limit,
 				);
 
 				// Update package.json for local installs
@@ -1007,7 +1044,7 @@ export function createNpxCommand(
 				try {
 					await installSinglePackage(
 						parsedName, version, NPX_CACHE, ctx.vfs, npmRegistry, ctx.signal,
-						ctx.stdout, ctx.stderr, false, registry, seen,
+						ctx.stdout, ctx.stderr, false, registry, seen, createLimiter(INSTALL_CONCURRENCY),
 					);
 				} catch (e) {
 					ctx.stderr.write(`npx: could not install ${parsedName}: ${e instanceof Error ? e.message : String(e)}\n`);
@@ -1056,7 +1093,7 @@ export async function npmInstallGlobal(
 	try {
 		const installed = await installSinglePackage(
 			packageName, null, GLOBAL_MODULES, ctx.vfs, npmRegistry, ctx.signal,
-			ctx.stdout, ctx.stderr, true, registry, seen, kernel,
+			ctx.stdout, ctx.stderr, true, registry, seen, createLimiter(INSTALL_CONCURRENCY), kernel,
 		);
 
 		const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);

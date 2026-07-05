@@ -924,25 +924,30 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 				try {
 					const stat = ctx.vfs.stat(absPath);
 					if (stat.type === 'file') return { path: absPath };
-					// Directory -- try index.js
-					const indexPath = join(absPath, 'index.js');
-					if (ctx.vfs.exists(indexPath)) return { path: indexPath };
+					// Directory -- try package.json main, then index.*
+					const pkgPath = join(absPath, 'package.json');
+					if (ctx.vfs.exists(pkgPath)) {
+						try {
+							const pkg = JSON.parse(ctx.vfs.readFileString(pkgPath));
+							const main = typeof pkg.module === 'string' ? pkg.module : (typeof pkg.main === 'string' ? pkg.main : null);
+							if (main) {
+								const mainResolved = resolveVfsModule('./' + main, absPath);
+								if (mainResolved) return mainResolved;
+							}
+						} catch { /* fall through to index */ }
+					}
+					for (const ext of ['.js', '.mjs', '.cjs', '.json']) {
+						const indexPath = join(absPath, 'index' + ext);
+						if (ctx.vfs.exists(indexPath)) return { path: indexPath };
+					}
 				} catch { /* fall through */ }
 			}
 
-			// Try .js extension
-			if (!extname(absPath) && ctx.vfs.exists(absPath + '.js')) {
-				return { path: absPath + '.js' };
-			}
-
-			// Try .mjs extension
-			if (!extname(absPath) && ctx.vfs.exists(absPath + '.mjs')) {
-				return { path: absPath + '.mjs' };
-			}
-
-			// Try .json extension
-			if (!extname(absPath) && ctx.vfs.exists(absPath + '.json')) {
-				return { path: absPath + '.json' };
+			// Append extensions when the exact path doesn't resolve. Node does
+			// this regardless of dots in the specifier, so a require of
+			// './webauthn.errors' must still find 'webauthn.errors.js'.
+			for (const ext of ['.js', '.mjs', '.cjs', '.json']) {
+				if (ctx.vfs.exists(absPath + ext)) return { path: absPath + ext };
 			}
 
 			return null;

@@ -449,11 +449,12 @@ export class WebSocketTunnel extends BaseTunnel {
 				}
 			}
 
-			// Send response back through WebSocket
-			this.sendResponse(requestId, vRes.statusCode, vRes.headers, vRes.body);
+			// Send response back through WebSocket (binary-safe via bodyBytes)
+			const outBytes = vRes.bodyBytes ?? new TextEncoder().encode(vRes.body);
+			this.sendResponse(requestId, vRes.statusCode, vRes.headers, outBytes);
 
 			// Update stats
-			this.updateStats(vRes.body.length, 'tx');
+			this.updateStats(outBytes.length, 'tx');
 		} catch (error) {
 			const errorMessage = error instanceof Error ? error.message : String(error);
 			this.sendError(requestId, 500, `Internal server error: ${errorMessage}`);
@@ -471,7 +472,7 @@ export class WebSocketTunnel extends BaseTunnel {
 	/**
 	 * Send HTTP response through WebSocket
 	 */
-	private sendResponse(requestId: string, statusCode: number, headers: Record<string, string>, body: string): void {
+	private sendResponse(requestId: string, statusCode: number, headers: Record<string, string>, body: string | Uint8Array): void {
 		if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
 			return;
 		}

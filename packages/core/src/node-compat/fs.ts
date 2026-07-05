@@ -553,8 +553,10 @@ export function createFs(vfs: VFS, cwd: string) {
         if (options?.encoding) {
           stream.push(decode(slice));
         } else {
-          // Push as string since our Readable works with strings
-          stream.push(decode(slice));
+          // No encoding → emit raw bytes (Buffer), like Node. Decoding to a
+          // string here corrupts binary files (wasm, images, fonts) served via
+          // fs.createReadStream (e.g. Vite/sirv static serving).
+          stream.push(Buffer.from(slice));
         }
         stream.push(null);
       } catch (e) {
@@ -571,7 +573,10 @@ export function createFs(vfs: VFS, cwd: string) {
   function createWriteStream(path: string | URL, options?: { flags?: string; encoding?: string }): Writable {
     const abs = resolvePath(cwd, path);
     const flags = options?.flags ?? 'w';
-    const chunks: string[] = [];
+    // Accumulate raw byte chunks so binary writes aren't corrupted by joining
+    // as strings.
+    const chunks: Uint8Array[] = [];
+    const toBytes = (c: string | Uint8Array): Uint8Array => (typeof c === 'string' ? encode(c) : c);
 
     if (flags.includes('w')) {
       // Truncate on open
@@ -580,13 +585,18 @@ export function createFs(vfs: VFS, cwd: string) {
 
     const stream = new Writable();
 
-    stream.write = (chunk: string, _encoding?: string, cb?: () => void): boolean => {
-      chunks.push(chunk);
+    stream.write = (chunk: string | Uint8Array, _encoding?: string, cb?: () => void): boolean => {
       try {
         if (flags.includes('a')) {
-          vfs.appendFile(abs, chunk);
+          vfs.appendFile(abs, toBytes(chunk));
         } else {
-          vfs.writeFile(abs, chunks.join(''));
+          chunks.push(toBytes(chunk));
+          let total = 0;
+          for (const c of chunks) total += c.length;
+          const all = new Uint8Array(total);
+          let off = 0;
+          for (const c of chunks) { all.set(c, off); off += c.length; }
+          vfs.writeFile(abs, all);
         }
       } catch (e) {
         stream.emit('error', e);
@@ -596,7 +606,7 @@ export function createFs(vfs: VFS, cwd: string) {
       return true;
     };
 
-    stream.end = (chunk?: string): void => {
+    stream.end = (chunk?: string | Uint8Array): void => {
       if (chunk) stream.write(chunk);
       stream.emit('finish');
       stream.emit('close');

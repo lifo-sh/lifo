@@ -186,8 +186,10 @@ class ServerResponse extends EventEmitter {
   writableEnded = false;
   writableFinished = false;
   private _headers: Record<string, string | string[]> = {};
-  private _body = '';
-  private _vRes: { statusCode: number; headers: Record<string, string>; body: string };
+  // Accumulate raw byte chunks so binary responses (wasm, images, fonts) are
+  // preserved. A string _body would corrupt them via UTF-8 round-tripping.
+  private _chunks: Uint8Array[] = [];
+  private _vRes: { statusCode: number; headers: Record<string, string>; body: string; bodyBytes?: Uint8Array };
   // Minimal socket stub that middleware may reference
   socket: { destroy: () => void; writable: boolean; readable: boolean; remoteAddress: string } | null;
   // Promise that resolves when end() is called (for async middleware)
@@ -211,6 +213,7 @@ class ServerResponse extends EventEmitter {
           this._vRes.statusCode = this.statusCode || 500;
           this._vRes.headers = {};
           this._vRes.body = '';
+          this._vRes.bodyBytes = new Uint8Array(0);
           this.finished = true;
           this._doneResolve();
         }
@@ -279,13 +282,11 @@ class ServerResponse extends EventEmitter {
   }
 
   write(data: string | Uint8Array): boolean {
-    if (typeof data === 'string') {
-      this._body += data;
-    } else {
-      this._body += new TextDecoder().decode(data);
-    }
+    this._chunks.push(typeof data === 'string' ? this._enc.encode(data) : data);
     return true;
   }
+
+  private _enc = new TextEncoder();
 
   end(data?: string | Uint8Array | (() => void), _encoding?: string, cb?: () => void): void {
     if (typeof data === 'function') {
@@ -293,9 +294,9 @@ class ServerResponse extends EventEmitter {
       data = undefined;
     }
     if (typeof data === 'string') {
-      this._body += data;
+      this._chunks.push(this._enc.encode(data));
     } else if (data instanceof Uint8Array) {
-      this._body += new TextDecoder().decode(data);
+      this._chunks.push(data);
     }
     this.finished = true;
     this.writableEnded = true;
@@ -305,10 +306,19 @@ class ServerResponse extends EventEmitter {
     for (const [k, v] of Object.entries(this._headers)) {
       flatHeaders[k] = Array.isArray(v) ? v.join(', ') : v;
     }
-    // Flush to virtual response
+    // Concatenate the byte chunks — binary-safe.
+    let total = 0;
+    for (const c of this._chunks) total += c.length;
+    const bytes = new Uint8Array(total);
+    let off = 0;
+    for (const c of this._chunks) { bytes.set(c, off); off += c.length; }
+
+    // Flush to virtual response: bodyBytes is canonical (binary-safe);
+    // body is a best-effort text view for legacy string consumers.
     this._vRes.statusCode = this.statusCode;
     this._vRes.headers = flatHeaders;
-    this._vRes.body = this._body;
+    this._vRes.bodyBytes = bytes;
+    this._vRes.body = new TextDecoder().decode(bytes);
     this.headersSent = true;
     this.emit('finish');
     this._doneResolve();

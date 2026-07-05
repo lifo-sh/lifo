@@ -72,6 +72,9 @@
 					data-example="create-vite">create-vite (1:1)</button>
 				<button
 					class="sidebar-item block w-full px-4 py-2 bg-transparent border-none text-tokyo-muted text-[13px] text-left cursor-pointer transition-colors hover:bg-tokyo-hover hover:text-tokyo-fg-bright"
+					data-example="tinbase">Supabase Todo (tinbase)</button>
+				<button
+					class="sidebar-item block w-full px-4 py-2 bg-transparent border-none text-tokyo-muted text-[13px] text-left cursor-pointer transition-colors hover:bg-tokyo-hover hover:text-tokyo-fg-bright"
 					data-example="pglite">Postgres (PGlite)</button>
 			</div>
 			<div class="py-3 border-t border-tokyo-border">
@@ -231,11 +234,14 @@
 				<div id="out-vite-react" class="output-panel">
 					<div class="text-[13px] font-semibold text-tokyo-fg-bright mb-0.5">Vite with React</div>
 					<div class="text-[11px] text-tokyo-comment mb-3.5">A real Vite dev server with React fast-refresh, running
-						in your browser — <code>cd react-app && npm install && npm run dev &</code>, then open
-						<code>http://localhost:3005</code>
+						in your browser — <code>cd react-app && npm install && npm run dev &</code>. The preview below is
+						served through a service worker at <code>/_sw/5173/</code>.
 					</div>
-					<div class="w-full rounded-lg overflow-hidden border border-tokyo-border p-2 bg-tokyo-bg flex-1">
-						<div id="terminal-vite-react" class="w-full h-full"></div>
+					<div class="flex flex-col gap-2 flex-1 min-h-0">
+						<div class="h-2/5 min-h-0 rounded-lg overflow-hidden border border-tokyo-border p-2 bg-tokyo-bg">
+							<div id="terminal-vite-react" class="w-full h-full"></div>
+						</div>
+						<div id="preview-vite-react" class="flex flex-col flex-1 min-h-0"></div>
 					</div>
 				</div>
 
@@ -243,11 +249,13 @@
 				<div id="out-vite-react-ts" class="output-panel">
 					<div class="text-[13px] font-semibold text-tokyo-fg-bright mb-0.5">Vite with React + TypeScript</div>
 					<div class="text-[11px] text-tokyo-comment mb-3.5">The TypeScript variant —
-						<code>cd react-ts-app && npm install && npm run dev &</code>, then open
-						<code>http://localhost:3005</code>
+						<code>cd react-ts-app && npm install && npm run dev &</code>. Preview at <code>/_sw/5173/</code>.
 					</div>
-					<div class="w-full rounded-lg overflow-hidden border border-tokyo-border p-2 bg-tokyo-bg flex-1">
-						<div id="terminal-vite-react-ts" class="w-full h-full"></div>
+					<div class="flex flex-col gap-2 flex-1 min-h-0">
+						<div class="h-2/5 min-h-0 rounded-lg overflow-hidden border border-tokyo-border p-2 bg-tokyo-bg">
+							<div id="terminal-vite-react-ts" class="w-full h-full"></div>
+						</div>
+						<div id="preview-vite-react-ts" class="flex flex-col flex-1 min-h-0"></div>
 					</div>
 				</div>
 
@@ -256,10 +264,29 @@
 					<div class="text-[13px] font-semibold text-tokyo-fg-bright mb-0.5">create-vite — 1:1, untouched</div>
 					<div class="text-[11px] text-tokyo-comment mb-3.5">Scaffold with the real
 						<code>npx create-vite@7.1.3 my-app --template react</code> and run it with its own
-						<code>vite.config.js</code> — no Lifo-specific changes
+						<code>vite.config.js</code> — preview at <code>/_sw/5173/</code>.
 					</div>
-					<div class="w-full rounded-lg overflow-hidden border border-tokyo-border p-2 bg-tokyo-bg flex-1">
-						<div id="terminal-create-vite" class="w-full h-full"></div>
+					<div class="flex flex-col gap-2 flex-1 min-h-0">
+						<div class="h-2/5 min-h-0 rounded-lg overflow-hidden border border-tokyo-border p-2 bg-tokyo-bg">
+							<div id="terminal-create-vite" class="w-full h-full"></div>
+						</div>
+						<div id="preview-create-vite" class="flex flex-col flex-1 min-h-0"></div>
+					</div>
+				</div>
+
+				<!-- Supabase Todo (tinbase) -->
+				<div id="out-tinbase" class="output-panel">
+					<div class="text-[13px] font-semibold text-tokyo-fg-bright mb-0.5">Supabase Todo (tinbase)</div>
+					<div class="text-[11px] text-tokyo-comment mb-3.5">Local Supabase-style dev in Lifo:
+						<a href="https://tinbase.vercel.app" target="_blank" rel="noopener" class="text-tokyo-blue">tinbase</a>
+						runs as a server in the VM and a Vite + React + TS app talks to it via supabase-js —
+						<code>npm install && npm run backend & && npm run dev &</code>. React fast-refresh + persistent data.
+					</div>
+					<div class="flex flex-col gap-2 flex-1 min-h-0">
+						<div class="h-2/5 min-h-0 rounded-lg overflow-hidden border border-tokyo-border p-2 bg-tokyo-bg">
+							<div id="terminal-tinbase" class="w-full h-full"></div>
+						</div>
+						<div id="preview-tinbase" class="flex flex-col flex-1 min-h-0"></div>
 					</div>
 				</div>
 
