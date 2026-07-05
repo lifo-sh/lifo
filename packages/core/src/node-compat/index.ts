@@ -103,9 +103,21 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
       unescape: decodeURIComponent,
     }),
     assert: () => {
+      // Real AssertionError class so `err instanceof assert.AssertionError`
+      // checks (e.g. in @expo/cli's error handler) don't throw on undefined.
+      class AssertionError extends Error {
+        code = 'ERR_ASSERTION';
+        constructor(opts?: { message?: string } | string) {
+          super(typeof opts === 'string' ? opts : opts?.message || 'AssertionError');
+          this.name = 'AssertionError';
+        }
+      }
+      const fail = (message?: string): never => { throw new AssertionError(message || 'AssertionError'); };
       const assert = (value: unknown, message?: string) => {
-        if (!value) throw new Error(message || 'AssertionError');
+        if (!value) fail(message);
       };
+      assert.AssertionError = AssertionError;
+      assert.fail = (message?: string) => fail(message);
       assert.ok = assert;
       assert.equal = (a: unknown, b: unknown, msg?: string) => { if (a != b) throw new Error(msg || `${a} != ${b}`); };
       assert.strictEqual = (a: unknown, b: unknown, msg?: string) => { if (a !== b) throw new Error(msg || `${a} !== ${b}`); };

@@ -905,6 +905,57 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			throw new Error(`Cannot find module '${name}'`);
 		}
 
+		// require.resolve(id) — return the resolved path without loading (used
+		// by Metro/@expo/cli to locate transformers, polyfills, externals).
+		function resolveRequirePath(name: string, fromDir: string): string {
+			if (name.startsWith('node:')) name = name.slice(5);
+			if (moduleMap[name]) return name; // builtin — return the id
+			if (name.startsWith('#')) {
+				const r = resolvePackageImport(name, fromDir);
+				if (r) return r.path;
+			} else if (name.startsWith('./') || name.startsWith('../') || name.startsWith('/')) {
+				const r = resolveVfsModule(name, fromDir);
+				if (r) return r.path;
+			} else {
+				const r = resolveNodeModule(name, fromDir);
+				if (r) return r.path;
+			}
+			const err = new Error(`Cannot find module '${name}'`) as Error & { code: string };
+			err.code = 'MODULE_NOT_FOUND';
+			throw err;
+		}
+
+		// Node-internal resolution APIs that resolve-from (and other resolvers,
+		// e.g. @expo/config's SDK-version detection) call:
+		//   Module._resolveFilename(request, { filename }) and
+		//   Module._nodeModulePaths(dir).
+		function moduleResolveExtras(fallbackDir: string) {
+			return {
+				_resolveFilename: (request: string, parent?: { filename?: string; id?: string }): string => {
+					let fromDir = fallbackDir;
+					if (parent && typeof parent.filename === 'string') fromDir = dirname(parent.filename);
+					else if (parent && typeof parent.id === 'string' && parent.id.includes('/')) fromDir = dirname(parent.id);
+					return resolveRequirePath(request, fromDir);
+				},
+				_nodeModulePaths: (from: string): string[] => {
+					const paths: string[] = [];
+					let cur = from;
+					for (;;) {
+						paths.push(join(cur, 'node_modules'));
+						const p = dirname(cur);
+						if (p === cur) break;
+						cur = p;
+					}
+					return paths;
+				},
+			};
+		}
+		(nodeRequire as unknown as { resolve: unknown }).resolve = Object.assign(
+			(id: string) => resolveRequirePath(id, dir),
+			{ paths: () => null },
+		);
+		(nodeRequire as unknown as { cache: unknown }).cache = Object.create(null);
+
 		// Override module shim so createRequire returns nodeRequire (resolves VFS + node_modules)
 		moduleMap.module = () => {
 			const createRequire = (_filename: string | URL) => nodeRequire;
@@ -913,7 +964,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 				const n = s.startsWith('node:') ? s.slice(5) : s;
 				return builtinNames.includes(n);
 			};
-			return { createRequire, builtinModules: builtinNames, isBuiltin, default: { createRequire } };
+			return { createRequire, builtinModules: builtinNames, isBuiltin, ...moduleResolveExtras(dir), default: { createRequire } };
 		};
 
 		function resolveVfsModule(name: string, fromDir: string): { path: string } | null {
@@ -1040,15 +1091,27 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			if (typeof value === 'string') return value;
 			if (value && typeof value === 'object' && !Array.isArray(value)) {
 				const cond = value as Record<string, unknown>;
-				// Prefer require (CJS), then default, then import (ESM)
-				if (typeof cond.require === 'string') return cond.require;
-				if (typeof cond.default === 'string') return cond.default;
-				if (typeof cond.import === 'string') return cond.import;
-				// Recurse into nested conditions (e.g. { node: { require: ... } })
+				// This is a require() context, so honour Node's require conditions
+				// in priority order and recurse into nested condition objects
+				// (e.g. { require: { types, default } }). Crucially, 'import'
+				// (the ESM build) must be tried LAST — a dual package like
+				// signal-exit lists "import" first, and picking it would load an
+				// ESM file in a CJS require.
+				for (const key of ['require', 'node', 'default', 'browser']) {
+					if (key in cond) {
+						const r = resolveExportsCondition(cond[key]);
+						if (r) return r;
+					}
+				}
+				// Any remaining non-standard condition, then finally import.
 				for (const key of Object.keys(cond)) {
-					if (key === 'types') continue; // skip TS declarations
-					const nested = resolveExportsCondition(cond[key]);
-					if (nested) return nested;
+					if (key === 'types' || key === 'import' || key === 'require' || key === 'node' || key === 'default' || key === 'browser') continue;
+					const r = resolveExportsCondition(cond[key]);
+					if (r) return r;
+				}
+				if ('import' in cond) {
+					const r = resolveExportsCondition(cond.import);
+					if (r) return r;
 				}
 			}
 			return null;
@@ -1240,6 +1303,13 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 				throw new Error(`Cannot find module '${name}'`);
 			}
 
+			// require.resolve for child modules (resolves relative to this module).
+			(modRequire as unknown as { resolve: unknown }).resolve = Object.assign(
+				(id: string) => resolveRequirePath(id, modDir),
+				{ paths: () => null },
+			);
+			(modRequire as unknown as { cache: unknown }).cache = Object.create(null);
+
 			// Override module shim so createRequire returns modRequire (resolves VFS + node_modules too)
 			modModuleMap.module = () => {
 				const createRequire = (_filename: string | URL) => modRequire;
@@ -1248,7 +1318,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 					const n = s.startsWith('node:') ? s.slice(5) : s;
 					return builtinNames.includes(n);
 				};
-				return { createRequire, builtinModules: builtinNames, isBuiltin, default: { createRequire } };
+				return { createRequire, builtinModules: builtinNames, isBuiltin, ...moduleResolveExtras(modDir), default: { createRequire } };
 			};
 
 			let cleanSource = stripShebang(modSource);

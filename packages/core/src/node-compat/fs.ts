@@ -142,6 +142,7 @@ const O_RDONLY = 0;
 const O_WRONLY = 1;
 const O_RDWR = 2;
 const O_CREAT = 64;
+const O_EXCL = 128;
 const O_TRUNC = 512;
 const O_APPEND = 1024;
 
@@ -150,11 +151,16 @@ function parseFlags(flags: string | number): number {
   switch (flags) {
     case 'r': return O_RDONLY;
     case 'r+': return O_RDWR;
+    case 'rs': case 'sr': return O_RDONLY;
+    case 'rs+': case 'sr+': return O_RDWR;
     case 'w': return O_WRONLY | O_CREAT | O_TRUNC;
+    case 'wx': case 'xw': return O_WRONLY | O_CREAT | O_TRUNC | O_EXCL;
     case 'w+': return O_RDWR | O_CREAT | O_TRUNC;
+    case 'wx+': case 'xw+': return O_RDWR | O_CREAT | O_TRUNC | O_EXCL;
     case 'a': return O_WRONLY | O_CREAT | O_APPEND;
+    case 'ax': case 'xa': return O_WRONLY | O_CREAT | O_APPEND | O_EXCL;
     case 'a+': return O_RDWR | O_CREAT | O_APPEND;
-    case 'ax': return O_WRONLY | O_CREAT | O_APPEND;
+    case 'ax+': case 'xa+': return O_RDWR | O_CREAT | O_APPEND | O_EXCL;
     default: return O_RDONLY;
   }
 }
@@ -314,7 +320,15 @@ export function createFs(vfs: VFS, cwd: string) {
     const numFlags = parseFlags(flags ?? 'r');
 
     if (numFlags & O_CREAT) {
-      if (!vfs.exists(abs)) {
+      if (vfs.exists(abs)) {
+        if (numFlags & O_EXCL) {
+          const err = new Error(`EEXIST: file already exists, open '${abs}'`) as NodeJS.ErrnoException;
+          err.code = 'EEXIST';
+          err.errno = -17;
+          err.path = abs;
+          throw err;
+        }
+      } else {
         vfs.writeFile(abs, '');
       }
     }
@@ -512,8 +526,39 @@ export function createFs(vfs: VFS, cwd: string) {
     wrapCallback(() => closeSync(fd), cb);
   }
 
-  function read(fd: number, buffer: Uint8Array, offset: number, length: number, position: number | null, cb: Callback<number>): void {
-    wrapCallback(() => readSync(fd, buffer, offset, length, position), cb);
+  function read(fd: number, buffer: Uint8Array, offset: number, length: number, position: number | null, cb: (err: Error | null, bytesRead: number, buffer: Uint8Array) => void): void {
+    queueMicrotask(() => {
+      try {
+        const bytesRead = readSync(fd, buffer, offset, length, position);
+        cb(null, bytesRead, buffer);
+      } catch (e) {
+        cb(e as Error, 0, buffer);
+      }
+    });
+  }
+
+  // fs.write(fd, buffer, offset, length, position, cb) | fs.write(fd, string[, position[, encoding]], cb)
+  function write(fd: number, data: Uint8Array | string, ...rest: unknown[]): void {
+    const cb = rest.find((a) => typeof a === 'function') as
+      | ((err: Error | null, written: number, data: Uint8Array | string) => void)
+      | undefined;
+    const nums = rest.filter((a) => typeof a === 'number') as number[];
+    queueMicrotask(() => {
+      try {
+        let written: number;
+        if (typeof data === 'string') {
+          // (fd, string, position?, encoding?)
+          written = writeSync(fd, data, nums[0]);
+        } else {
+          // (fd, buffer, offset?, length?, position?)
+          const [offset, length, position] = nums;
+          written = writeSync(fd, data, offset, length, position ?? null);
+        }
+        cb?.(null, written, data);
+      } catch (e) {
+        cb?.(e as Error, 0, data);
+      }
+    });
   }
 
   function fstat(fd: number, cb: Callback<NodeStat>): void {
@@ -732,6 +777,15 @@ export function createFs(vfs: VFS, cwd: string) {
         }),
         stat: async () => fstatSync(fd),
         truncate: async (len?: number) => ftruncateSync(fd, len),
+        chmod: async (_mode: number) => {},
+        chown: async (_uid: number, _gid: number) => {},
+        sync: async () => {},
+        datasync: async () => {},
+        writeFile: async (data: Uint8Array | string) => { writeSync(fd, data); },
+        readFile: async (options?: string | { encoding?: string }) => {
+          const entry = getFd(fd);
+          return readFileSync(entry.path, options);
+        },
       };
     },
     rm: async (path: string | URL, options?: { recursive?: boolean; force?: boolean }) => {
@@ -816,6 +870,7 @@ export function createFs(vfs: VFS, cwd: string) {
     open,
     close,
     read,
+    write,
     fstat,
     realpath,
     // Streams

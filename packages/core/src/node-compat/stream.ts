@@ -133,6 +133,43 @@ export class Readable extends EventEmitter {
     this.emit('end');
     this.emit('close');
   }
+
+  /** Create a Readable from an iterable / async iterable (Node's Readable.from). */
+  static from(iterable: Iterable<unknown> | AsyncIterable<unknown>, opts?: ReadableOptions): Readable {
+    const r = new Readable({ objectMode: true, ...opts });
+    (async () => {
+      try {
+        for await (const chunk of iterable as AsyncIterable<unknown>) {
+          if (r.destroyed) return;
+          r.push(chunk);
+        }
+        r.push(null);
+      } catch (err) {
+        r.destroy(err);
+      }
+    })();
+    return r;
+  }
+
+  /** Convert a WHATWG ReadableStream into a Node Readable (Node's Readable.fromWeb). */
+  static fromWeb(webStream: ReadableStream, opts?: ReadableOptions): Readable {
+    const r = new Readable(opts);
+    const reader = webStream.getReader();
+    (async () => {
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (r.destroyed) { try { await reader.cancel(); } catch { /* ignore */ } return; }
+          r.push(value);
+        }
+        r.push(null);
+      } catch (err) {
+        r.destroy(err);
+      }
+    })();
+    return r;
+  }
 }
 
 export class Writable extends EventEmitter {
