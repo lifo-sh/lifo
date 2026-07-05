@@ -125,10 +125,14 @@ function createCurlImpl(kernel?: Kernel): Command {
 
           if (outputFile) {
             const path = resolve(ctx.cwd, outputFile);
-            ctx.vfs.writeFile(path, body);
+            // Write raw bytes when available so binary downloads (wasm, images)
+            // aren't corrupted by the text view.
+            const bytes = vRes.bodyBytes;
+            ctx.vfs.writeFile(path, bytes ?? body);
+            const len = bytes ? bytes.length : body.length;
             if (!silent) {
               ctx.stderr.write(`  % Total    % Received\n`);
-              ctx.stderr.write(`  ${body.length}    ${body.length}\n`);
+              ctx.stderr.write(`  ${len}    ${len}\n`);
             }
           } else {
             ctx.stdout.write(body);
