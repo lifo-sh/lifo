@@ -12,6 +12,7 @@ declare global {
 }
 import {
 	Sandbox,
+	ServiceWorkerBridge,
 	Kernel,
 	Shell,
 	createDefaultRegistry,
@@ -374,6 +375,14 @@ $ <span class="code-fn">npx</span> <span class="code-string">lifo-sh</span> <spa
 user@lifo:/mnt/host$ <span class="code-fn">ls</span>
   package.json  src/  README.md
 
+<span class="code-comment">// Expose an in-VM server to your real browser.</span>
+<span class="code-comment">// The CLI has no service worker, so it tunnels</span>
+<span class="code-comment">// through a relay instead:</span>
+$ <span class="code-fn">npx</span> <span class="code-string">lifo-sh tunnel</span> <span class="code-string">5173</span>
+<span class="code-comment">// → serves the VM's port 5173 at http://localhost:3005</span>
+<span class="code-comment">// (in the browser playground you don't need this —</span>
+<span class="code-comment">//  the service worker serves /_sw/5173/ directly)</span>
+
 <span class="code-comment">// All changes go directly to disk</span>
 user@lifo:/mnt/host$ <span class="code-fn">echo</span> <span class="code-string">"hello"</span> > test.txt
 <span class="code-comment">// test.txt now exists on your real FS!</span>
@@ -400,46 +409,67 @@ sandbox.kernel.vfs.<span class="code-fn">mount</span>(
 
 const CODE_VITE_REACT = `\
 <span class="code-comment"># A real Vite dev server with React fast-refresh,</span>
-<span class="code-comment"># running entirely in your browser.</span>
-<span class="code-comment"># Prereq on the host: node apps/tunnel-server/server.js</span>
+<span class="code-comment"># running entirely in your browser — no host process.</span>
 
 <span class="code-fn">cd</span> react-app
 <span class="code-fn">npm</span> install          <span class="code-comment"># real npm registry, in-browser</span>
 <span class="code-fn">npm</span> run dev &        <span class="code-comment"># vite on virtual port 5173</span>
 
-<span class="code-comment"># open http://localhost:3005 in a new browser tab, then:</span>
-<span class="code-fn">sed</span> -i <span class="code-string">'s/React inside Lifo/Hello HMR/'</span> src/App.jsx
+<span class="code-comment"># the preview pane (below the terminal) is an iframe</span>
+<span class="code-comment"># pointed at /_sw/5173/ — served by a service worker</span>
+<span class="code-comment"># straight from the VM. Click "Reload" once vite is up.</span>
 
-<span class="code-comment"># the page hot-updates via react-refresh —</span>
+<span class="code-fn">sed</span> -i <span class="code-string">'s/React inside Lifo/Hello HMR/'</span> src/App.jsx
+<span class="code-comment"># the preview hot-updates via react-refresh —</span>
 <span class="code-comment"># click the counter first and watch state survive</span>`;
 
 const CODE_VITE_REACT_TS = `\
 <span class="code-comment"># Vite + React + TypeScript, same stack as the JS</span>
-<span class="code-comment"># example: tsx transforms, fast-refresh, tunnel serving.</span>
-<span class="code-comment"># Prereq on the host: node apps/tunnel-server/server.js</span>
+<span class="code-comment"># example: tsx transforms, fast-refresh, all in-browser.</span>
 
 <span class="code-fn">cd</span> react-ts-app
 <span class="code-fn">npm</span> install
 <span class="code-fn">npm</span> run dev &
 
-<span class="code-comment"># open http://localhost:3005 in a new browser tab, then:</span>
+<span class="code-comment"># preview pane → /_sw/5173/ (service-worker transport)</span>
 <span class="code-fn">sed</span> -i <span class="code-string">'s/React inside Lifo/Hello HMR/'</span> src/App.tsx`;
 
 const CODE_CREATE_VITE = `\
 <span class="code-comment"># Prove it's the real Vite: scaffold an untouched app</span>
 <span class="code-comment"># with create-vite and run it 1:1 — its own vite.config.js,</span>
 <span class="code-comment"># its own scripts, zero Lifo-specific changes.</span>
-<span class="code-comment"># Prereq on the host: node apps/tunnel-server/server.js</span>
 
 <span class="code-fn">npx</span> create-vite@7.1.3 my-app --template react
 <span class="code-fn">cd</span> my-app
 <span class="code-fn">npm</span> install
 <span class="code-fn">npm</span> run dev &
 
-<span class="code-comment"># open http://localhost:3005 — the scaffolded app served</span>
-<span class="code-comment"># by unmodified Vite from inside your browser, HMR and</span>
-<span class="code-comment"># all: the browser speaks real WebSocket frames to the</span>
-<span class="code-comment"># ws server running inside the VM.</span>`;
+<span class="code-comment"># the preview pane loads /_sw/5173/ — the scaffolded</span>
+<span class="code-comment"># app served by unmodified Vite from inside your browser,</span>
+<span class="code-comment"># HMR and all, with no host process. The service worker</span>
+<span class="code-comment"># tunnels HTTP + WebSocket frames to the in-VM server.</span>`;
+
+const CODE_TINBASE = `\
+<span class="code-comment"># Local Supabase-style dev, entirely in Lifo: tinbase</span>
+<span class="code-comment"># (tinbase.vercel.app) runs as a server IN the VM, and a</span>
+<span class="code-comment"># Vite + React + TS app talks to it via supabase-js.</span>
+
+<span class="code-fn">cd</span> tinbase-todo
+<span class="code-fn">npm</span> install
+<span class="code-fn">npm</span> run backend &   <span class="code-comment"># tinbase on :54321 (like supabase start)</span>
+<span class="code-fn">npm</span> run dev &       <span class="code-comment"># vite + react on :5173</span>
+
+<span class="code-comment"># .env — just like a real Supabase project:</span>
+<span class="code-comment">#   VITE_SUPABASE_URL=/_sw/54321</span>
+<span class="code-comment">#   VITE_SUPABASE_ANON_KEY=eyJhbGci...</span>
+
+<span class="code-keyword">const</span> supabase = <span class="code-fn">createClient</span>(url, anonKey)
+<span class="code-keyword">await</span> supabase.<span class="code-fn">from</span>(<span class="code-string">'todos'</span>).<span class="code-fn">insert</span>({ title })
+
+<span class="code-comment"># test HMR: edit the heading, keep your typed input —</span>
+<span class="code-fn">sed</span> -i <span class="code-string">'s/📝 Todos/✅ My Tasks/'</span> src/App.tsx
+<span class="code-comment"># react-refresh hot-updates the preview, state intact;</span>
+<span class="code-comment"># todos persist too (they live in the backend process).</span>`;
 
 const CODE_PGLITE = `\
 <span class="code-comment"># PostgreSQL compiled to wasm (PGlite), running in the VM</span>
@@ -472,12 +502,13 @@ const codeSnippets: Record<string, string> = {
 	'vite-react': CODE_VITE_REACT,
 	'vite-react-ts': CODE_VITE_REACT_TS,
 	'create-vite': CODE_CREATE_VITE,
+	tinbase: CODE_TINBASE,
 	pglite: CODE_PGLITE,
 };
 
 // ─── State ───
 
-type ExampleId = 'interactive' | 'headless' | 'multi' | 'http' | 'explorer' | 'git' | 'ffmpeg' | 'npm' | 'cli' | 'lifo-pkg' | 'build-pkg' | 'vite-react' | 'vite-react-ts' | 'create-vite' | 'pglite';
+type ExampleId = 'interactive' | 'headless' | 'multi' | 'http' | 'explorer' | 'git' | 'ffmpeg' | 'npm' | 'cli' | 'lifo-pkg' | 'build-pkg' | 'vite-react' | 'vite-react-ts' | 'create-vite' | 'tinbase' | 'pglite';
 
 const examples: Record<ExampleId, { booted: boolean; boot: () => Promise<void> }> = {
 	interactive: { booted: false, boot: bootInteractive },
@@ -494,6 +525,7 @@ const examples: Record<ExampleId, { booted: boolean; boot: () => Promise<void> }
 	'vite-react': { booted: false, boot: bootViteReact },
 	'vite-react-ts': { booted: false, boot: bootViteReactTs },
 	'create-vite': { booted: false, boot: bootCreateVite },
+	tinbase: { booted: false, boot: bootTinbase },
 	pglite: { booted: false, boot: bootPglite },
 };
 
@@ -2007,6 +2039,223 @@ export default function App() {
 	return files;
 }
 
+// The well-known local anon key tinbase generates with its default JWT secret
+// (fixed iat, so it's stable across boots — like Supabase's local dev anon key).
+const TINBASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRpbmJhc2UiLCJyb2xlIjoiYW5vbiIsImlhdCI6MTc4MzI3MzU0OSwiZXhwIjoyMDk4NjMzNTQ5fQ.yaaSYTyy2tRkx1myq06zU1ieZiWeJyq_hAZk2qCZEmk';
+
+/**
+ * Vite + TypeScript todo app talking to the tinbase backend
+ * (tinbase.vercel.app — a Supabase-compatible backend) via @supabase/supabase-js.
+ *
+ * This mirrors real Supabase local development: tinbase runs as an HTTP server
+ * INSIDE the Lifo VM (`npm run backend`, like `supabase start`) with Postgres
+ * (PGlite/wasm) living in the VM; the Vite app talks to it over HTTP with
+ * standard supabase-js. Because the backend is a separate process, data
+ * persists across app reloads (until the server is stopped).
+ *
+ * The browser reaches the in-VM backend through the service worker at
+ * /_sw/54321 — configured in .env, exactly where a Supabase URL normally lives.
+ */
+function tinbaseTodoAppFiles(root: string): Record<string, string> {
+	const files: Record<string, string> = {};
+
+	files[`${root}/package.json`] = JSON.stringify({
+		name: 'tinbase-todo', version: '1.0.0', type: 'module',
+		scripts: {
+			backend: 'node server.mjs',
+			dev: 'vite',
+			build: 'vite build',
+		},
+		dependencies: {
+			vite: '^7.3.1',
+			typescript: '~5.9.3',
+			react: '^18.3.1',
+			'react-dom': '^18.3.1',
+			'@vitejs/plugin-react': '^5.0.0',
+			'@types/react': '^18.3.12',
+			'@types/react-dom': '^18.3.1',
+			tinbase: '^0.1.0',
+			'@supabase/supabase-js': '^2.110.0',
+		},
+	}, null, 2);
+
+	// The backend: tinbase's fetch handler wrapped in a node http server, run
+	// inside the VM on port 54321. PGlite (Postgres/wasm) runs here in the VM,
+	// so only JSON crosses the service worker — not the ~16MB wasm.
+	files[`${root}/server.mjs`] = `import { createBackend } from 'tinbase'
+import http from 'node:http'
+
+const backend = await createBackend({
+  migrations: [{
+    name: '20240101000000_todos',
+    sql: \`create table if not exists todos (
+      id bigint generated always as identity primary key,
+      title text not null,
+      done boolean not null default false,
+      created_at timestamptz not null default now()
+    );\`,
+  }],
+})
+
+// tinbase is a (Request) => Response handler; expose it over HTTP.
+const server = http.createServer((req, res) => {
+  let body = ''
+  req.on('data', (c) => { body += c })
+  req.on('end', async () => {
+    try {
+      const url = 'http://localhost:54321' + req.url
+      const hasBody = req.method !== 'GET' && req.method !== 'HEAD' && body.length > 0
+      const request = new Request(url, { method: req.method, headers: req.headers, body: hasBody ? body : undefined })
+      const response = await backend.fetch(request)
+      const buf = new Uint8Array(await response.arrayBuffer())
+      const headers = {}
+      response.headers.forEach((v, k) => { headers[k] = v })
+      res.writeHead(response.status, headers)
+      res.end(buf)
+    } catch (e) {
+      res.writeHead(500, { 'content-type': 'text/plain' })
+      res.end('server error: ' + (e && e.message))
+    }
+  })
+})
+
+server.listen(54321, () => {
+  console.log('tinbase running on port 54321 (like supabase start)')
+  console.log('data persists while this server is running')
+})
+`;
+
+	files[`${root}/vite.config.ts`] = `import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+
+export default defineConfig({
+  plugins: [react()],
+})
+`;
+
+	files[`${root}/tsconfig.json`] = JSON.stringify({
+		compilerOptions: {
+			target: 'ES2022', module: 'ESNext', moduleResolution: 'bundler',
+			jsx: 'react-jsx',
+			strict: true, noEmit: true, lib: ['ES2022', 'DOM', 'DOM.Iterable'],
+			types: ['vite/client'],
+		},
+		include: ['src'],
+	}, null, 2);
+
+	// Standard Supabase config lives in .env — the only Lifo-specific bit is the
+	// URL path (/_sw/54321), which the service worker routes to the in-VM server.
+	files[`${root}/.env`] = `VITE_SUPABASE_URL=/_sw/54321\nVITE_SUPABASE_ANON_KEY=${TINBASE_ANON_KEY}\n`;
+
+	files[`${root}/index.html`] = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Todos · tinbase in Lifo</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 32rem; margin: 3rem auto; padding: 0 1rem; color: #1a1a2e; }
+    h1 { font-size: 1.4rem; } .sub { color: #6b7280; font-size: .85rem; margin-top: -.6rem; }
+    form { display: flex; gap: .5rem; margin: 1.25rem 0; }
+    input[type=text] { flex: 1; padding: .55rem .7rem; border: 1px solid #d1d5db; border-radius: 8px; font-size: 1rem; }
+    button { padding: .55rem .9rem; border: none; border-radius: 8px; background: #3ecf8e; color: #05291b; font-weight: 600; cursor: pointer; }
+    ul { list-style: none; padding: 0; } li { display: flex; align-items: center; gap: .6rem; padding: .5rem .2rem; border-bottom: 1px solid #eee; }
+    li.done span { text-decoration: line-through; color: #9ca3af; } li span { flex: 1; }
+    .del { background: transparent; color: #ef4444; font-weight: 700; padding: .2rem .5rem; }
+    #status { font-size: .8rem; color: #6b7280; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="module" src="/src/main.tsx"></script>
+</body>
+</html>`;
+
+	files[`${root}/src/supabase.ts`] = `import { createClient } from '@supabase/supabase-js'
+
+// Standard supabase-js against the tinbase server running in the Lifo VM.
+// The URL + anon key come from .env, exactly like a real Supabase project;
+// the URL is resolved to an absolute one so the service worker can route it.
+const url = new URL(import.meta.env.VITE_SUPABASE_URL, location.origin).href
+export const supabase = createClient(url, import.meta.env.VITE_SUPABASE_ANON_KEY, {
+  auth: { persistSession: false, autoRefreshToken: false },
+})
+`;
+
+	files[`${root}/src/main.tsx`] = `import React from 'react'
+import { createRoot } from 'react-dom/client'
+import { App } from './App'
+
+createRoot(document.getElementById('root')!).render(<App />)
+`;
+
+	files[`${root}/src/App.tsx`] = `import { useEffect, useState } from 'react'
+import { supabase } from './supabase'
+
+interface Todo { id: number; title: string; done: boolean }
+
+export function App() {
+  const [todos, setTodos] = useState<Todo[]>([])
+  const [title, setTitle] = useState('')
+  const [status, setStatus] = useState('connecting…')
+
+  async function refresh() {
+    const { data, error } = await supabase.from('todos').select('*').order('id')
+    if (error) {
+      setStatus('Cannot reach backend: ' + error.message + ' — did you run "npm run backend &"?')
+      return
+    }
+    setTodos((data ?? []) as Todo[])
+    setStatus((data?.length ?? 0) + ' todo(s) · tinbase (Postgres) in the Lifo VM — persists across app reloads')
+  }
+
+  useEffect(() => { refresh() }, [])
+
+  async function add(e: React.FormEvent) {
+    e.preventDefault()
+    const t = title.trim()
+    if (!t) return
+    setTitle('')
+    await supabase.from('todos').insert({ title: t })
+    refresh()
+  }
+
+  async function toggle(todo: Todo) {
+    await supabase.from('todos').update({ done: !todo.done }).eq('id', todo.id)
+    refresh()
+  }
+
+  async function remove(todo: Todo) {
+    await supabase.from('todos').delete().eq('id', todo.id)
+    refresh()
+  }
+
+  return (
+    <>
+      <h1>📝 Todos</h1>
+      <p className="sub">Vite + React + TypeScript · supabase-js → tinbase server running in Lifo</p>
+      <form onSubmit={add}>
+        <input type="text" placeholder="What needs doing?" value={title} onChange={(e) => setTitle(e.target.value)} />
+        <button>Add</button>
+      </form>
+      <ul>
+        {todos.map((t) => (
+          <li key={t.id} className={t.done ? 'done' : ''}>
+            <input type="checkbox" checked={t.done} onChange={() => toggle(t)} />
+            <span>{t.title}</span>
+            <button className="del" onClick={() => remove(t)}>✕</button>
+          </li>
+        ))}
+      </ul>
+      <p id="status">{status}</p>
+    </>
+  )
+}
+`;
+
+	return files;
+}
+
 function pgliteFiles(root: string): Record<string, string> {
 	return {
 		[`${root}/package.json`]: JSON.stringify({
@@ -2046,39 +2295,113 @@ console.log('ALL TESTS PASSED ✅');
 	};
 }
 
-async function bootProjectExample(id: string, files: Record<string, string>, cwd: string, withTunnel: boolean): Promise<void> {
+/**
+ * A minimal browser chrome (address bar, reload, open-in-new-tab) wrapping an
+ * iframe pointed at /_sw/<port>/. The iframe is a SW-controlled client, so its
+ * requests route into the VM; HMR flows through the WebSocket shim.
+ */
+function createPreviewBrowser(port: number): HTMLElement {
+	const path = `/_sw/${port}/`;
+	const wrap = document.createElement('div');
+	wrap.className = 'flex flex-col flex-1 min-h-0 rounded-lg overflow-hidden border border-tokyo-border bg-tokyo-bg';
+
+	const bar = document.createElement('div');
+	bar.className = 'flex items-center gap-2 px-2 py-1.5 border-b border-tokyo-border bg-tokyo-bg-dark';
+
+	const reloadBtn = document.createElement('button');
+	reloadBtn.textContent = '↻';
+	reloadBtn.title = 'Reload preview';
+	reloadBtn.className = 'shrink-0 w-6 h-6 rounded bg-tokyo-hover text-tokyo-muted hover:text-tokyo-fg-bright border-none cursor-pointer';
+
+	const urlBox = document.createElement('div');
+	urlBox.className = 'flex-1 px-2.5 py-1 rounded bg-tokyo-bg text-[11px] font-code text-tokyo-comment truncate';
+	urlBox.textContent = location.origin + path;
+
+	const openBtn = document.createElement('a');
+	openBtn.textContent = '⧉';
+	openBtn.title = 'Open in new tab';
+	openBtn.href = path;
+	openBtn.target = '_blank';
+	openBtn.rel = 'noopener';
+	openBtn.className = 'shrink-0 w-6 h-6 grid place-items-center rounded bg-tokyo-hover text-tokyo-muted hover:text-tokyo-fg-bright no-underline';
+
+	bar.append(reloadBtn, urlBox, openBtn);
+
+	const iframe = document.createElement('iframe');
+	iframe.className = 'flex-1 min-h-0 w-full bg-white border-none';
+	iframe.title = 'Vite preview';
+	const load = () => { iframe.src = path + '?_t=' + Date.now(); };
+	reloadBtn.addEventListener('click', load);
+	load();
+
+	wrap.append(bar, iframe);
+	return wrap;
+}
+
+interface ProjectExampleOpts {
+	id: string;
+	files: Record<string, string>;
+	cwd: string;
+	/** Virtual port to mount an iframe preview browser for (server examples). */
+	previewPort?: number;
+}
+
+async function bootProjectExample(opts: ProjectExampleOpts): Promise<void> {
+	const { id, files, cwd, previewPort } = opts;
 	const sandbox = await Sandbox.create({
 		terminal: document.getElementById(`terminal-${id}`) as HTMLElement,
 		files: {
 			...files,
-			...(withTunnel ? { '/etc/systemd/system/tunnel.service': TUNNEL_SERVICE_UNIT } : {}),
+			...(previewPort ? { '/etc/systemd/system/tunnel.service': TUNNEL_SERVICE_UNIT } : {}),
 		},
 		cwd,
 	});
-	if (withTunnel && sandbox.kernel.serviceManager) {
+	if (previewPort && sandbox.kernel.serviceManager) {
+		// The tunnel service is optional (needs a host relay); the SW preview
+		// below is the zero-setup path. Enable but don't fail if the relay is down.
 		sandbox.kernel.serviceManager.enable('tunnel');
-		try {
-			await sandbox.kernel.serviceManager.start('tunnel');
-		} catch (error) {
-			console.warn(`[${id}] tunnel service failed to start (is the relay running on :3005?)`, error);
+		sandbox.kernel.serviceManager.start('tunnel').catch(() => {});
+	}
+
+	// Service-worker transport: serve /_sw/<port>/ with no host process.
+	// Last-booted example hosts it (like the relay's last-client-wins).
+	const swBridge = new ServiceWorkerBridge(sandbox.kernel.portRegistry);
+	const swReady = await swBridge.connect();
+
+	if (previewPort) {
+		const mount = document.getElementById(`preview-${id}`);
+		if (mount) {
+			mount.replaceChildren();
+			if (swReady) {
+				mount.appendChild(createPreviewBrowser(previewPort));
+			} else {
+				const note = document.createElement('div');
+				note.className = 'flex-1 grid place-items-center text-[12px] text-tokyo-comment text-center px-4';
+				note.textContent = 'Service worker unavailable in this browser — run the tunnel relay and open http://localhost:3005 instead.';
+				mount.appendChild(note);
+			}
 		}
 	}
 }
 
 async function bootViteReact() {
-	await bootProjectExample('vite-react', viteReactAppFiles('/home/user/react-app', false), '/home/user/react-app', true);
+	await bootProjectExample({ id: 'vite-react', files: viteReactAppFiles('/home/user/react-app', false), cwd: '/home/user/react-app', previewPort: 5173 });
 }
 
 async function bootViteReactTs() {
-	await bootProjectExample('vite-react-ts', viteReactAppFiles('/home/user/react-ts-app', true), '/home/user/react-ts-app', true);
+	await bootProjectExample({ id: 'vite-react-ts', files: viteReactAppFiles('/home/user/react-ts-app', true), cwd: '/home/user/react-ts-app', previewPort: 5173 });
 }
 
 async function bootCreateVite() {
-	await bootProjectExample('create-vite', {}, '/home/user', true);
+	await bootProjectExample({ id: 'create-vite', files: {}, cwd: '/home/user', previewPort: 5173 });
+}
+
+async function bootTinbase() {
+	await bootProjectExample({ id: 'tinbase', files: tinbaseTodoAppFiles('/home/user/tinbase-todo'), cwd: '/home/user/tinbase-todo', previewPort: 5173 });
 }
 
 async function bootPglite() {
-	await bootProjectExample('pglite', pgliteFiles('/home/user/pg-demo'), '/home/user/pg-demo', false);
+	await bootProjectExample({ id: 'pglite', files: pgliteFiles('/home/user/pg-demo'), cwd: '/home/user/pg-demo' });
 }
 
 // ─── Boot ───
