@@ -1031,6 +1031,9 @@ async function addInteractiveTab(): Promise<InteractiveTab> {
 
 	await shell.sourceFile('/etc/profile');
 	await shell.sourceFile(env.HOME + '/.bashrc');
+	// The tunnel can't reach a relay in the browser; clear any enablement
+	// persisted from an earlier visit so bootServices doesn't auto-start it.
+	kernel.serviceManager?.disable('tunnel');
 	await kernel.bootServices();
 	shell.start();
 
@@ -1401,6 +1404,9 @@ async function addHttpTab(label: string): Promise<HttpTab> {
 
 	await shell.sourceFile('/etc/profile');
 	await shell.sourceFile(env.HOME + '/.bashrc');
+	// The tunnel can't reach a relay in the browser; clear any enablement
+	// persisted from an earlier visit so bootServices doesn't auto-start it.
+	kernel.serviceManager?.disable('tunnel');
 	await kernel.bootServices();
 	shell.start();
 
