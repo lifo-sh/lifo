@@ -31,8 +31,11 @@ const THEME = {
 export class Terminal implements ITerminal {
   private xterm: XTerminal;
   private fitAddon: FitAddon;
+  private container: HTMLElement;
+  private fitRaf = 0;
 
   constructor(container: HTMLElement, options?: { fontSize?: number }) {
+    this.container = container;
     this.xterm = new XTerminal({
       theme: THEME,
       fontFamily: '"Cascadia Code", "Fira Code", "JetBrains Mono", Menlo, monospace',
@@ -61,12 +64,36 @@ export class Terminal implements ITerminal {
       // Canvas renderer is fine
     }
 
-    this.fitAddon.fit();
+    this.scheduleFit();
 
     const resizeObserver = new ResizeObserver(() => {
-      this.fitAddon.fit();
+      this.scheduleFit();
     });
     resizeObserver.observe(container);
+  }
+
+  /**
+   * Fit on the next animation frame, coalescing bursts and skipping while the
+   * container has no layout box (e.g. a hidden keep-alive panel). Fitting a
+   * zero-size element yields 0 cols/rows and leaves the WebGL canvas mismatched
+   * with the text grid — the cause of clipped/oversized rendering on reveal.
+   */
+  private scheduleFit(): void {
+    if (this.fitRaf) cancelAnimationFrame(this.fitRaf);
+    this.fitRaf = requestAnimationFrame(() => {
+      this.fitRaf = 0;
+      if (this.container.offsetWidth === 0 || this.container.offsetHeight === 0) return;
+      try {
+        this.fitAddon.fit();
+      } catch {
+        // Renderer not ready yet; the next resize/refit will retry.
+      }
+    });
+  }
+
+  /** Re-measure and fit — call when a hidden terminal becomes visible again. */
+  refit(): void {
+    this.scheduleFit();
   }
 
   write(data: string): void {

@@ -26,7 +26,9 @@ export function ExampleHost({ activeId }: { activeId: string }) {
             <div
               key={e.id}
               className="absolute inset-0 flex flex-col min-h-0"
-              style={{ display: e.id === activeId ? 'flex' : 'none' }}
+              // Keep inactive examples laid out (real size) but hidden, so their
+              // terminals stay correctly fit instead of collapsing to 0 cols.
+              style={{ visibility: e.id === activeId ? 'visible' : 'hidden' }}
             >
               <Suspense
                 fallback={
