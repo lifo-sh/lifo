@@ -32,11 +32,11 @@ export class Terminal implements ITerminal {
   private xterm: XTerminal;
   private fitAddon: FitAddon;
 
-  constructor(container: HTMLElement) {
+  constructor(container: HTMLElement, options?: { fontSize?: number }) {
     this.xterm = new XTerminal({
       theme: THEME,
       fontFamily: '"Cascadia Code", "Fira Code", "JetBrains Mono", Menlo, monospace',
-      fontSize: 14,
+      fontSize: options?.fontSize ?? 14,
       lineHeight: 1.2,
       cursorBlink: true,
       cursorStyle: 'block',

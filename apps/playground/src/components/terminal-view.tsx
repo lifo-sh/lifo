@@ -22,7 +22,9 @@ export function TerminalView({ className, onReady }: TerminalViewProps) {
   useEffect(() => {
     if (booted.current || !containerRef.current) return;
     booted.current = true;
-    const term = new Terminal(containerRef.current);
+    // Shrink the font on narrow (phone) viewports so enough columns fit.
+    const fontSize = window.innerWidth < 640 ? 11 : 14;
+    const term = new Terminal(containerRef.current, { fontSize });
     termRef.current = term;
     void onReady?.(term);
     // eslint-disable-next-line react-hooks/exhaustive-deps
