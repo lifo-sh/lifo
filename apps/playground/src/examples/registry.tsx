@@ -8,6 +8,13 @@ import HttpExample from '@/examples/http';
 import NpmExample from '@/examples/npm';
 import ExplorerExample from '@/examples/explorer';
 import FfmpegExample from '@/examples/ffmpeg';
+import ViteReactExample from '@/examples/vite-react';
+import ViteReactTsExample from '@/examples/vite-react-ts';
+import CreateViteExample from '@/examples/create-vite';
+import TinbaseExample from '@/examples/tinbase';
+import PgliteExample from '@/examples/pglite';
+import ExpoExample from '@/examples/expo';
+import ExpoRouterExample from '@/examples/expo-router';
 
 export type ExampleGroup = 'Examples' | 'Real-World Stacks' | 'Installable Packages' | 'Develop';
 
@@ -41,13 +48,13 @@ export const examples: ExampleConfig[] = [
   { id: 'npm', label: 'npm', group: 'Examples', Component: NpmExample },
   { id: 'cli', label: 'CLI (Node.js)', group: 'Examples', hideCode: true, Component: comingSoon('cli') },
   // ── Real-World Stacks ──
-  { id: 'vite-react', label: 'Vite with React', group: 'Real-World Stacks', Component: comingSoon('vite-react') },
-  { id: 'vite-react-ts', label: 'Vite with React + TS', group: 'Real-World Stacks', Component: comingSoon('vite-react-ts') },
-  { id: 'create-vite', label: 'create-vite (1:1)', group: 'Real-World Stacks', Component: comingSoon('create-vite') },
-  { id: 'tinbase', label: 'Supabase Todo (tinbase)', group: 'Real-World Stacks', Component: comingSoon('tinbase') },
-  { id: 'pglite', label: 'Postgres (PGlite)', group: 'Real-World Stacks', Component: comingSoon('pglite') },
-  { id: 'expo', label: 'Expo (React Native Web)', group: 'Real-World Stacks', Component: comingSoon('expo') },
-  { id: 'expo-router', label: 'Expo Router', group: 'Real-World Stacks', Component: comingSoon('expo-router') },
+  { id: 'vite-react', label: 'Vite with React', group: 'Real-World Stacks', Component: ViteReactExample },
+  { id: 'vite-react-ts', label: 'Vite with React + TS', group: 'Real-World Stacks', Component: ViteReactTsExample },
+  { id: 'create-vite', label: 'create-vite (1:1)', group: 'Real-World Stacks', Component: CreateViteExample },
+  { id: 'tinbase', label: 'Supabase Todo (tinbase)', group: 'Real-World Stacks', Component: TinbaseExample },
+  { id: 'pglite', label: 'Postgres (PGlite)', group: 'Real-World Stacks', Component: PgliteExample },
+  { id: 'expo', label: 'Expo (React Native Web)', group: 'Real-World Stacks', Component: ExpoExample },
+  { id: 'expo-router', label: 'Expo Router', group: 'Real-World Stacks', Component: ExpoRouterExample },
   // ── Installable Packages ──
   { id: 'git', label: 'Git', group: 'Installable Packages', Component: GitExample },
   { id: 'ffmpeg', label: 'FFmpeg', group: 'Installable Packages', Component: FfmpegExample },

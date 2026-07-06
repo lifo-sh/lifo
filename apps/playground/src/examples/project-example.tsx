@@ -1,0 +1,88 @@
+import { type ReactNode, useState } from 'react';
+import { Sandbox, ServiceWorkerBridge } from '@lifo-sh/core';
+import type { Terminal } from '@lifo-sh/ui';
+import { ExamplePanel } from '@/components/example-panel';
+import { TerminalView } from '@/components/terminal-view';
+import { PreviewBrowser } from '@/components/preview-browser';
+import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable';
+import { TUNNEL_SERVICE_UNIT } from '@/data/templates/tunnel';
+
+export interface ProjectExampleProps {
+  title: string;
+  subtitle: ReactNode;
+  /** VFS files to seed into the sandbox. */
+  files: Record<string, string>;
+  cwd: string;
+  /** Virtual port to mount an iframe preview browser for (server examples). */
+  previewPort?: number;
+}
+
+/**
+ * Shared shell for "real-world stack" examples: a Sandbox terminal (top) over a
+ * service-worker-backed preview (bottom), split by a resizable handle. The SW
+ * bridge serves /_sw/<port>/ with no host process (last-booted example wins).
+ */
+export function ProjectExample({ title, subtitle, files, cwd, previewPort }: ProjectExampleProps) {
+  // null = connecting, true = SW ready, false = unavailable
+  const [swReady, setSwReady] = useState<boolean | null>(previewPort ? null : true);
+
+  const bootTerminal = async (term: Terminal) => {
+    const sandbox = await Sandbox.create({
+      terminal: term,
+      files: {
+        ...files,
+        ...(previewPort ? { '/etc/systemd/system/tunnel.service': TUNNEL_SERVICE_UNIT } : {}),
+      },
+      cwd,
+    });
+
+    if (previewPort && sandbox.kernel.serviceManager) {
+      // The tunnel service is optional (needs a host relay); the SW preview is
+      // the zero-setup path. Enable but don't fail if the relay is down.
+      sandbox.kernel.serviceManager.enable('tunnel');
+      sandbox.kernel.serviceManager.start('tunnel').catch(() => {});
+    }
+
+    if (!previewPort) return;
+
+    // Service-worker transport: serve /_sw/<port>/ with no host process.
+    const swBridge = new ServiceWorkerBridge(sandbox.kernel.portRegistry);
+    const ready = await swBridge.connect(`${import.meta.env.BASE_URL}sw.js`, '/');
+    setSwReady(ready);
+  };
+
+  const terminalPanel = (
+    <div className="w-full h-full rounded-lg overflow-hidden border border-tokyo-border bg-tokyo-bg p-2">
+      <TerminalView className="w-full h-full" onReady={(term) => void bootTerminal(term)} />
+    </div>
+  );
+
+  return (
+    <ExamplePanel title={title} subtitle={subtitle}>
+      {previewPort ? (
+        <ResizablePanelGroup direction="vertical" autoSaveId={`pg-project-${previewPort}-split`} className="flex-1 min-h-0">
+          <ResizablePanel defaultSize={45} minSize={20}>
+            {terminalPanel}
+          </ResizablePanel>
+          <ResizableHandle className="my-1.5" />
+          <ResizablePanel defaultSize={55} minSize={20}>
+            {swReady === null ? (
+              <div className="flex-1 h-full grid place-items-center text-[12px] text-tokyo-comment">
+                Starting preview…
+              </div>
+            ) : swReady ? (
+              <PreviewBrowser port={previewPort} />
+            ) : (
+              <div className="flex-1 h-full grid place-items-center text-[12px] text-tokyo-comment text-center px-4">
+                Service worker unavailable in this browser — run the tunnel relay and open
+                http://localhost:3005 instead.
+              </div>
+            )}
+          </ResizablePanel>
+        </ResizablePanelGroup>
+      ) : (
+        <div className="flex flex-col flex-1 min-h-0">{terminalPanel}</div>
+      )}
+    </ExamplePanel>
+  );
+}
