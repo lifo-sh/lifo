@@ -456,10 +456,10 @@ function rewriteDynamicImports(source: string): string {
  * @babel/generator declares `class Buffer`). The module's own declaration
  * then wins; positional arguments are unaffected.
  */
-const SHADOWABLE_WRAPPER_PARAMS = ['console', 'process', 'Buffer', 'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'global'];
+const SHADOWABLE_WRAPPER_PARAMS = ['console', 'process', 'Buffer', 'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'global', 'window', 'document', 'self'];
 
 function buildWrapperParams(source: string): string {
-	const params = ['exports', 'require', 'module', '__filename', '__dirname', 'console', 'process', 'Buffer', 'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'global', '__importMetaUrl', '__importMeta', '__importMetaResolve'];
+	const params = ['exports', 'require', 'module', '__filename', '__dirname', 'console', 'process', 'Buffer', 'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'global', '__importMetaUrl', '__importMeta', '__importMetaResolve', 'window', 'document', 'self'];
 	return params.map((p) => {
 		if (!SHADOWABLE_WRAPPER_PARAMS.includes(p)) return p;
 		// Direct declaration, e.g. `const Buffer = ...` / `class Buffer {}`
@@ -1428,6 +1428,10 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 					globalThis.clearTimeout, globalThis.clearInterval,
 					global,
 					importMetaUrl, importMeta, importMetaResolve,
+					// window/document/self undefined: node-executed code must see a Node
+					// environment (no DOM), matching real Node — e.g. so Emscripten
+					// (pglite) doesn't mis-detect the browser and mis-resolve data files.
+					undefined, undefined, undefined,
 				);
 			} catch (e) {
 				if (e instanceof ProcessExitError) throw e;
@@ -1475,7 +1479,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 
 		// Use async IIFE for ESM (supports top-level await)
 		const wrapped = isEsm
-			? `(async function(exports, require, module, __filename, __dirname, console, process, Buffer, setTimeout, setInterval, clearTimeout, clearInterval, global, __importMetaUrl, __importMeta, __importMetaResolve) {\n${cleanMainSource}\n})`
+			? `(async function(exports, require, module, __filename, __dirname, console, process, Buffer, setTimeout, setInterval, clearTimeout, clearInterval, global, __importMetaUrl, __importMeta, __importMetaResolve, window, document, self) {\n${cleanMainSource}\n})`
 			: `(function(${buildWrapperParams(cleanMainSource)}) {\n${cleanMainSource}\n})`;
 
 		// Many npm bundles access globalThis.process directly (not the wrapper param).
@@ -1516,6 +1520,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 				globalThis.clearTimeout, globalThis.clearInterval,
 				global,
 				mainImportMetaUrl, mainImportMeta, mainImportMetaResolve,
+				undefined, undefined, undefined,
 			);
 
 			// Await if ESM (async IIFE returns a promise)
