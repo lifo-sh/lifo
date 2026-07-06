@@ -15,8 +15,9 @@ export default function HttpExample() {
     const g = globalThis as unknown as { __setLifoKernel?: (fn: () => Kernel) => void };
     if (typeof g.__setLifoKernel === 'function') g.__setLifoKernel(() => kernel);
     seedHttp(kernel);
-    // Best-effort tunnel start (needs a host relay on :3005; harmless if absent).
-    kernel.serviceManager?.start('tunnel').catch(() => {});
+    // The tunnel service unit is seeded (users can `systemctl start tunnel` if
+    // they run a relay), but not auto-started — no relay exists in the browser,
+    // so it would only flood the terminal with reconnect errors.
     return kernel;
   }, []);
 

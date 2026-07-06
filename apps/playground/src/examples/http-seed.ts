@@ -24,10 +24,9 @@ RestartSec=5
 WantedBy=multi-user.target
 `);
 
-	// Enable the tunnel service so it can be started with systemctl
-	if (kernel.serviceManager) {
-		kernel.serviceManager.enable('tunnel');
-	}
+	// The tunnel service unit is available (users can `systemctl start tunnel` if
+	// they run a relay), but NOT auto-enabled — no relay exists in the browser,
+	// so auto-starting only floods the terminal with reconnect errors.
 
 	// Write server.js to VFS
 	kernel.vfs.writeFile('/home/user/server.js', `const http = require('http');

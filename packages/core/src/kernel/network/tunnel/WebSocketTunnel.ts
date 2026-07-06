@@ -104,6 +104,9 @@ export class WebSocketTunnel extends BaseTunnel {
 	private defaultPort: number | null = null;
 	private reconnectTimer?: any;
 	private isReconnecting = false;
+	private reconnectAttempts = 0;
+	private errorLogged = false;
+	private static readonly MAX_RECONNECTS = 5;
 
 	// Packet queue
 	private packetQueue: Packet[] = [];
@@ -255,7 +258,13 @@ export class WebSocketTunnel extends BaseTunnel {
 				});
 
 				this.ws.addEventListener('error', (error) => {
-					console.error('WebSocket tunnel error:', error);
+					// Log only the first failure — a relay that's simply not
+					// running (common in the browser playground) would otherwise
+					// flood the terminal on every reconnect attempt.
+					if (!this.errorLogged) {
+						this.errorLogged = true;
+						console.error(`tunnel: could not reach relay at ${this.wsUrl} (will retry quietly)`);
+					}
 					if (this.state === 'down') {
 						reject(error);
 					}
@@ -268,17 +277,21 @@ export class WebSocketTunnel extends BaseTunnel {
 	}
 
 	/**
-	 * Schedule reconnection attempt
+	 * Schedule reconnection attempt, with capped backoff so an unreachable
+	 * relay doesn't retry (and re-log) forever.
 	 */
 	private scheduleReconnect(): void {
 		if (this.isReconnecting) return;
+		if (this.reconnectAttempts >= WebSocketTunnel.MAX_RECONNECTS) return;
 
 		this.isReconnecting = true;
+		this.reconnectAttempts++;
 		this.reconnectTimer = setTimeout(async () => {
 			if (this.state === 'up') {
 				try {
 					await this.connect();
-				} catch (error) {
+					this.reconnectAttempts = 0; // reconnected — reset the counter
+				} catch {
 					this.scheduleReconnect();
 				}
 			}

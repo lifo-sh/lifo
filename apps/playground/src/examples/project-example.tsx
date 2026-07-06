@@ -5,7 +5,6 @@ import { ExamplePanel } from '@/components/example-panel';
 import { TerminalView } from '@/components/terminal-view';
 import { PreviewBrowser } from '@/components/preview-browser';
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable';
-import { TUNNEL_SERVICE_UNIT } from '@/data/templates/tunnel';
 
 export interface ProjectExampleProps {
   title: string;
@@ -27,22 +26,11 @@ export function ProjectExample({ title, subtitle, files, cwd, previewPort }: Pro
   const [swReady, setSwReady] = useState<boolean | null>(previewPort ? null : true);
 
   const bootTerminal = async (term: Terminal) => {
-    const sandbox = await Sandbox.create({
-      terminal: term,
-      files: {
-        ...files,
-        ...(previewPort ? { '/etc/systemd/system/tunnel.service': TUNNEL_SERVICE_UNIT } : {}),
-      },
-      cwd,
-    });
+    const sandbox = await Sandbox.create({ terminal: term, files, cwd });
 
-    if (previewPort && sandbox.kernel.serviceManager) {
-      // The tunnel service is optional (needs a host relay); the SW preview is
-      // the zero-setup path. Enable but don't fail if the relay is down.
-      sandbox.kernel.serviceManager.enable('tunnel');
-      sandbox.kernel.serviceManager.start('tunnel').catch(() => {});
-    }
-
+    // No tunnel service here: the service worker below is the browser transport;
+    // a relay (ws://localhost:3005) only exists for the CLI, so starting the
+    // tunnel in the playground just spams reconnect errors.
     if (!previewPort) return;
 
     // Service-worker transport: serve /_sw/<port>/ with no host process.

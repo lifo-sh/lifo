@@ -24,10 +24,10 @@ RestartSec=5
 WantedBy=multi-user.target
 `);
 
-	// Enable the tunnel service
-	if (kernel.serviceManager) {
-		kernel.serviceManager.enable('tunnel');
-	}
+	// The tunnel service unit is available for users who run a relay + `tunnel`
+	// manually, but it is NOT auto-enabled: in the browser there's no relay at
+	// ws://localhost:3005, so starting it just floods the terminal with
+	// reconnect errors. The service worker is the browser transport.
 
 	// Create sample Vite app for testing
 	const vfs = kernel.vfs;
