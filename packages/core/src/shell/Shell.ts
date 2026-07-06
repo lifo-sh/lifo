@@ -465,8 +465,19 @@ export class Shell {
         const before = this.lineBuffer.slice(0, this.cursorPos - 1);
         const after = this.lineBuffer.slice(this.cursorPos);
         this.lineBuffer = before + after;
+        const prevCursorPos = this.cursorPos;
         this.cursorPos--;
-        this.redrawLine();
+
+        // Fast path: erasing the last char while staying on the same screen row
+        // (cursor not at a row boundary) — emit \b \b (back, blank, back) in
+        // place instead of a full redrawLine(), which flickers on every press.
+        const cols = this.terminal.cols;
+        const cursorCol = this.getPromptWidth() + prevCursorPos;
+        if (after.length === 0 && cols > 0 && cursorCol % cols !== 0) {
+          this.terminal.write('\b \b'); // screenCursorRow is unchanged
+        } else {
+          this.redrawLine();
+        }
       }
       return;
     }
