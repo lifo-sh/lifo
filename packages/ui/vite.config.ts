@@ -14,9 +14,9 @@ export default defineConfig({
     rollupOptions: {
       external: [
         '@lifo-sh/core',
-        '@xterm/xterm',
-        '@xterm/addon-fit',
-        '@xterm/addon-webgl',
+        // Externalize all @wterm/* (incl. the /css subpath) — the consumer's
+        // bundler resolves them. wterm's WASM core is inlined, so no assets.
+        /^@wterm\//,
       ],
     },
   },

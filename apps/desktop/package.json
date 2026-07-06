@@ -10,8 +10,7 @@
   },
   "dependencies": {
     "@lifo-sh/core": "workspace:*",
-    "@lifo-sh/ui": "workspace:*",
-    "@xterm/xterm": "^5.5.0"
+    "@lifo-sh/ui": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.7.0",

@@ -1,7 +1,7 @@
 {
   "name": "@lifo-sh/ui",
   "version": "0.5.0",
-  "description": "Terminal UI for Lifo -- xterm.js wrapper with WebGL rendering",
+  "description": "Terminal UI for Lifo -- @wterm/dom (Zig+WASM) DOM-rendered terminal",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -12,8 +12,8 @@
   "author": "Sanket Sahu",
   "keywords": [
     "terminal",
-    "xterm",
-    "webgl",
+    "wterm",
+    "wasm",
     "lifo"
   ],
   "type": "module",
@@ -38,9 +38,7 @@
   },
   "dependencies": {
     "@lifo-sh/core": "workspace:*",
-    "@xterm/xterm": "^5.5.0",
-    "@xterm/addon-fit": "^0.10.0",
-    "@xterm/addon-webgl": "^0.18.0"
+    "@wterm/dom": "^0.3.0"
   },
   "devDependencies": {
     "typescript": "^5.7.0",

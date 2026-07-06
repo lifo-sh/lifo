@@ -165,7 +165,6 @@ export default ${camelCase(name)}Command;
         '@lifo-sh/core': '^0.4.1',
         '@lifo-sh/ui': '^0.4.1',
         [npmName]: 'file:..',
-        '@xterm/xterm': '^5.5.0',
       },
       devDependencies: {
         vite: '^6.0.0',
@@ -199,8 +198,7 @@ export default ${camelCase(name)}Command;
   // ─── example/main.ts ───
   files.push({
     path: 'example/main.ts',
-    content: `import '@xterm/xterm/css/xterm.css';
-import { Terminal } from '@lifo-sh/ui';
+    content: `import { Terminal } from '@lifo-sh/ui';
 import {
   Kernel,
   Shell,
