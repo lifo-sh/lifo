@@ -572,6 +572,10 @@ const sidebarToggle = document.getElementById('sidebar-toggle')!;
 const colCode = document.getElementById('col-code')!;
 const codeToggle = document.getElementById('code-toggle')!;
 
+// Sidebar logo — base-aware src (served from public/, prefixed under /playground/).
+const appLogo = document.getElementById('app-logo') as HTMLImageElement | null;
+if (appLogo) appLogo.src = import.meta.env.BASE_URL + 'logo.png';
+
 function openSidebar() {
 	sidebar.classList.remove('-translate-x-full');
 	sidebar.classList.add('translate-x-0');

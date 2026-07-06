@@ -88,3 +88,52 @@
     display: block;
   }
 }
+
+/* ── Scrollbars: Tokyo Night, revealed on hover ── */
+/* Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+*:hover,
+*:focus-within {
+  scrollbar-color: var(--color-tokyo-border) transparent;
+}
+/* WebKit/Chromium */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background-color: transparent;
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+  transition: background-color 0.15s ease;
+}
+/* Reveal the thumb when the scrollable area (or a child) is hovered/focused */
+:hover > ::-webkit-scrollbar-thumb,
+*:hover::-webkit-scrollbar-thumb,
+*:focus-within::-webkit-scrollbar-thumb {
+  background-color: var(--color-tokyo-border);
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--color-tokyo-comment);
+}
+/* xterm's viewport uses the same treatment */
+.xterm-viewport::-webkit-scrollbar-thumb {
+  background-color: transparent;
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+.xterm-viewport:hover::-webkit-scrollbar-thumb {
+  background-color: var(--color-tokyo-border);
+}
+.xterm-viewport::-webkit-scrollbar-thumb:hover {
+  background-color: var(--color-tokyo-comment);
+}
