@@ -79,6 +79,9 @@
 				<button
 					class="sidebar-item block w-full px-4 py-2 bg-transparent border-none text-tokyo-muted text-[13px] text-left cursor-pointer transition-colors hover:bg-tokyo-hover hover:text-tokyo-fg-bright"
 					data-example="expo">Expo (React Native Web)</button>
+				<button
+					class="sidebar-item block w-full px-4 py-2 bg-transparent border-none text-tokyo-muted text-[13px] text-left cursor-pointer transition-colors hover:bg-tokyo-hover hover:text-tokyo-fg-bright"
+					data-example="expo-router">Expo Router</button>
 			</div>
 			<div class="py-3 border-t border-tokyo-border">
 				<div class="text-[10px] font-semibold uppercase tracking-widest text-tokyo-comment px-4 pb-1.5">Installable
@@ -317,6 +320,22 @@
 							<div id="terminal-expo" class="w-full h-full"></div>
 						</div>
 						<div id="preview-expo" class="flex flex-col flex-1 min-h-0"></div>
+					</div>
+				</div>
+
+				<!-- Expo Router -->
+				<div id="out-expo-router" class="output-panel">
+					<div class="text-[13px] font-semibold text-tokyo-fg-bright mb-0.5">Expo Router (file-based routing)</div>
+					<div class="text-[11px] text-tokyo-comment mb-3.5">An Expo Router app with file-based routes in
+						<code>app/</code>, bundled by Metro in your browser and exported to a static web build —
+						<code>cd expo-router-app && npm install && npm run export && npm run serve &</code>. Preview at
+						<code>/_sw/8082/</code>.
+					</div>
+					<div class="flex flex-col gap-2 flex-1 min-h-0">
+						<div class="h-2/5 min-h-0 rounded-lg overflow-hidden border border-tokyo-border p-2 bg-tokyo-bg">
+							<div id="terminal-expo-router" class="w-full h-full"></div>
+						</div>
+						<div id="preview-expo-router" class="flex flex-col flex-1 min-h-0"></div>
 					</div>
 				</div>
 
