@@ -470,22 +470,9 @@ export class Shell {
     // Backspace
     if (data === '\x7f' || data === '\b') {
       if (this.cursorPos > 0) {
-        const before = this.lineBuffer.slice(0, this.cursorPos - 1);
-        const after = this.lineBuffer.slice(this.cursorPos);
-        this.lineBuffer = before + after;
-        const prevCursorPos = this.cursorPos;
+        this.lineBuffer = this.lineBuffer.slice(0, this.cursorPos - 1) + this.lineBuffer.slice(this.cursorPos);
         this.cursorPos--;
-
-        // Fast path: erasing the last char while staying on the same screen row
-        // (cursor not at a row boundary) — emit \b \b (back, blank, back) in
-        // place instead of a full redrawLine(), which flickers on every press.
-        const cols = this.terminal.cols;
-        const cursorCol = this.getPromptWidth() + prevCursorPos;
-        if (after.length === 0 && cols > 0 && cursorCol % cols !== 0) {
-          this.terminal.write('\b \b'); // screenCursorRow is unchanged
-        } else {
-          this.redrawLine();
-        }
+        this.redrawAfterDelete(1, true);
       }
       return;
     }
@@ -493,10 +480,8 @@ export class Shell {
     // Delete
     if (data === '\x1b[3~') {
       if (this.cursorPos < this.lineBuffer.length) {
-        const before = this.lineBuffer.slice(0, this.cursorPos);
-        const after = this.lineBuffer.slice(this.cursorPos + 1);
-        this.lineBuffer = before + after;
-        this.redrawLine();
+        this.lineBuffer = this.lineBuffer.slice(0, this.cursorPos) + this.lineBuffer.slice(this.cursorPos + 1);
+        this.redrawAfterDelete(1, false);
       }
       return;
     }
@@ -507,26 +492,21 @@ export class Shell {
       const before = this.lineBuffer.slice(0, this.cursorPos);
       const after = this.lineBuffer.slice(this.cursorPos);
       this.lineBuffer = before + data + after;
-      const prevCursorPos = this.cursorPos;
       this.cursorPos += data.length;
 
-      // Fast path: appending at the end of the line and staying on the same
-      // screen row (no wrap) — just echo the character(s). A full redrawLine()
-      // here (\r + clear-to-end + reprint) is what makes the line flicker on
-      // every keystroke, especially with the WebGL renderer. The redraw is only
-      // needed for mid-line inserts or when the append wraps to a new row, where
-      // the cursor row (screenCursorRow) would change.
+      // Fast path: while the whole line still fits on one screen row, write the
+      // inserted char(s) + the shifted tail in place and reposition — no
+      // redrawLine(). A full redraw (\r + clear-to-end + reprint) is what makes
+      // the line flicker on every keystroke with the WebGL renderer. Only when
+      // the line wraps to a second row (where the cursor row changes) do we fall
+      // back to redrawLine().
       const cols = this.terminal.cols;
-      const startCol = this.getPromptWidth() + prevCursorPos;
-      const endCol = this.getPromptWidth() + this.cursorPos;
-      const sameRowNoWrap =
-        after.length === 0 &&
-        cols > 0 &&
-        endCol % cols !== 0 &&
-        Math.floor(startCol / cols) === Math.floor(endCol / cols);
-
-      if (sameRowNoWrap) {
-        this.terminal.write(data); // screenCursorRow is unchanged
+      const newTotal = this.getPromptWidth() + this.lineBuffer.length;
+      if (cols > 0 && newTotal < cols) {
+        this.terminal.write(data + after);
+        if (after.length > 0) {
+          this.terminal.write(`\x1b[${after.length}D`); // back to just after the insert
+        }
       } else {
         this.redrawLine();
       }
@@ -685,6 +665,34 @@ export class Shell {
     return user.length + 1 + host.length + 1 + displayPath.length + 2;
   }
 
+  /**
+   * Repaint after a deletion by overwriting cells in place — no screen clear or
+   * prompt reprint — so it doesn't flicker (the WebGL renderer flashes on the
+   * \x1b[J that redrawLine uses). `removed` cells were deleted; if `movedLeft`
+   * the cursor first moves left `removed` columns to the edit point (backspace /
+   * word-delete-back). Falls back to redrawLine() when the line spans more than
+   * one screen row, where in-place padding can't erase across rows.
+   */
+  private redrawAfterDelete(removed: number, movedLeft: boolean): void {
+    const cols = this.terminal.cols;
+    // Total columns the line occupied BEFORE the deletion (prompt + old buffer).
+    const oldTotal = this.getPromptWidth() + this.lineBuffer.length + removed;
+    if (cols <= 0 || oldTotal >= cols) {
+      this.redrawLine();
+      return;
+    }
+    if (movedLeft && removed > 0) {
+      this.terminal.write(`\x1b[${removed}D`);
+    }
+    const tail = this.lineBuffer.slice(this.cursorPos);
+    // Rewrite the shifted tail, then blank the `removed` now-vacant cells.
+    this.terminal.write(tail + ' '.repeat(removed));
+    const back = tail.length + removed;
+    if (back > 0) {
+      this.terminal.write(`\x1b[${back}D`);
+    }
+  }
+
   private redrawLine(): void {
     const cols = this.terminal.cols;
     const promptWidth = this.getPromptWidth();
@@ -832,17 +840,19 @@ export class Shell {
   private deleteWordLeft(): void {
     const target = this.wordLeftPos();
     if (target < this.cursorPos) {
+      const removed = this.cursorPos - target;
       this.lineBuffer = this.lineBuffer.slice(0, target) + this.lineBuffer.slice(this.cursorPos);
       this.cursorPos = target;
-      this.redrawLine();
+      this.redrawAfterDelete(removed, true);
     }
   }
 
   private deleteWordRight(): void {
     const target = this.wordRightPos();
     if (target > this.cursorPos) {
+      const removed = target - this.cursorPos;
       this.lineBuffer = this.lineBuffer.slice(0, this.cursorPos) + this.lineBuffer.slice(target);
-      this.redrawLine();
+      this.redrawAfterDelete(removed, false);
     }
   }
 
