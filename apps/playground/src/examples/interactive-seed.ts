@@ -28,6 +28,12 @@ WantedBy=multi-user.target
 	// manually, but it is NOT auto-enabled: in the browser there's no relay at
 	// ws://localhost:3005, so starting it just floods the terminal with
 	// reconnect errors. The service worker is the browser transport.
+	//
+	// This example persists its VFS (persist: true), so a returning visitor may
+	// still carry a `multi-user.target.wants/tunnel.service` entry written by a
+	// PRE-FIX build — which bootServices() would auto-start. Proactively disable
+	// it to clear any such stale enablement.
+	kernel.serviceManager?.disable('tunnel');
 
 	// Create sample Vite app for testing
 	const vfs = kernel.vfs;
