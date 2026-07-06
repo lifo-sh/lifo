@@ -27,6 +27,16 @@ export function format(fmt: string, ...args: unknown[]): string {
   return result;
 }
 
+/**
+ * Like `format`, but the first argument is an inspect-options object (Node's
+ * `util.formatWithOptions(inspectOptions, format, ...args)`). We don't thread
+ * the options into inspect (colors/depth are cosmetic), so just delegate — the
+ * `debug` package relies on this existing.
+ */
+export function formatWithOptions(_inspectOptions: unknown, fmt: string, ...args: unknown[]): string {
+  return format(fmt, ...args);
+}
+
 export function inspect(obj: unknown, opts?: { depth?: number; colors?: boolean }): string {
   const depth = opts?.depth ?? 2;
   return formatValue(obj, depth);
@@ -201,4 +211,4 @@ export const debug = debuglog;
 export const TextDecoder = globalThis.TextDecoder;
 export const TextEncoder = globalThis.TextEncoder;
 
-export default { format, inspect, promisify, inherits, deprecate, types, styleText, stripVTControlCharacters, debuglog, debug, TextDecoder, TextEncoder };
+export default { format, formatWithOptions, inspect, promisify, inherits, deprecate, types, styleText, stripVTControlCharacters, debuglog, debug, TextDecoder, TextEncoder };

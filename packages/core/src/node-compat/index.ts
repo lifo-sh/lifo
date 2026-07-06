@@ -25,6 +25,37 @@ import * as asyncHooksModule from './async_hooks.js';
 import { createRimraf } from './rimraf.js';
 import { createEsbuild } from './esbuild.js';
 
+// Fake ephemeral port source for net/tls Server stubs (no real TCP in the VM).
+let __fakeEphemeralPort = 49152;
+
+/**
+ * Wire up a fake net.Server EventEmitter. Node's `listen` has many overloads
+ * (`listen(port, cb)`, `listen(port, host, cb)`, `listen(options, cb)`,
+ * `listen(cb)`) and callers may await the `'listening'` event instead of a
+ * callback — the previous stub only handled the 3-arg form, so port probes
+ * (e.g. Expo's `freeport-async` calling `listen(0, cb)`) hung forever.
+ */
+function applyFakeServer(s: EventEmitter): void {
+  let boundPort = 0;
+  const rec = s as unknown as Record<string, unknown>;
+  rec.listen = (...args: unknown[]) => {
+    const cb = args.find((a) => typeof a === 'function') as (() => void) | undefined;
+    let port = args.find((a) => typeof a === 'number') as number | undefined;
+    if (port === undefined) {
+      const opts = args.find((a) => a && typeof a === 'object') as { port?: number } | undefined;
+      port = opts?.port;
+    }
+    boundPort = port && port > 0 ? port : __fakeEphemeralPort++;
+    queueMicrotask(() => { s.emit('listening'); cb?.(); });
+    return s;
+  };
+  rec.close = (cb?: () => void) => { queueMicrotask(() => { s.emit('close'); cb?.(); }); return s; };
+  rec.address = () => ({ port: boundPort, family: 'IPv4', address: '127.0.0.1' });
+  rec.getConnections = (cb?: (err: Error | null, count: number) => void) => { cb?.(null, 0); return s; };
+  rec.unref = () => s;
+  rec.ref = () => s;
+}
+
 export interface NodeContext {
   vfs: VFS;
   cwd: string;
@@ -233,13 +264,11 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
     }),
     // net — stub (vite imports it but only uses it for actual TCP in server mode)
     net: () => ({
-      createServer: () => {
+      createServer: (...cargs: unknown[]) => {
         const s = new EventEmitter() as unknown as Record<string, unknown>;
-        s.listen = (_port: unknown, _host: unknown, cb?: () => void) => { cb?.(); return s; };
-        s.close = (cb?: () => void) => { cb?.(); return s; };
-        s.address = () => ({ port: 0, family: 'IPv4', address: '127.0.0.1' });
-        s.unref = () => s;
-        s.ref = () => s;
+        const connCb = cargs.find((a) => typeof a === 'function') as (() => void) | undefined;
+        if (connCb) (s as unknown as EventEmitter).on('connection', connCb);
+        applyFakeServer(s as unknown as EventEmitter);
         return s;
       },
       createConnection: () => {
@@ -282,11 +311,7 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
         setKeepAlive() { return this; }
       },
       Server: class Server extends EventEmitter {
-        listen(_port: unknown, _host: unknown, cb?: () => void) { cb?.(); return this; }
-        close(cb?: () => void) { cb?.(); return this; }
-        address() { return { port: 0, family: 'IPv4', address: '127.0.0.1' }; }
-        unref() { return this; }
-        ref() { return this; }
+        constructor() { super(); applyFakeServer(this); }
       },
       isIP: (s: string) => /^\d+\.\d+\.\d+\.\d+$/.test(s) ? 4 : /^[0-9a-f:]+$/i.test(s) ? 6 : 0,
       isIPv4: (s: string) => /^\d+\.\d+\.\d+\.\d+$/.test(s),
@@ -294,11 +319,11 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
     }),
     // tls — stub
     tls: () => ({
-      createServer: () => {
+      createServer: (...cargs: unknown[]) => {
         const s = new EventEmitter() as unknown as Record<string, unknown>;
-        s.listen = (_port: unknown, _host: unknown, cb?: () => void) => { cb?.(); return s; };
-        s.close = (cb?: () => void) => { cb?.(); return s; };
-        s.address = () => ({ port: 0, family: 'IPv4', address: '127.0.0.1' });
+        const connCb = cargs.find((a) => typeof a === 'function') as (() => void) | undefined;
+        if (connCb) (s as unknown as EventEmitter).on('secureConnection', connCb);
+        applyFakeServer(s as unknown as EventEmitter);
         return s;
       },
       connect: () => {
