@@ -34,5 +34,19 @@ export function TerminalView({ className, onReady }: TerminalViewProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Re-adapt font size + renderer (and refit) when the viewport crosses the
+  // phone breakpoint, since the terminal instance is preserved across it.
+  useEffect(() => {
+    const mq = window.matchMedia('(min-width: 640px)');
+    const apply = () => {
+      const term = termRef.current;
+      if (!term) return;
+      term.setFontSize(mq.matches ? 14 : 11);
+      term.setWebgl(mq.matches);
+    };
+    mq.addEventListener('change', apply);
+    return () => mq.removeEventListener('change', apply);
+  }, []);
+
   return <div ref={containerRef} className={className} />;
 }

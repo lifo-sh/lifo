@@ -33,6 +33,7 @@ export class Terminal implements ITerminal {
   private fitAddon: FitAddon;
   private container: HTMLElement;
   private fitRaf = 0;
+  private webglAddon: WebglAddon | null = null;
 
   constructor(container: HTMLElement, options?: { fontSize?: number; webgl?: boolean }) {
     this.container = container;
@@ -55,26 +56,47 @@ export class Terminal implements ITerminal {
 
     this.xterm.open(container);
 
-    // WebGL gives the best throughput on desktop, but its canvas backing store
-    // desyncs from the DOM scroll layer on high-DPR touch devices (the viewport
-    // ends up vertically offset from the rendered text). Callers disable it on
-    // mobile, where the robust DOM renderer is used instead.
-    if (options?.webgl !== false) {
-      try {
-        const webgl = new WebglAddon();
-        webgl.onContextLoss(() => webgl.dispose());
-        this.xterm.loadAddon(webgl);
-      } catch {
-        // DOM renderer is fine
-      }
-    }
-
+    this.setWebgl(options?.webgl !== false);
     this.scheduleFit();
 
     const resizeObserver = new ResizeObserver(() => {
       this.scheduleFit();
     });
     resizeObserver.observe(container);
+  }
+
+  /**
+   * Toggle the WebGL renderer. WebGL gives the best throughput on desktop, but
+   * its canvas backing store desyncs from the DOM scroll layer on high-DPR touch
+   * devices (the viewport ends up vertically offset from the rendered text), so
+   * callers disable it on mobile — the DOM renderer is used there. Safe to call
+   * live when the viewport crosses the mobile/desktop breakpoint.
+   */
+  setWebgl(enabled: boolean): void {
+    if (enabled && !this.webglAddon) {
+      try {
+        const webgl = new WebglAddon();
+        webgl.onContextLoss(() => {
+          webgl.dispose();
+          if (this.webglAddon === webgl) this.webglAddon = null;
+        });
+        this.xterm.loadAddon(webgl);
+        this.webglAddon = webgl;
+      } catch {
+        // DOM renderer is fine
+      }
+    } else if (!enabled && this.webglAddon) {
+      this.webglAddon.dispose();
+      this.webglAddon = null;
+    }
+    this.scheduleFit();
+  }
+
+  /** Change the font size and refit (e.g. when crossing the phone breakpoint). */
+  setFontSize(px: number): void {
+    if (this.xterm.options.fontSize === px) return;
+    this.xterm.options.fontSize = px;
+    this.scheduleFit();
   }
 
   /**
