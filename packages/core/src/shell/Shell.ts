@@ -378,6 +378,14 @@ export class Shell {
     if (data === '\x1b[H' || data === '\x01') { this.moveCursorHome(); return; } // Home / Ctrl+A
     if (data === '\x1b[F' || data === '\x05') { this.moveCursorEnd(); return; }  // End / Ctrl+E
 
+    // Word jump — Option/Alt+Left/Right (\x1b[1;3), Ctrl+Left/Right (\x1b[1;5),
+    // and Meta-b / Meta-f (readline).
+    if (data === '\x1b[1;3D' || data === '\x1b[1;5D' || data === '\x1bb' || data === '\x1bB') { this.moveCursorWordLeft(); return; }
+    if (data === '\x1b[1;3C' || data === '\x1b[1;5C' || data === '\x1bf' || data === '\x1bF') { this.moveCursorWordRight(); return; }
+    // Word delete — Ctrl+W, Option/Alt+Backspace (\x1b\x7f / \x1b\b), Alt+D (forward)
+    if (data === '\x17' || data === '\x1b\x7f' || data === '\x1b\b') { this.deleteWordLeft(); return; }
+    if (data === '\x1bd' || data === '\x1bD') { this.deleteWordRight(); return; }
+
     // Ctrl+C
     if (data === '\x03') {
       if (this.running && this.abortController) {
@@ -775,6 +783,66 @@ export class Shell {
     if (diff > 0) {
       this.terminal.write(`\x1b[${diff}C`);
       this.cursorPos = this.lineBuffer.length;
+    }
+  }
+
+  // Word boundaries follow readline: a word is a run of alphanumerics; anything
+  // else is a separator.
+  private static isWordChar(ch: string): boolean {
+    return /[A-Za-z0-9]/.test(ch);
+  }
+
+  /** Index at the start of the current/previous word, left of the cursor. */
+  private wordLeftPos(): number {
+    const buf = this.lineBuffer;
+    let i = this.cursorPos;
+    while (i > 0 && !Shell.isWordChar(buf[i - 1])) i--;
+    while (i > 0 && Shell.isWordChar(buf[i - 1])) i--;
+    return i;
+  }
+
+  /** Index just past the end of the next word, right of the cursor. */
+  private wordRightPos(): number {
+    const buf = this.lineBuffer;
+    const n = buf.length;
+    let i = this.cursorPos;
+    while (i < n && !Shell.isWordChar(buf[i])) i++;
+    while (i < n && Shell.isWordChar(buf[i])) i++;
+    return i;
+  }
+
+  private moveCursorWordLeft(): void {
+    const target = this.wordLeftPos();
+    const delta = this.cursorPos - target;
+    if (delta > 0) {
+      this.terminal.write(`\x1b[${delta}D`);
+      this.cursorPos = target;
+    }
+  }
+
+  private moveCursorWordRight(): void {
+    const target = this.wordRightPos();
+    const delta = target - this.cursorPos;
+    if (delta > 0) {
+      this.terminal.write(`\x1b[${delta}C`);
+      this.cursorPos = target;
+    }
+  }
+
+  private deleteWordLeft(): void {
+    const target = this.wordLeftPos();
+    if (target < this.cursorPos) {
+      this.lineBuffer = this.lineBuffer.slice(0, target) + this.lineBuffer.slice(this.cursorPos);
+      this.cursorPos = target;
+      this.redrawLine();
+    }
+  }
+
+  private deleteWordRight(): void {
+    const target = this.wordRightPos();
+    if (target > this.cursorPos) {
+      this.lineBuffer = this.lineBuffer.slice(0, this.cursorPos) + this.lineBuffer.slice(target);
+      this.redrawLine();
     }
   }
 

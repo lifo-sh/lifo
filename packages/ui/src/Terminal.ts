@@ -41,6 +41,10 @@ export class Terminal implements ITerminal {
       cursorBlink: true,
       cursorStyle: 'block',
       allowProposedApi: true,
+      // Treat macOS Option as Meta so Option+←/→, Option+b/f/d, and
+      // Option+Backspace emit escape sequences (word-jump/word-delete) rather
+      // than inserting accented characters.
+      macOptionIsMeta: true,
     });
 
     this.fitAddon = new FitAddon();
