@@ -372,6 +372,84 @@ function unmaskStringLiterals(src: string, literals: string[]): string {
 }
 
 /**
+ * Rewrite dynamic import() calls to __lifoRequire on ALREADY string/comment-masked
+ * source. The browser's native import() cannot resolve bare Node specifiers like
+ * 'fs/promises' (e.g. pglite's CJS bundle does `await import('fs/promises')`), so
+ * every dynamic import must route through our require. Uses __lifoRequire because
+ * modules may shadow `require` inside a factory scope.
+ */
+function rewriteDynamicImportsMasked(result: string): string {
+	// Dynamic import() with a string-literal specifier.
+	result = result.replace(
+		/(?<!\.)(?<!\w)\bimport\s*\(\s*(['"][^'"]+['"])\s*\)/g,
+		(_match, mod) => `Promise.resolve(__lifoRequire(${mod}))`
+	);
+
+	// Dynamic import() with any expression (variables, templates, nested parens).
+	// Programmatic paren-balancing since regex can't handle nested parens.
+	let i = 0;
+	let out = '';
+	while (i < result.length) {
+		const importIdx = result.indexOf('import(', i);
+		if (importIdx === -1) { out += result.slice(i); break; }
+		// char before 'import' must not be [\w$.] (dot = method call)
+		if (importIdx > 0 && /[\w$.]/.test(result[importIdx - 1])) {
+			out += result.slice(i, importIdx + 7);
+			i = importIdx + 7;
+			continue;
+		}
+		// Skip method definitions like `async import(url) {` (a `{` follows the `)`).
+		{
+			let depth = 1;
+			let k = importIdx + 7;
+			while (k < result.length && depth > 0) {
+				if (result[k] === '(') depth++;
+				else if (result[k] === ')') depth--;
+				k++;
+			}
+			if (depth === 0) {
+				let afterClose = k;
+				while (afterClose < result.length && /[ \t]/.test(result[afterClose])) afterClose++;
+				if (result[afterClose] === '{') {
+					out += result.slice(i, importIdx + 7);
+					i = importIdx + 7;
+					continue;
+				}
+			}
+		}
+		out += result.slice(i, importIdx);
+		let depth = 1;
+		let j = importIdx + 7;
+		while (j < result.length && depth > 0) {
+			if (result[j] === '(') depth++;
+			else if (result[j] === ')') depth--;
+			j++;
+		}
+		if (depth === 0) {
+			const arg = result.slice(importIdx + 7, j - 1);
+			out += `Promise.resolve().then(function() { return __lifoRequire(${arg}); })`;
+		} else {
+			out += result.slice(importIdx, j);
+		}
+		i = j;
+	}
+	return out;
+}
+
+/** Mask strings/comments, rewrite dynamic import(), unmask. For CJS modules that skip transformEsmToCjs. */
+function rewriteDynamicImports(source: string): string {
+	if (!source.includes('import(')) return source;
+	const { masked, literals } = maskStringLiterals(source);
+	let result = unmaskStringLiterals(rewriteDynamicImportsMasked(masked), literals);
+	// Stable require alias captured at wrapper scope before any module-level
+	// `var require` shadow can hoist over it.
+	if (result.includes('__lifoRequire(')) {
+		result = 'var __lifoRequire = require;\n' + result;
+	}
+	return result;
+}
+
+/**
  * Build the CJS wrapper parameter list for a module. Injected globals whose
  * name the module itself declares at top level (class/let/const) must be
  * renamed — a like-named parameter would be a SyntaxError (e.g.
@@ -622,75 +700,8 @@ export function transformEsmToCjs(source: string): string {
 
 	// --- Other transforms ---
 
-	// Dynamic import() with string literal → Promise.resolve(require())
-	// Negative lookbehind: skip obj.import('...') where '.' precedes import
-	// Uses __lifoRequire (aliased below) instead of bare require: modules may
-	// declare their own `var require` inside a factory scope (e.g. Emscripten's
-	// `var require = createRequire(import.meta.url)`), which hoists and shadows
-	// the wrapper parameter as undefined right where the import() executes.
-	result = result.replace(
-		/(?<!\.)(?<!\w)\bimport\s*\(\s*(['"][^'"]+['"])\s*\)/g,
-		(_match, mod) => `Promise.resolve(__lifoRequire(${mod}))`
-	);
-
-	// Dynamic import() with any expression (variables, template literals, nested parens, etc.)
-	// Must come AFTER the string-literal version above.
-	// Use programmatic paren-balancing since regex can't handle nested parens.
-	{
-		let i = 0;
-		let out = '';
-		while (i < result.length) {
-			// Look for `import(`
-			const importIdx = result.indexOf('import(', i);
-			if (importIdx === -1) { out += result.slice(i); break; }
-			// Check word boundary: char before 'import' must not be [\w$.] (dot = method call)
-			if (importIdx > 0 && /[\w$.]/.test(result[importIdx - 1])) {
-				out += result.slice(i, importIdx + 7);
-				i = importIdx + 7;
-				continue;
-			}
-			// Skip class/object method definitions like `async import(url) {` or `import(url) {`
-			// Method definitions have `) {` after the parameter list (opening method body).
-			// Dynamic imports NEVER have `{` directly after `)`.
-			{
-				let depth = 1;
-				let k = importIdx + 7;
-				while (k < result.length && depth > 0) {
-					if (result[k] === '(') depth++;
-					else if (result[k] === ')') depth--;
-					k++;
-				}
-				if (depth === 0) {
-					let afterClose = k;
-					while (afterClose < result.length && /[ \t]/.test(result[afterClose])) afterClose++;
-					if (result[afterClose] === '{') {
-						// This is a method/function definition, not a dynamic import — skip
-						out += result.slice(i, importIdx + 7);
-						i = importIdx + 7;
-						continue;
-					}
-				}
-			}
-			out += result.slice(i, importIdx);
-			// Find matching close paren with depth tracking
-			let depth = 1;
-			let j = importIdx + 7; // after 'import('
-			while (j < result.length && depth > 0) {
-				if (result[j] === '(') depth++;
-				else if (result[j] === ')') depth--;
-				j++;
-			}
-			if (depth === 0) {
-				const arg = result.slice(importIdx + 7, j - 1);
-				out += `Promise.resolve().then(function() { return __lifoRequire(${arg}); })`;
-			} else {
-				// Unbalanced — leave as-is
-				out += result.slice(importIdx, j);
-			}
-			i = j;
-		}
-		result = out;
-	}
+	// Rewrite dynamic import() → __lifoRequire (browser has no bare-specifier import).
+	result = rewriteDynamicImportsMasked(result);
 
 	// --- Final fixups ---
 
@@ -1354,6 +1365,10 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			let cleanSource = stripShebang(modSource);
 			if (shouldTreatAsEsm(cleanSource, modFilename, ctx.vfs)) {
 				cleanSource = transformEsmToCjs(cleanSource);
+			} else {
+				// CJS modules skip transformEsmToCjs, but still may use dynamic import()
+				// (e.g. pglite's index.cjs → import('fs/promises')). Rewrite those too.
+				cleanSource = rewriteDynamicImports(cleanSource);
 			}
 			const wrapped = `(function(${buildWrapperParams(cleanSource)}) {\n${cleanSource}\n})`;
 			// Give the eval'd module a real filename in stack traces (CallSite.getFileName).
