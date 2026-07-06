@@ -488,8 +488,29 @@ export class Shell {
       const before = this.lineBuffer.slice(0, this.cursorPos);
       const after = this.lineBuffer.slice(this.cursorPos);
       this.lineBuffer = before + data + after;
+      const prevCursorPos = this.cursorPos;
       this.cursorPos += data.length;
-      this.redrawLine();
+
+      // Fast path: appending at the end of the line and staying on the same
+      // screen row (no wrap) — just echo the character(s). A full redrawLine()
+      // here (\r + clear-to-end + reprint) is what makes the line flicker on
+      // every keystroke, especially with the WebGL renderer. The redraw is only
+      // needed for mid-line inserts or when the append wraps to a new row, where
+      // the cursor row (screenCursorRow) would change.
+      const cols = this.terminal.cols;
+      const startCol = this.getPromptWidth() + prevCursorPos;
+      const endCol = this.getPromptWidth() + this.cursorPos;
+      const sameRowNoWrap =
+        after.length === 0 &&
+        cols > 0 &&
+        endCol % cols !== 0 &&
+        Math.floor(startCol / cols) === Math.floor(endCol / cols);
+
+      if (sameRowNoWrap) {
+        this.terminal.write(data); // screenCursorRow is unchanged
+      } else {
+        this.redrawLine();
+      }
     }
   }
 
