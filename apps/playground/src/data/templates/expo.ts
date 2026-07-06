@@ -73,6 +73,7 @@ process.env.EXPO_OFFLINE = '1';
 process.env.CI = '1';            // non-interactive: skip keypress UI + prompts
 process.env.BROWSER = 'none';    // don't try to open a system browser
 process.env.EXPO_NO_TELEMETRY = '1';
+process.env.EXPO_NO_DEPENDENCY_VALIDATION = '1'; // skip the semver doctor check
 
 const { expoStart } = await import('@expo/cli/build/src/start/index.js');
 await expoStart([process.cwd(), '--web', '--port', '8081']);
