@@ -98,11 +98,11 @@ export class Sandbox {
 		let isVisual = false;
 
 		if (typeof options?.terminal === 'string' || (typeof HTMLElement !== 'undefined' && options?.terminal instanceof HTMLElement)) {
-			// Visual mode: lazy-load the DOM terminal (@wterm/dom-backed) from @lifo-sh/ui
+			// Visual mode: lazy-load xterm.js from @lifo-sh/ui
 			const { Terminal } = await import('@lifo-sh/ui');
 			const container = resolveContainer(options.terminal);
-			const visualTerminal = new Terminal(container);
-			shellTerminal = visualTerminal;
+			const xtermTerminal = new Terminal(container);
+			shellTerminal = xtermTerminal;
 			isVisual = true;
 
 			// Display MOTD

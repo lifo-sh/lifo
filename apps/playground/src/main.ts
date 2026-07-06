@@ -1,4 +1,5 @@
 import './app.css';
+import '@xterm/xterm/css/xterm.css';
 import { Terminal, FileExplorer } from '@lifo-sh/ui';
 import type { EditorProvider, EditorInstance } from '@lifo-sh/ui';
 

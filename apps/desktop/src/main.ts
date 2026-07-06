@@ -1,3 +1,4 @@
+import '@xterm/xterm/css/xterm.css';
 import './styles/theme.css';
 import './styles/desktop.css';
 import './styles/window.css';
