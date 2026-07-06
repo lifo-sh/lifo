@@ -6,6 +6,8 @@ import HeadlessExample from '@/examples/headless';
 import MultiExample from '@/examples/multi';
 import HttpExample from '@/examples/http';
 import NpmExample from '@/examples/npm';
+import ExplorerExample from '@/examples/explorer';
+import FfmpegExample from '@/examples/ffmpeg';
 
 export type ExampleGroup = 'Examples' | 'Real-World Stacks' | 'Installable Packages' | 'Develop';
 
@@ -35,7 +37,7 @@ export const examples: ExampleConfig[] = [
   { id: 'headless', label: 'Headless / AI Agent', group: 'Examples', Component: HeadlessExample },
   { id: 'multi', label: 'Multi Terminal', group: 'Examples', Component: MultiExample },
   { id: 'http', label: 'HTTP Server', group: 'Examples', Component: HttpExample },
-  { id: 'explorer', label: 'File Explorer', group: 'Examples', Component: comingSoon('explorer') },
+  { id: 'explorer', label: 'File Explorer', group: 'Examples', Component: ExplorerExample },
   { id: 'npm', label: 'npm', group: 'Examples', Component: NpmExample },
   { id: 'cli', label: 'CLI (Node.js)', group: 'Examples', hideCode: true, Component: comingSoon('cli') },
   // ── Real-World Stacks ──
@@ -48,7 +50,7 @@ export const examples: ExampleConfig[] = [
   { id: 'expo-router', label: 'Expo Router', group: 'Real-World Stacks', Component: comingSoon('expo-router') },
   // ── Installable Packages ──
   { id: 'git', label: 'Git', group: 'Installable Packages', Component: GitExample },
-  { id: 'ffmpeg', label: 'FFmpeg', group: 'Installable Packages', Component: comingSoon('ffmpeg') },
+  { id: 'ffmpeg', label: 'FFmpeg', group: 'Installable Packages', Component: FfmpegExample },
   // ── Develop ──
   { id: 'lifo-pkg', label: 'Lifo Package Manager', group: 'Develop', hideCode: true, Component: comingSoon('lifo-pkg') },
   { id: 'build-pkg', label: 'Build Lifo Packages', group: 'Develop', hideCode: true, Component: comingSoon('build-pkg') },
