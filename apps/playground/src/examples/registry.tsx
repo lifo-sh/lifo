@@ -1,6 +1,11 @@
 import type { ComponentType } from 'react';
 import { codeSnippets } from '@/data/code-snippets';
 import GitExample from '@/examples/git';
+import InteractiveExample from '@/examples/interactive';
+import HeadlessExample from '@/examples/headless';
+import MultiExample from '@/examples/multi';
+import HttpExample from '@/examples/http';
+import NpmExample from '@/examples/npm';
 
 export type ExampleGroup = 'Examples' | 'Real-World Stacks' | 'Installable Packages' | 'Develop';
 
@@ -26,12 +31,12 @@ function comingSoon(id: string): ComponentType {
 
 export const examples: ExampleConfig[] = [
   // ── Examples ──
-  { id: 'interactive', label: 'Interactive Shell', group: 'Examples', Component: comingSoon('interactive') },
-  { id: 'headless', label: 'Headless / AI Agent', group: 'Examples', Component: comingSoon('headless') },
-  { id: 'multi', label: 'Multi Terminal', group: 'Examples', Component: comingSoon('multi') },
-  { id: 'http', label: 'HTTP Server', group: 'Examples', Component: comingSoon('http') },
+  { id: 'interactive', label: 'Interactive Shell', group: 'Examples', Component: InteractiveExample },
+  { id: 'headless', label: 'Headless / AI Agent', group: 'Examples', Component: HeadlessExample },
+  { id: 'multi', label: 'Multi Terminal', group: 'Examples', Component: MultiExample },
+  { id: 'http', label: 'HTTP Server', group: 'Examples', Component: HttpExample },
   { id: 'explorer', label: 'File Explorer', group: 'Examples', Component: comingSoon('explorer') },
-  { id: 'npm', label: 'npm', group: 'Examples', Component: comingSoon('npm') },
+  { id: 'npm', label: 'npm', group: 'Examples', Component: NpmExample },
   { id: 'cli', label: 'CLI (Node.js)', group: 'Examples', hideCode: true, Component: comingSoon('cli') },
   // ── Real-World Stacks ──
   { id: 'vite-react', label: 'Vite with React', group: 'Real-World Stacks', Component: comingSoon('vite-react') },

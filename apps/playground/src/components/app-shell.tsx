@@ -76,8 +76,8 @@ export function App() {
 
   // ── Desktop ──
   return (
-    <ResizablePanelGroup direction="horizontal" autoSaveId="pg-cols" className="h-full w-full">
-      <ResizablePanel id="sidebar" order={1} defaultSize={14} minSize={10} maxSize={26}>
+    <ResizablePanelGroup direction="horizontal" autoSaveId="pg-cols-v2" className="h-full w-full">
+      <ResizablePanel id="sidebar" order={1} defaultSize={17} minSize={13} maxSize={26}>
         <SidebarNav activeId={activeId} onSelect={select} />
       </ResizablePanel>
       <ResizableHandle />
@@ -87,14 +87,14 @@ export function App() {
         ref={codePanelRef}
         collapsible
         collapsedSize={0}
-        minSize={16}
-        defaultSize={26}
+        minSize={22}
+        defaultSize={33}
         className="border-r border-tokyo-border"
       >
         <CodeColumn snippet={snippetFor(activeId)} />
       </ResizablePanel>
       <ResizableHandle />
-      <ResizablePanel id="output" order={3}>
+      <ResizablePanel id="output" order={3} defaultSize={50} minSize={30}>
         <div className="flex flex-col h-full min-h-0">
           <OutputHeader />
           <div className="flex-1 p-4 overflow-hidden flex flex-col min-h-0">
