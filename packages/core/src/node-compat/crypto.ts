@@ -1,4 +1,5 @@
 import { Buffer } from './buffer.js';
+import { EventEmitter } from './events.js';
 
 export function randomBytes(size: number): Buffer {
   const buf = Buffer.alloc(size);
@@ -15,45 +16,79 @@ export function getHashes(): string[] {
   return ['md5', 'sha1', 'sha256', 'sha512'];
 }
 
-interface HashObject {
-  update(data: string | Uint8Array): HashObject;
-  digest(encoding?: string): string | Buffer;
+function digestOf(algo: string, chunks: Uint8Array[]): Uint8Array {
+  let totalLen = 0;
+  for (const c of chunks) totalLen += c.length;
+  const merged = new Uint8Array(totalLen);
+  let offset = 0;
+  for (const c of chunks) { merged.set(c, offset); offset += c.length; }
+  return algo === 'md5' ? md5sync(merged) : algo === 'sha1' ? sha1sync(merged) : algo === 'sha512' ? sha512sync(merged) : sha256sync(merged);
 }
 
-export function createHash(algorithm: string): HashObject {
+/**
+ * Node's Hash is a Transform stream, not just an { update, digest } object.
+ * Some packages (md5-file, used by expo-asset/metro for asset hashing) pipe a
+ * file read stream into it and then read the digest via the 'readable' event.
+ * So Hash is an EventEmitter exposing both the update/digest API and a minimal
+ * writable/readable stream surface.
+ */
+class Hash extends EventEmitter {
+  private chunks: Uint8Array[] = [];
+  private _digest: Uint8Array | null = null;
+  private _consumed = false;
+  writable = true;
+  readable = true;
+
+  constructor(private algo: string) { super(); }
+
+  update(data: string | Uint8Array): this {
+    this.chunks.push(typeof data === 'string' ? new TextEncoder().encode(data) : data);
+    return this;
+  }
+
+  digest(encoding?: string): string | Buffer {
+    const result = this._digest ?? digestOf(this.algo, this.chunks);
+    if (encoding === 'hex') return toHex(result);
+    if (encoding === 'base64') return Buffer.from(result).toString('base64');
+    return Buffer.from(result);
+  }
+
+  // ── Stream surface (destination of a pipe) ──
+  write(chunk: string | Uint8Array): boolean {
+    this.update(chunk);
+    return true;
+  }
+
+  end(chunk?: string | Uint8Array): this {
+    if (chunk !== undefined && chunk !== null) this.update(chunk);
+    this._digest = digestOf(this.algo, this.chunks);
+    // Deliver events after listeners are attached (Readable.pipe wires 'end'
+    // → dest.end() synchronously; consumers attach 'readable' before piping).
+    queueMicrotask(() => {
+      this.emit('readable');
+      this.emit('finish');
+      this.emit('end');
+      this.emit('close');
+    });
+    return this;
+  }
+
+  read(): Buffer | null {
+    if (this._consumed || !this._digest) return null;
+    this._consumed = true;
+    return Buffer.from(this._digest);
+  }
+
+  setEncoding(): this { return this; }
+  pipe<T>(dest: T): T { return dest; }
+}
+
+export function createHash(algorithm: string): Hash {
   const algo = algorithm.toLowerCase().replace('-', '');
   if (algo !== 'sha256' && algo !== 'sha1' && algo !== 'md5' && algo !== 'sha512') {
     throw new Error(`Digest method not supported: ${algorithm} (only md5, sha1, sha256 and sha512 are supported)`);
   }
-
-  const chunks: Uint8Array[] = [];
-
-  return {
-    update(data: string | Uint8Array): ReturnType<typeof createHash> {
-      if (typeof data === 'string') {
-        chunks.push(new TextEncoder().encode(data));
-      } else {
-        chunks.push(data);
-      }
-      return this;
-    },
-    digest(encoding?: string): string | Buffer {
-      let totalLen = 0;
-      for (const c of chunks) totalLen += c.length;
-      const merged = new Uint8Array(totalLen);
-      let offset = 0;
-      for (const c of chunks) {
-        merged.set(c, offset);
-        offset += c.length;
-      }
-
-      const result = algo === 'md5' ? md5sync(merged) : algo === 'sha1' ? sha1sync(merged) : algo === 'sha512' ? sha512sync(merged) : sha256sync(merged);
-
-      if (encoding === 'hex') return toHex(result);
-      if (encoding === 'base64') return Buffer.from(result).toString('base64');
-      return Buffer.from(result);
-    },
-  };
+  return new Hash(algo);
 }
 
 export function randomInt(min: number, max?: number): number {
