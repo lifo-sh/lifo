@@ -6,6 +6,7 @@ export function expoAppFiles(root: string): Record<string, string> {
 		version: '1.0.0',
 		main: 'expo/AppEntry.js',
 		scripts: {
+			start: 'node start.mjs',
 			export: 'node export.mjs',
 			serve: 'node serve.mjs',
 		},
@@ -35,8 +36,8 @@ export default function App() {
     <View style={styles.container}>
       <Text style={styles.title}>Expo inside Lifo 🚀</Text>
       <Text style={styles.subtitle}>
-        This React Native app was bundled by Metro running in your browser,
-        then exported to a static web build.
+        This React Native app is served by a Metro dev server running in your
+        browser. Edit this text and save — Fast Refresh updates it in place.
       </Text>
     </View>
   );
@@ -63,7 +64,23 @@ config.resolver.useWatchman = false;
 module.exports = config;
 `;
 
-	// The `expo export` CLI doesn't await its async command, so run it directly.
+	// Boot the Expo web dev server (Metro) non-interactively. Unlike \`expo export\`
+	// (a one-shot static build), this stays alive serving bundles + a Fast Refresh
+	// HMR websocket — which rides the same service-worker WebSocket shim the Vite
+	// HMR example uses, so edits update the preview in place.
+	files[`${root}/start.mjs`] = `process.env.NODE_ENV = 'development';
+process.env.EXPO_OFFLINE = '1';
+process.env.CI = '1';            // non-interactive: skip keypress UI + prompts
+process.env.BROWSER = 'none';    // don't try to open a system browser
+process.env.EXPO_NO_TELEMETRY = '1';
+
+const { expoStart } = await import('@expo/cli/build/src/start/index.js');
+await expoStart([process.cwd(), '--web', '--port', '8081']);
+console.log('\\nMetro dev server on http://localhost:8081 — open the preview and edit App.js.');
+await new Promise(() => {}); // keep the dev server alive
+`;
+
+	// The \`expo export\` CLI doesn't await its async command, so run it directly.
 	files[`${root}/export.mjs`] = `process.env.NODE_ENV = 'production';
 process.env.EXPO_OFFLINE = '1';
 const { expoExport } = await import('@expo/cli/build/src/export/index.js');

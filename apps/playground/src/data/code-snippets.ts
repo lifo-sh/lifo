@@ -442,18 +442,18 @@ const CODE_PGLITE = `\
 <span class="code-keyword">SELECT</span> body <span class="code-keyword">FROM</span> docs;  <span class="code-comment">-- only alice's rows</span>`;
 
 const CODE_EXPO = `\
-<span class="code-comment"># A real Expo (React Native for Web) app, bundled by</span>
-<span class="code-comment"># Metro entirely in your browser — no host process.</span>
+<span class="code-comment"># A real Expo (React Native for Web) app on a live</span>
+<span class="code-comment"># Metro dev server, running entirely in your browser.</span>
 <span class="code-comment"># Metro runs in-band (maxWorkers=1) and offline.</span>
 
 <span class="code-fn">cd</span> expo-app
 <span class="code-fn">npm</span> install          <span class="code-comment"># expo, react-native, metro, …</span>
-<span class="code-fn">npm</span> run export       <span class="code-comment"># expo export --platform web → dist/</span>
-<span class="code-fn">npm</span> run serve &      <span class="code-comment"># static server on virtual port 8081</span>
+<span class="code-fn">npm</span> run start &      <span class="code-comment"># expo start --web → Metro dev server :8081</span>
 
 <span class="code-comment"># the preview pane (below) is an iframe at /_sw/8081/,</span>
 <span class="code-comment"># served by a service worker straight from the VM.</span>
-<span class="code-comment"># edit App.js and re-run export to rebuild:</span>
+<span class="code-comment"># Fast Refresh: edit App.js and save — updates in place</span>
+<span class="code-comment"># (HMR websocket rides the same service-worker shim as Vite).</span>
 <span class="code-fn">sed</span> -i <span class="code-string">'s/Expo inside Lifo/Hello Metro/'</span> App.js`;
 
 const CODE_EXPO_ROUTER = `\
