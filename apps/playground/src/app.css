@@ -113,7 +113,12 @@
   }
   #root {
     width: 100%;
+    /* Size to the *visual* viewport. Plain 100% resolves to the large viewport
+       on mobile (full height ignoring the URL bar), which made the whole flex
+       layout — and the terminal's fit — taller than the visible screen, pushing
+       the prompt below the fold. dvh tracks the actually-visible height. */
     height: 100%;
+    height: 100dvh;
   }
 }
 
