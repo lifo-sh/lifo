@@ -34,7 +34,7 @@ export class Terminal implements ITerminal {
   private container: HTMLElement;
   private fitRaf = 0;
 
-  constructor(container: HTMLElement, options?: { fontSize?: number }) {
+  constructor(container: HTMLElement, options?: { fontSize?: number; webgl?: boolean }) {
     this.container = container;
     this.xterm = new XTerminal({
       theme: THEME,
@@ -55,13 +55,18 @@ export class Terminal implements ITerminal {
 
     this.xterm.open(container);
 
-    // Try WebGL, fall back to canvas
-    try {
-      const webgl = new WebglAddon();
-      webgl.onContextLoss(() => webgl.dispose());
-      this.xterm.loadAddon(webgl);
-    } catch {
-      // Canvas renderer is fine
+    // WebGL gives the best throughput on desktop, but its canvas backing store
+    // desyncs from the DOM scroll layer on high-DPR touch devices (the viewport
+    // ends up vertically offset from the rendered text). Callers disable it on
+    // mobile, where the robust DOM renderer is used instead.
+    if (options?.webgl !== false) {
+      try {
+        const webgl = new WebglAddon();
+        webgl.onContextLoss(() => webgl.dispose());
+        this.xterm.loadAddon(webgl);
+      } catch {
+        // DOM renderer is fine
+      }
     }
 
     this.scheduleFit();
