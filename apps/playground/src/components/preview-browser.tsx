@@ -15,7 +15,7 @@ export function PreviewBrowser({ port }: PreviewBrowserProps) {
   const [nonce, setNonce] = useState(0);
 
   return (
-    <div className="flex flex-col flex-1 min-h-0 rounded-lg overflow-hidden border border-tokyo-border bg-tokyo-bg">
+    <div className="flex flex-col h-full w-full min-h-0 rounded-lg overflow-hidden border border-tokyo-border bg-tokyo-bg">
       <div className="flex items-center gap-2 px-2 py-1.5 border-b border-tokyo-border bg-tokyo-bg-dark">
         <button
           onClick={() => setNonce((n) => n + 1)}
@@ -41,7 +41,7 @@ export function PreviewBrowser({ port }: PreviewBrowserProps) {
         key={nonce}
         src={`${path}?_t=${nonce}`}
         title="Preview"
-        className="flex-1 min-h-0 w-full bg-white border-none"
+        className="flex-1 min-h-0 w-full block bg-white border-none"
       />
     </div>
   );
