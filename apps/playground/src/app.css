@@ -1,6 +1,43 @@
 @import "tailwindcss";
+@import "tw-animate-css";
 
-/* ── Tokyo Night theme ── */
+@custom-variant dark (&:is(.dark *));
+
+/* ── shadcn token → CSS var mapping (Tailwind v4) ── */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+/* ── Tokyo Night design tokens (playground palette, used by bg-tokyo-* utilities) ── */
 @theme {
   --color-tokyo-bg: #1a1b26;
   --color-tokyo-bg-dark: #16161e;
@@ -21,6 +58,38 @@
   --font-code: "Cascadia Code", "Fira Code", "JetBrains Mono", Menlo, monospace;
 }
 
+/* ── shadcn semantic values — Tokyo Night, always dark ── */
+:root {
+  --radius: 0.625rem;
+  --background: #1a1b26;
+  --foreground: #a9b1d6;
+  --card: #1e1f2e;
+  --card-foreground: #a9b1d6;
+  --popover: #1e1f2e;
+  --popover-foreground: #a9b1d6;
+  --primary: #7aa2f7;
+  --primary-foreground: #1a1b26;
+  --secondary: #292e42;
+  --secondary-foreground: #a9b1d6;
+  --muted: #292e42;
+  --muted-foreground: #565f89;
+  --accent: #292e42;
+  --accent-foreground: #a9b1d6;
+  --destructive: #f7768e;
+  --border: #292e42;
+  --input: #292e42;
+  --ring: #7aa2f7;
+  --sidebar: #16161e;
+  --sidebar-foreground: #a9b1d6;
+  --sidebar-primary: #7aa2f7;
+  --sidebar-primary-foreground: #1a1b26;
+  --sidebar-accent: #292e42;
+  --sidebar-accent-foreground: #a9b1d6;
+  --sidebar-border: #292e42;
+  --sidebar-ring: #7aa2f7;
+  color-scheme: dark;
+}
+
 /* ── Base reset & body ── */
 @layer base {
   *,
@@ -30,7 +99,9 @@
     padding: 0;
     box-sizing: border-box;
   }
-
+  * {
+    border-color: var(--border);
+  }
   html,
   body {
     width: 100%;
@@ -40,9 +111,13 @@
     color: var(--color-tokyo-fg);
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   }
+  #root {
+    width: 100%;
+    height: 100%;
+  }
 }
 
-/* ── Components: syntax highlighting ── */
+/* ── Syntax highlighting (used by the injected code-column HTML) ── */
 @layer components {
   .code-comment { color: var(--color-tokyo-comment); }
   .code-keyword { color: var(--color-tokyo-purple); }
@@ -52,45 +127,7 @@
   .code-punct   { color: var(--color-tokyo-cyan); }
 }
 
-/* ── Components: JS-toggled states ── */
-@layer components {
-  .sidebar-item.active {
-    background: var(--color-tokyo-active);
-    color: var(--color-tokyo-blue);
-    font-weight: 500;
-  }
-
-  .output-panel {
-    display: none;
-    width: 100%;
-    min-height: 0;
-    flex: 1;
-  }
-  .output-panel.active {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  }
-
-  .tab-btn.active {
-    color: var(--color-tokyo-blue);
-    background: var(--color-tokyo-bg);
-    box-shadow: inset 0 -2px 0 var(--color-tokyo-blue);
-  }
-
-  .tab-panel {
-    position: absolute;
-    inset: 0;
-    padding: 8px;
-    display: none;
-  }
-  .tab-panel.active {
-    display: block;
-  }
-}
-
 /* ── Scrollbars: Tokyo Night, revealed on hover ── */
-/* Firefox */
 * {
   scrollbar-width: thin;
   scrollbar-color: transparent transparent;
@@ -99,7 +136,6 @@
 *:focus-within {
   scrollbar-color: var(--color-tokyo-border) transparent;
 }
-/* WebKit/Chromium */
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;
@@ -115,8 +151,6 @@
   background-clip: content-box;
   transition: background-color 0.15s ease;
 }
-/* Reveal the thumb when the scrollable area (or a child) is hovered/focused */
-:hover > ::-webkit-scrollbar-thumb,
 *:hover::-webkit-scrollbar-thumb,
 *:focus-within::-webkit-scrollbar-thumb {
   background-color: var(--color-tokyo-border);
@@ -124,7 +158,6 @@
 ::-webkit-scrollbar-thumb:hover {
   background-color: var(--color-tokyo-comment);
 }
-/* xterm's viewport uses the same treatment */
 .xterm-viewport::-webkit-scrollbar-thumb {
   background-color: transparent;
   border-radius: 8px;
