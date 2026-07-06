@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { examples } from '@/examples/registry';
 
 /**
@@ -28,7 +28,15 @@ export function ExampleHost({ activeId }: { activeId: string }) {
               className="absolute inset-0 flex flex-col min-h-0"
               style={{ display: e.id === activeId ? 'flex' : 'none' }}
             >
-              <Component />
+              <Suspense
+                fallback={
+                  <div className="flex flex-1 items-center justify-center text-tokyo-comment text-sm">
+                    Loading…
+                  </div>
+                }
+              >
+                <Component />
+              </Suspense>
             </div>
           );
         })}

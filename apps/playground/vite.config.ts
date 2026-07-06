@@ -10,6 +10,25 @@ export default defineConfig(({ command }) => ({
   server: {
     port: 5173,
   },
+  build: {
+    rollupOptions: {
+      output: {
+        // Split the big, stable vendors into their own long-lived chunks.
+        // (Monaco is left alone — it's already dynamically imported and manual
+        // chunking it breaks its worker resolution.)
+        manualChunks(id: string) {
+          if (id.includes('node_modules/@xterm')) return 'xterm';
+          if (
+            id.includes('node_modules/react-dom') ||
+            id.includes('node_modules/react/') ||
+            id.includes('node_modules/scheduler')
+          ) {
+            return 'react-vendor';
+          }
+        },
+      },
+    },
+  },
   resolve: {
     alias: {
       '@': path.resolve(__dirname, 'src'),

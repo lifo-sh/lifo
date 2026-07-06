@@ -1,20 +1,26 @@
-import type { ComponentType } from 'react';
+import { lazy, type ComponentType } from 'react';
 import { codeSnippets } from '@/data/code-snippets';
-import GitExample from '@/examples/git';
-import InteractiveExample from '@/examples/interactive';
-import HeadlessExample from '@/examples/headless';
-import MultiExample from '@/examples/multi';
-import HttpExample from '@/examples/http';
-import NpmExample from '@/examples/npm';
-import ExplorerExample from '@/examples/explorer';
-import FfmpegExample from '@/examples/ffmpeg';
-import ViteReactExample from '@/examples/vite-react';
-import ViteReactTsExample from '@/examples/vite-react-ts';
-import CreateViteExample from '@/examples/create-vite';
-import TinbaseExample from '@/examples/tinbase';
-import PgliteExample from '@/examples/pglite';
-import ExpoExample from '@/examples/expo';
-import ExpoRouterExample from '@/examples/expo-router';
+
+// Each example is code-split: its module (and any heavy deps — Monaco, VFS
+// templates) loads only when the example is first activated.
+const GitExample = lazy(() => import('@/examples/git'));
+const InteractiveExample = lazy(() => import('@/examples/interactive'));
+const HeadlessExample = lazy(() => import('@/examples/headless'));
+const MultiExample = lazy(() => import('@/examples/multi'));
+const HttpExample = lazy(() => import('@/examples/http'));
+const NpmExample = lazy(() => import('@/examples/npm'));
+const ExplorerExample = lazy(() => import('@/examples/explorer'));
+const FfmpegExample = lazy(() => import('@/examples/ffmpeg'));
+const ViteReactExample = lazy(() => import('@/examples/vite-react'));
+const ViteReactTsExample = lazy(() => import('@/examples/vite-react-ts'));
+const CreateViteExample = lazy(() => import('@/examples/create-vite'));
+const TinbaseExample = lazy(() => import('@/examples/tinbase'));
+const PgliteExample = lazy(() => import('@/examples/pglite'));
+const ExpoExample = lazy(() => import('@/examples/expo'));
+const ExpoRouterExample = lazy(() => import('@/examples/expo-router'));
+const CliExample = lazy(() => import('@/examples/cli'));
+const LifoPkgExample = lazy(() => import('@/examples/lifo-pkg'));
+const BuildPkgExample = lazy(() => import('@/examples/build-pkg'));
 
 export type ExampleGroup = 'Examples' | 'Real-World Stacks' | 'Installable Packages' | 'Develop';
 
@@ -27,17 +33,6 @@ export interface ExampleConfig {
   Component: ComponentType;
 }
 
-/** Placeholder for examples not yet ported (removed as each phase lands). */
-function comingSoon(id: string): ComponentType {
-  const Stub = () => (
-    <div className="flex flex-1 items-center justify-center text-tokyo-comment text-sm">
-      "{id}" — not ported to React yet.
-    </div>
-  );
-  Stub.displayName = `ComingSoon(${id})`;
-  return Stub;
-}
-
 export const examples: ExampleConfig[] = [
   // ── Examples ──
   { id: 'interactive', label: 'Interactive Shell', group: 'Examples', Component: InteractiveExample },
@@ -46,7 +41,7 @@ export const examples: ExampleConfig[] = [
   { id: 'http', label: 'HTTP Server', group: 'Examples', Component: HttpExample },
   { id: 'explorer', label: 'File Explorer', group: 'Examples', Component: ExplorerExample },
   { id: 'npm', label: 'npm', group: 'Examples', Component: NpmExample },
-  { id: 'cli', label: 'CLI (Node.js)', group: 'Examples', hideCode: true, Component: comingSoon('cli') },
+  { id: 'cli', label: 'CLI (Node.js)', group: 'Examples', hideCode: true, Component: CliExample },
   // ── Real-World Stacks ──
   { id: 'vite-react', label: 'Vite with React', group: 'Real-World Stacks', Component: ViteReactExample },
   { id: 'vite-react-ts', label: 'Vite with React + TS', group: 'Real-World Stacks', Component: ViteReactTsExample },
@@ -59,8 +54,8 @@ export const examples: ExampleConfig[] = [
   { id: 'git', label: 'Git', group: 'Installable Packages', Component: GitExample },
   { id: 'ffmpeg', label: 'FFmpeg', group: 'Installable Packages', Component: FfmpegExample },
   // ── Develop ──
-  { id: 'lifo-pkg', label: 'Lifo Package Manager', group: 'Develop', hideCode: true, Component: comingSoon('lifo-pkg') },
-  { id: 'build-pkg', label: 'Build Lifo Packages', group: 'Develop', hideCode: true, Component: comingSoon('build-pkg') },
+  { id: 'lifo-pkg', label: 'Lifo Package Manager', group: 'Develop', hideCode: true, Component: LifoPkgExample },
+  { id: 'build-pkg', label: 'Build Lifo Packages', group: 'Develop', hideCode: true, Component: BuildPkgExample },
 ];
 
 export const exampleGroups: ExampleGroup[] = ['Examples', 'Real-World Stacks', 'Installable Packages', 'Develop'];
