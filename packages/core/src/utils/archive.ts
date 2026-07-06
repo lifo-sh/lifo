@@ -144,9 +144,31 @@ export function createTar(entries: TarEntry[]): Uint8Array {
   return concatBytes(...blocks);
 }
 
+/**
+ * Parse a "path=..." record out of a PAX extended header payload.
+ * Format: repeated "<len> key=value\n" records.
+ */
+function parsePaxPath(payload: Uint8Array): string | null {
+  const text = new TextDecoder().decode(payload);
+  let i = 0;
+  while (i < text.length) {
+    const space = text.indexOf(' ', i);
+    if (space === -1) break;
+    const len = parseInt(text.slice(i, space), 10);
+    if (!Number.isFinite(len) || len <= 0) break;
+    const record = text.slice(space + 1, i + len - 1); // exclude trailing \n
+    const eq = record.indexOf('=');
+    if (eq !== -1 && record.slice(0, eq) === 'path') return record.slice(eq + 1);
+    i += len;
+  }
+  return null;
+}
+
 export function parseTar(data: Uint8Array): TarEntry[] {
   const entries: TarEntry[] = [];
   let offset = 0;
+  // Long-name overrides for the NEXT file entry, set by PAX ('x') / GNU ('L').
+  let nextPathOverride: string | null = null;
 
   while (offset + 512 <= data.length) {
     const header = data.subarray(offset, offset + 512);
@@ -158,26 +180,45 @@ export function parseTar(data: Uint8Array): TarEntry[] {
     }
     if (allZero) break;
 
-    let path = tarReadString(header, 0, 100);
+    const nameField = tarReadString(header, 0, 100);
     const mode = tarReadOctal(header, 100, 8);
     const size = tarReadOctal(header, 124, 12);
     const mtime = tarReadOctal(header, 136, 12) * 1000;
     const typeFlag = header[156];
+    // ustar prefix field (bytes 345..500): full path = prefix + '/' + name.
+    const prefix = tarReadString(header, 345, 155);
+
+    offset += 512;
+    const dataLen = size > 0 ? size : 0;
+    const blockData = dataLen > 0 ? data.slice(offset, offset + dataLen) : new Uint8Array(0);
+    if (dataLen > 0) offset += Math.ceil(dataLen / 512) * 512;
+
+    // PAX extended header (typeFlag 'x'=120) or GNU longname ('L'=76): the
+    // payload names the FOLLOWING entry. npm tarballs use these for paths
+    // longer than the 100-byte name field, so without this deep-tree files
+    // (e.g. @expo/cli) get dropped or misnamed.
+    if (typeFlag === 120 /* x */ || typeFlag === 103 /* g (global, ignore path scope but harmless) */) {
+      const p = parsePaxPath(blockData);
+      if (p) nextPathOverride = p;
+      continue;
+    }
+    if (typeFlag === 76 /* L (GNU longname) */) {
+      nextPathOverride = new TextDecoder().decode(blockData).replace(/\0+$/, '');
+      continue;
+    }
+    if (typeFlag === 75 /* K (GNU longlink) — not needed, skip payload */) {
+      continue;
+    }
+
+    let path = nextPathOverride ?? (prefix ? prefix + '/' + nameField : nameField);
+    nextPathOverride = null;
 
     const isDir = typeFlag === 53 || path.endsWith('/'); // '5' or trailing /
     if (path.endsWith('/')) path = path.slice(0, -1);
 
-    offset += 512;
-
-    let entryData = new Uint8Array(0);
-    if (size > 0) {
-      entryData = data.slice(offset, offset + size);
-      offset += Math.ceil(size / 512) * 512;
-    }
-
     entries.push({
       path,
-      data: entryData,
+      data: blockData,
       type: isDir ? 'directory' : 'file',
       mode: mode || (isDir ? 0o755 : 0o644),
       mtime,

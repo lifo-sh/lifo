@@ -3,10 +3,26 @@ import {
   isAbsolute,
   join,
   resolve,
-  dirname,
-  basename,
-  extname,
+  dirname as _dirname,
+  basename as _basename,
+  extname as _extname,
 } from '../utils/path.js';
+
+// Some npm packages (import-fresh via cosmiconfig, caller-path) derive a path
+// from a call-stack frame's getFileName(), which is undefined for our eval-based
+// module execution. They then call path.dirname(undefined). Node would throw a
+// TypeError, but here the argument is undefined only because of an environment
+// limitation, and callers like import-fresh pass an absolute path onward (so the
+// derived directory is unused). Coerce non-string input instead of crashing.
+export function dirname(path: string): string {
+  return typeof path === 'string' ? _dirname(path) : '.';
+}
+export function basename(path: string, ext?: string): string {
+  return typeof path === 'string' ? _basename(path, ext) : '';
+}
+export function extname(path: string): string {
+  return typeof path === 'string' ? _extname(path) : '';
+}
 
 export function relative(from: string, to: string): string {
   const fromParts = normalize(from).split('/').filter(Boolean);
@@ -67,7 +83,7 @@ export const win32 = {
   delimiter: ';',
 };
 
-export { normalize, isAbsolute, join, resolve, dirname, basename, extname };
+export { normalize, isAbsolute, join, resolve };
 export default {
   normalize, isAbsolute, join, resolve: (...args: string[]) => resolve('/', ...args),
   dirname, basename, extname, relative, parse, format, sep, delimiter, posix, win32,

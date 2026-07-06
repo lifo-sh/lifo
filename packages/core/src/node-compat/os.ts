@@ -8,13 +8,14 @@ export function createOs(env: Record<string, string>) {
     homedir: () => env.HOME || '/home/user',
     tmpdir: () => '/tmp',
     cpus: () => {
-      const count = navigator.hardwareConcurrency || 4;
+      const count = (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 4;
       return Array.from({ length: count }, () => ({
         model: 'Browser CPU',
         speed: 2400,
         times: { user: 0, nice: 0, sys: 0, idle: 0, irq: 0 },
       }));
     },
+    availableParallelism: () => (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 4,
     totalmem: () => {
       const m = (performance as unknown as { memory?: { jsHeapSizeLimit: number } }).memory;
       return m?.jsHeapSizeLimit ?? 4 * 1024 * 1024 * 1024;

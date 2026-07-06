@@ -98,13 +98,49 @@ export function deprecate<T extends (...args: unknown[]) => unknown>(fn: T, msg:
   }) as unknown as T;
 }
 
-export function types() {
-  return {
-    isDate: (v: unknown) => v instanceof Date,
-    isRegExp: (v: unknown) => v instanceof RegExp,
-    isArray: Array.isArray,
-  };
-}
+const SharedAB = (globalThis as { SharedArrayBuffer?: unknown }).SharedArrayBuffer as
+  | (new () => object)
+  | undefined;
+
+/** util.types — runtime type predicates (Node's `require('util/types')`). */
+export const typesImpl = {
+  isAnyArrayBuffer: (v: unknown) => v instanceof ArrayBuffer || (!!SharedAB && v instanceof (SharedAB as never)),
+  isArrayBuffer: (v: unknown) => v instanceof ArrayBuffer,
+  isSharedArrayBuffer: (v: unknown) => !!SharedAB && v instanceof (SharedAB as never),
+  isArrayBufferView: (v: unknown) => ArrayBuffer.isView(v),
+  isTypedArray: (v: unknown) => ArrayBuffer.isView(v) && !(v instanceof DataView),
+  isDataView: (v: unknown) => v instanceof DataView,
+  isUint8Array: (v: unknown) => v instanceof Uint8Array,
+  isUint8ClampedArray: (v: unknown) => v instanceof Uint8ClampedArray,
+  isUint16Array: (v: unknown) => v instanceof Uint16Array,
+  isUint32Array: (v: unknown) => v instanceof Uint32Array,
+  isInt8Array: (v: unknown) => v instanceof Int8Array,
+  isInt16Array: (v: unknown) => v instanceof Int16Array,
+  isInt32Array: (v: unknown) => v instanceof Int32Array,
+  isFloat32Array: (v: unknown) => v instanceof Float32Array,
+  isFloat64Array: (v: unknown) => v instanceof Float64Array,
+  isBigInt64Array: (v: unknown) => typeof BigInt64Array !== 'undefined' && v instanceof BigInt64Array,
+  isBigUint64Array: (v: unknown) => typeof BigUint64Array !== 'undefined' && v instanceof BigUint64Array,
+  isDate: (v: unknown) => v instanceof Date,
+  isRegExp: (v: unknown) => v instanceof RegExp,
+  isMap: (v: unknown) => v instanceof Map,
+  isSet: (v: unknown) => v instanceof Set,
+  isWeakMap: (v: unknown) => v instanceof WeakMap,
+  isWeakSet: (v: unknown) => v instanceof WeakSet,
+  isPromise: (v: unknown) => v instanceof Promise,
+  isNativeError: (v: unknown) => v instanceof Error,
+  isAsyncFunction: (v: unknown) => typeof v === 'function' && (v as { constructor?: { name?: string } }).constructor?.name === 'AsyncFunction',
+  isGeneratorFunction: (v: unknown) => typeof v === 'function' && (v as { constructor?: { name?: string } }).constructor?.name === 'GeneratorFunction',
+  isGeneratorObject: (v: unknown) => !!v && typeof (v as { next?: unknown }).next === 'function' && typeof (v as { throw?: unknown }).throw === 'function',
+  isArgumentsObject: (v: unknown) => Object.prototype.toString.call(v) === '[object Arguments]',
+  isBoxedPrimitive: (v: unknown) => v instanceof Number || v instanceof String || v instanceof Boolean || v instanceof Symbol,
+  isProxy: () => false,
+  isModuleNamespaceObject: (v: unknown) => Object.prototype.toString.call(v) === '[object Module]',
+  isArray: Array.isArray,
+};
+
+// In Node, `util.types` is a namespace object, not a function.
+export const types = typesImpl;
 
 /** Strip ANSI/VT control sequences from a string (ESC[...m, etc.) */
 const STYLE_CODES: Record<string, [number, number]> = {
@@ -141,7 +177,28 @@ export function stripVTControlCharacters(str: string): string {
   return str.replace(/\x1B\[[0-9;]*[a-zA-Z]|\x1B\].*?(?:\x07|\x1B\\)/g, '');
 }
 
+/**
+ * util.debuglog(section[, callback]) → a logger function that is active only
+ * when NODE_DEBUG matches the section. undici and others call this at load
+ * time and expect a callable with an `.enabled` flag.
+ */
+export function debuglog(section: string, callback?: (fn: DebugLogger) => void): DebugLogger {
+  const nodeDebug = (typeof process !== 'undefined' && process.env && process.env.NODE_DEBUG) || '';
+  const enabled = nodeDebug
+    .split(/[\s,]+/)
+    .some((s) => s === section || (s.endsWith('*') && section.startsWith(s.slice(0, -1))));
+  const logger = ((...args: unknown[]) => {
+    if (enabled) console.error(`${section} ${format(...(args as [string, ...unknown[]]))}`);
+  }) as DebugLogger;
+  logger.enabled = enabled;
+  if (callback) callback(logger);
+  return logger;
+}
+interface DebugLogger { (...args: unknown[]): void; enabled: boolean; }
+
+export const debug = debuglog;
+
 export const TextDecoder = globalThis.TextDecoder;
 export const TextEncoder = globalThis.TextEncoder;
 
-export default { format, inspect, promisify, inherits, deprecate, types, styleText, stripVTControlCharacters, TextDecoder, TextEncoder };
+export default { format, inspect, promisify, inherits, deprecate, types, styleText, stripVTControlCharacters, debuglog, debug, TextDecoder, TextEncoder };

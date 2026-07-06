@@ -92,6 +92,9 @@ export function createProcess(opts: ProcessOptions) {
     nextTick: (fn: (...args: unknown[]) => void, ...args: unknown[]) => {
       queueMicrotask(() => fn(...args));
     },
+    // Event-loop introspection (Node 17+). expo's CLI calls this on exit to
+    // report lingering handles; there is no real libuv loop here, so report none.
+    getActiveResourcesInfo: (): string[] => [],
     memoryUsage: () => {
       const m = (performance as unknown as { memory?: { usedJSHeapSize: number; totalJSHeapSize: number; jsHeapSizeLimit: number } }).memory;
       return {

@@ -306,10 +306,41 @@ function createLimiter(max: number): Limiter {
 	};
 }
 
-async function installSinglePackage(
-	name: string,
-	version: string | null,
-	targetBase: string,
+// ─── Installer with hoist-with-nesting (npm v3+ style) ───
+//
+// A flat, dedupe-by-name installer cannot represent trees where two packages
+// need incompatible versions of the same dependency (e.g. Expo needs both
+// glob@7 and glob@10). It would install whichever version won the race into a
+// single `node_modules/<name>`, orphaning the loser's transitive deps and
+// producing non-deterministic, partially-broken installs.
+//
+// This installer instead hoists each package to the top-level node_modules when
+// that slot is free, and nests a conflicting version under the requiring
+// package's own node_modules when the top-level already holds an incompatible
+// version — the same strategy npm uses, and what Node's module resolution
+// (walk-up node_modules) expects.
+
+interface InstallState {
+	topBase: string;
+	vfs: VFS;
+	npmRegistry: string;
+	signal: AbortSignal;
+	stdout: CommandOutputStream;
+	stderr: CommandOutputStream;
+	isGlobal: boolean;
+	registry: CommandRegistry;
+	limit: Limiter;
+	kernel?: Kernel;
+	/** Concrete version installed at the top-level node_modules, by name. */
+	topVersions: Map<string, string>;
+	/** In-flight top-level installs, by name → resolves to installed version (null on failure). */
+	pendingTop: Map<string, Promise<string | null>>;
+	/** In-flight installs keyed by absolute target dir → resolves to count. */
+	inFlight: Map<string, Promise<number>>;
+}
+
+function createInstallState(
+	topBase: string,
 	vfs: VFS,
 	npmRegistry: string,
 	signal: AbortSignal,
@@ -317,66 +348,173 @@ async function installSinglePackage(
 	stderr: CommandOutputStream,
 	isGlobal: boolean,
 	registry: CommandRegistry,
-	seen: Set<string>,
 	limit: Limiter,
 	kernel?: Kernel,
-): Promise<number> {
-	// Claim the name synchronously (before any await) so concurrent installs of
-	// the same dependency dedupe correctly.
-	if (seen.has(name)) return 0;
-	seen.add(name);
+): InstallState {
+	return {
+		topBase, vfs, npmRegistry, signal, stdout, stderr, isGlobal, registry, limit, kernel,
+		topVersions: new Map(),
+		pendingTop: new Map(),
+		inFlight: new Map(),
+	};
+}
 
-	const targetDir = join(targetBase, name);
+/** Given a `.../node_modules` dir, return the next node_modules up the chain, or null at the root. */
+function parentNodeModules(modulesDir: string): string | null {
+	const suffix = '/node_modules';
+	if (!modulesDir.endsWith(suffix)) return null;
+	const base = modulesDir.slice(0, -suffix.length); // dir that contains this node_modules
+	const idx = base.lastIndexOf('/node_modules/');
+	if (idx === -1) return null; // base is a project root; nothing higher
+	return base.slice(0, idx + suffix.length);
+}
 
-	// Skip if already installed
-	if (vfs.exists(join(targetDir, 'package.json'))) {
-		return 0;
+/**
+ * Walk up the node_modules chain from `fromModulesDir` to find how `name@range`
+ * resolves. Returns whether it's already satisfied, and (when it isn't) whether
+ * the nearest existing copy conflicts (so a satisfying version must shadow it at
+ * the requester's own node_modules).
+ */
+function findResolution(
+	state: InstallState,
+	name: string,
+	range: string,
+	fromModulesDir: string,
+): { resolved: boolean; conflict: boolean } {
+	let dir: string | null = fromModulesDir;
+	while (dir) {
+		const pj = join(dir, name, 'package.json');
+		if (state.vfs.exists(pj)) {
+			try {
+				const v = JSON.parse(state.vfs.readFileString(pj)).version as string;
+				// Nearest wins in Node resolution: if it satisfies, reuse; if not, we
+				// must shadow it at the requester's own node_modules.
+				return { resolved: satisfiesRange(v, range), conflict: !satisfiesRange(v, range) };
+			} catch {
+				return { resolved: false, conflict: true };
+			}
+		}
+		dir = parentNodeModules(dir);
 	}
+	return { resolved: false, conflict: false }; // nothing found → free to hoist
+}
 
-	stdout.write(`  ${name}${version ? '@' + version : ''}...\n`);
-
-	// Fetch metadata + tarball under the concurrency limit (the slow part).
-	const info = await limit(async () => {
-		const meta = await fetchPackageInfo(npmRegistry, name, version, signal);
-		await downloadAndExtract(meta.dist.tarball, targetDir, vfs, signal);
+/** Fetch + extract a package into `targetDir` (removing a stale copy first), returning its metadata. */
+async function fetchExtract(state: InstallState, name: string, range: string, targetDir: string): Promise<RegistryVersionInfo> {
+	return state.limit(async () => {
+		const meta = await fetchPackageInfo(state.npmRegistry, name, range, state.signal);
+		// If a different version already occupies this dir, remove it fully so we
+		// don't mix files from two versions into one directory.
+		if (state.vfs.exists(join(targetDir, 'package.json'))) {
+			try { state.vfs.rmdirRecursive(targetDir); } catch { /* best effort */ }
+		}
+		await downloadAndExtract(meta.dist.tarball, targetDir, state.vfs, state.signal);
 		return meta;
 	});
+}
 
-	let installed = 1;
-
-	// Global install: link binaries
-	if (isGlobal) {
-		const binEntries = getBinEntries(info);
-		for (const [binName, binPath] of Object.entries(binEntries)) {
-			const scriptPath = resolve(targetDir, binPath);
-			registerBinCommand(registry, binName, scriptPath, kernel);
-			try { vfs.mkdir(GLOBAL_BIN, { recursive: true }); } catch { /* exists */ }
-			vfs.writeFile(
-				join(GLOBAL_BIN, binName),
-				`#!/usr/bin/env node\nrequire('${scriptPath}');\n`,
-			);
-		}
-
-	}
-
-	// Install dependencies in parallel (flat into the same targetBase). The
-	// limiter bounds actual concurrent downloads across the whole tree.
-	if (info.dependencies) {
-		const results = await Promise.all(
-			Object.entries(info.dependencies).map(([depName, depRange]) =>
-				installSinglePackage(
-					depName, depRange, targetBase, vfs, npmRegistry, signal,
-					stdout, stderr, isGlobal, registry, seen, limit, kernel,
-				).catch((e) => {
-					stderr.write(`  warn: could not install ${depName}: ${e instanceof Error ? e.message : String(e)}\n`);
-					return 0;
-				}),
-			),
+function linkGlobalBins(state: InstallState, info: RegistryVersionInfo, targetDir: string): void {
+	if (!state.isGlobal) return;
+	const binEntries = getBinEntries(info);
+	for (const [binName, binPath] of Object.entries(binEntries)) {
+		const scriptPath = resolve(targetDir, binPath);
+		registerBinCommand(state.registry, binName, scriptPath, state.kernel);
+		try { state.vfs.mkdir(GLOBAL_BIN, { recursive: true }); } catch { /* exists */ }
+		state.vfs.writeFile(
+			join(GLOBAL_BIN, binName),
+			`#!/usr/bin/env node\nrequire('${scriptPath}');\n`,
 		);
-		for (const n of results) installed += n;
+	}
+}
+
+/** Extract into targetDir, link bins, and recurse into its dependencies. Deduped per target dir. */
+async function installInto(state: InstallState, name: string, range: string, targetDir: string): Promise<number> {
+	// Already present at a satisfying version → nothing to do.
+	const pjPath = join(targetDir, 'package.json');
+	if (state.vfs.exists(pjPath)) {
+		try {
+			const v = JSON.parse(state.vfs.readFileString(pjPath)).version as string;
+			if (satisfiesRange(v, range)) return 0;
+		} catch { /* fall through and reinstall */ }
+	}
+	const existing = state.inFlight.get(targetDir);
+	if (existing) return existing;
+
+	const p = (async () => {
+		state.stdout.write(`  ${name}@${range}...\n`);
+		const info = await fetchExtract(state, name, range, targetDir);
+		linkGlobalBins(state, info, targetDir);
+		let count = 1;
+		if (info.dependencies) {
+			const childModules = join(targetDir, 'node_modules');
+			const results = await Promise.all(
+				Object.entries(info.dependencies).map(([dn, dr]) =>
+					installDep(state, dn, dr, childModules).catch((e) => {
+						state.stderr.write(`  warn: could not install ${dn}: ${e instanceof Error ? e.message : String(e)}\n`);
+						return 0;
+					}),
+				),
+			);
+			for (const n of results) count += n;
+		}
+		return count;
+	})();
+	state.inFlight.set(targetDir, p);
+	return p;
+}
+
+/** Ensure `name@range` is installed at the top-level, deduping concurrent claims. Returns installed version. */
+async function ensureTop(state: InstallState, name: string, range: string): Promise<{ version: string | null; count: number }> {
+	const known = state.topVersions.get(name);
+	if (known !== undefined) return { version: known, count: 0 };
+	const pending = state.pendingTop.get(name);
+	if (pending) return { version: await pending, count: 0 };
+
+	// Claim the top-level slot synchronously (before any await) so concurrent
+	// requesters of the same dep await this install instead of racing it.
+	let resolveCount = 0;
+	const p = (async () => {
+		try {
+			const meta = await fetchPackageInfo(state.npmRegistry, name, range, state.signal);
+			resolveCount = await installInto(state, name, range, join(state.topBase, name));
+			state.topVersions.set(name, meta.version);
+			return meta.version;
+		} catch (e) {
+			state.stderr.write(`  warn: could not install ${name}: ${e instanceof Error ? e.message : String(e)}\n`);
+			return null;
+		}
+	})();
+	state.pendingTop.set(name, p);
+	const version = await p;
+	return { version, count: resolveCount };
+}
+
+/**
+ * Install `name@range` so that it resolves correctly from `requesterModulesDir`.
+ * Hoists to the top-level when possible; nests under the requester when the
+ * top-level holds an incompatible version.
+ */
+async function installDep(
+	state: InstallState,
+	name: string,
+	range: string,
+	requesterModulesDir: string,
+): Promise<number> {
+	const res = findResolution(state, name, range, requesterModulesDir);
+	if (res.resolved) return 0;
+
+	if (res.conflict) {
+		// The nearest existing copy is incompatible; shadow it at the requester.
+		return installInto(state, name, range, join(requesterModulesDir, name));
 	}
 
-	return installed;
+	// Nothing up the chain — try to hoist to the top-level.
+	const top = await ensureTop(state, name, range);
+	if (top.version && satisfiesRange(top.version, range)) return top.count;
+
+	// Top-level holds an incompatible version (or failed) — nest at the requester.
+	if (requesterModulesDir === state.topBase) return top.count; // already tried top; give up
+	return top.count + await installInto(state, name, range, join(requesterModulesDir, name));
 }
 
 // ─── Subcommands ───
@@ -474,14 +612,13 @@ async function npmInstall(ctx: CommandContext, registry: CommandRegistry, kernel
 		}
 
 		ctx.stdout.write('Installing dependencies...\n');
-		const seen = new Set<string>();
-		const limit = createLimiter(INSTALL_CONCURRENCY);
+		const state = createInstallState(
+			targetBase, ctx.vfs, npmRegistry, ctx.signal, ctx.stdout, ctx.stderr,
+			false, registry, createLimiter(INSTALL_CONCURRENCY), kernel,
+		);
 		const results = await Promise.all(
 			Object.entries(allDeps).map(([name, range]) =>
-				installSinglePackage(
-					name, range, targetBase, ctx.vfs, npmRegistry, ctx.signal,
-					ctx.stdout, ctx.stderr, false, registry, seen, limit, kernel,
-				).catch((e) => {
+				installDep(state, name, range, targetBase).catch((e) => {
 					ctx.stderr.write(`npm ERR! ${name}: ${e instanceof Error ? e.message : String(e)}\n`);
 					return 0;
 				}),
@@ -491,15 +628,14 @@ async function npmInstall(ctx: CommandContext, registry: CommandRegistry, kernel
 	} else {
 		// Install specified packages
 		ctx.stdout.write('Installing packages...\n');
-		const seen = new Set<string>();
-		const limit = createLimiter(INSTALL_CONCURRENCY);
+		const state = createInstallState(
+			targetBase, ctx.vfs, npmRegistry, ctx.signal, ctx.stdout, ctx.stderr,
+			isGlobal, registry, createLimiter(INSTALL_CONCURRENCY),
+		);
 		for (const spec of packages) {
 			const { name, version } = parsePackageSpec(spec);
 			try {
-				installed += await installSinglePackage(
-					name, version, targetBase, ctx.vfs, npmRegistry, ctx.signal,
-					ctx.stdout, ctx.stderr, isGlobal, registry, seen, limit,
-				);
+				installed += await installDep(state, name, version || 'latest', targetBase);
 
 				// Update package.json for local installs
 				if (!isGlobal) {
@@ -1040,12 +1176,12 @@ export function createNpxCommand(
 			const cacheDir = join(NPX_CACHE, parsedName);
 			if (!ctx.vfs.exists(join(cacheDir, 'package.json'))) {
 				const npmRegistry = getRegistry(ctx.env);
-				const seen = new Set<string>();
 				try {
-					await installSinglePackage(
-						parsedName, version, NPX_CACHE, ctx.vfs, npmRegistry, ctx.signal,
-						ctx.stdout, ctx.stderr, false, registry, seen, createLimiter(INSTALL_CONCURRENCY),
+					const state = createInstallState(
+						NPX_CACHE, ctx.vfs, npmRegistry, ctx.signal, ctx.stdout, ctx.stderr,
+						false, registry, createLimiter(INSTALL_CONCURRENCY),
 					);
+					await installDep(state, parsedName, version || 'latest', NPX_CACHE);
 				} catch (e) {
 					ctx.stderr.write(`npx: could not install ${parsedName}: ${e instanceof Error ? e.message : String(e)}\n`);
 					return 1;
@@ -1085,16 +1221,16 @@ export async function npmInstallGlobal(
 ): Promise<number> {
 	const npmRegistry = getRegistry(ctx.env);
 	const startTime = Date.now();
-	const seen = new Set<string>();
 
 	try { ctx.vfs.mkdir(GLOBAL_MODULES, { recursive: true }); } catch { /* exists */ }
 	try { ctx.vfs.mkdir(GLOBAL_BIN, { recursive: true }); } catch { /* exists */ }
 
 	try {
-		const installed = await installSinglePackage(
-			packageName, null, GLOBAL_MODULES, ctx.vfs, npmRegistry, ctx.signal,
-			ctx.stdout, ctx.stderr, true, registry, seen, createLimiter(INSTALL_CONCURRENCY), kernel,
+		const state = createInstallState(
+			GLOBAL_MODULES, ctx.vfs, npmRegistry, ctx.signal, ctx.stdout, ctx.stderr,
+			true, registry, createLimiter(INSTALL_CONCURRENCY), kernel,
 		);
+		const installed = await installDep(state, packageName, 'latest', GLOBAL_MODULES);
 
 		const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
 		ctx.stdout.write(`\nadded ${installed} package${installed !== 1 ? 's' : ''} in ${elapsed}s\n`);

@@ -1,10 +1,19 @@
 import type { CommandOutputStream } from '../commands/types.js';
 import { format } from './util.js';
 
+// Capture the host's real console once, at module load, before VM code can swap
+// the global. Node execution sets `globalThis.console` to a shim for the life of
+// a process — including long-lived ones like an in-VM dev server — so any console
+// method a host-realm library (e.g. React 19.2's dev renderer, which calls
+// `console.timeStamp`) uses must keep working. The shim below overrides only the
+// output methods and falls through to the real console for everything else.
+const realConsole: Console | undefined =
+  typeof console !== 'undefined' ? console : undefined;
+
 export function createConsole(stdout: CommandOutputStream, stderr: CommandOutputStream) {
   const timers = new Map<string, number>();
 
-  return {
+  const overrides: Record<string, unknown> = {
     log: (...args: unknown[]) => {
       stdout.write(format(args[0] as string, ...args.slice(1)) + '\n');
     },
@@ -67,4 +76,19 @@ export function createConsole(stdout: CommandOutputStream, stderr: CommandOutput
       stdout.write(format('%o', data) + '\n');
     },
   };
+
+  // Fall through to the real console (with correct `this`) for any method not
+  // overridden above — timeStamp, groupCollapsed, dirxml, profile, createTask, …
+  return new Proxy(overrides, {
+    get(target, prop, receiver) {
+      if (prop in target) return Reflect.get(target, prop, receiver);
+      const real = realConsole as unknown as Record<PropertyKey, unknown> | undefined;
+      const value = real?.[prop];
+      if (typeof value === 'function') return (value as (...a: unknown[]) => unknown).bind(realConsole);
+      return value;
+    },
+    has(target, prop) {
+      return prop in target || (realConsole ? prop in realConsole : false);
+    },
+  });
 }

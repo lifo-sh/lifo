@@ -31,16 +31,24 @@ const THEME = {
 export class Terminal implements ITerminal {
   private xterm: XTerminal;
   private fitAddon: FitAddon;
+  private container: HTMLElement;
+  private fitRaf = 0;
+  private webglAddon: WebglAddon | null = null;
 
-  constructor(container: HTMLElement) {
+  constructor(container: HTMLElement, options?: { fontSize?: number; webgl?: boolean }) {
+    this.container = container;
     this.xterm = new XTerminal({
       theme: THEME,
       fontFamily: '"Cascadia Code", "Fira Code", "JetBrains Mono", Menlo, monospace',
-      fontSize: 14,
+      fontSize: options?.fontSize ?? 14,
       lineHeight: 1.2,
       cursorBlink: true,
       cursorStyle: 'block',
       allowProposedApi: true,
+      // Treat macOS Option as Meta so Option+←/→, Option+b/f/d, and
+      // Option+Backspace emit escape sequences (word-jump/word-delete) rather
+      // than inserting accented characters.
+      macOptionIsMeta: true,
     });
 
     this.fitAddon = new FitAddon();
@@ -48,21 +56,71 @@ export class Terminal implements ITerminal {
 
     this.xterm.open(container);
 
-    // Try WebGL, fall back to canvas
-    try {
-      const webgl = new WebglAddon();
-      webgl.onContextLoss(() => webgl.dispose());
-      this.xterm.loadAddon(webgl);
-    } catch {
-      // Canvas renderer is fine
-    }
-
-    this.fitAddon.fit();
+    this.setWebgl(options?.webgl !== false);
+    this.scheduleFit();
 
     const resizeObserver = new ResizeObserver(() => {
-      this.fitAddon.fit();
+      this.scheduleFit();
     });
     resizeObserver.observe(container);
+  }
+
+  /**
+   * Toggle the WebGL renderer. WebGL gives the best throughput on desktop, but
+   * its canvas backing store desyncs from the DOM scroll layer on high-DPR touch
+   * devices (the viewport ends up vertically offset from the rendered text), so
+   * callers disable it on mobile — the DOM renderer is used there. Safe to call
+   * live when the viewport crosses the mobile/desktop breakpoint.
+   */
+  setWebgl(enabled: boolean): void {
+    if (enabled && !this.webglAddon) {
+      try {
+        const webgl = new WebglAddon();
+        webgl.onContextLoss(() => {
+          webgl.dispose();
+          if (this.webglAddon === webgl) this.webglAddon = null;
+        });
+        this.xterm.loadAddon(webgl);
+        this.webglAddon = webgl;
+      } catch {
+        // DOM renderer is fine
+      }
+    } else if (!enabled && this.webglAddon) {
+      this.webglAddon.dispose();
+      this.webglAddon = null;
+    }
+    this.scheduleFit();
+  }
+
+  /** Change the font size and refit (e.g. when crossing the phone breakpoint). */
+  setFontSize(px: number): void {
+    if (this.xterm.options.fontSize === px) return;
+    this.xterm.options.fontSize = px;
+    this.scheduleFit();
+  }
+
+  /**
+   * Fit on the next animation frame, coalescing bursts and skipping while the
+   * container has no layout box (e.g. a hidden keep-alive panel). Fitting a
+   * zero-size element yields 0 cols/rows and leaves the WebGL canvas mismatched
+   * with the text grid — the cause of clipped/oversized rendering on reveal.
+   */
+  private scheduleFit(): void {
+    if (this.fitRaf) cancelAnimationFrame(this.fitRaf);
+    this.fitRaf = requestAnimationFrame(() => {
+      this.fitRaf = 0;
+      if (this.container.offsetWidth === 0 || this.container.offsetHeight === 0) return;
+      try {
+        this.fitAddon.fit();
+      } catch {
+        // Renderer not ready yet; the next resize/refit will retry.
+      }
+    });
+  }
+
+  /** Re-measure and fit — call when a hidden terminal becomes visible again. */
+  refit(): void {
+    this.scheduleFit();
   }
 
   write(data: string): void {

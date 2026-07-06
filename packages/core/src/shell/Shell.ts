@@ -378,6 +378,14 @@ export class Shell {
     if (data === '\x1b[H' || data === '\x01') { this.moveCursorHome(); return; } // Home / Ctrl+A
     if (data === '\x1b[F' || data === '\x05') { this.moveCursorEnd(); return; }  // End / Ctrl+E
 
+    // Word jump — Option/Alt+Left/Right (\x1b[1;3), Ctrl+Left/Right (\x1b[1;5),
+    // and Meta-b / Meta-f (readline).
+    if (data === '\x1b[1;3D' || data === '\x1b[1;5D' || data === '\x1bb' || data === '\x1bB') { this.moveCursorWordLeft(); return; }
+    if (data === '\x1b[1;3C' || data === '\x1b[1;5C' || data === '\x1bf' || data === '\x1bF') { this.moveCursorWordRight(); return; }
+    // Word delete — Ctrl+W, Option/Alt+Backspace (\x1b\x7f / \x1b\b), Alt+D (forward)
+    if (data === '\x17' || data === '\x1b\x7f' || data === '\x1b\b') { this.deleteWordLeft(); return; }
+    if (data === '\x1bd' || data === '\x1bD') { this.deleteWordRight(); return; }
+
     // Ctrl+C
     if (data === '\x03') {
       if (this.running && this.abortController) {
@@ -462,11 +470,9 @@ export class Shell {
     // Backspace
     if (data === '\x7f' || data === '\b') {
       if (this.cursorPos > 0) {
-        const before = this.lineBuffer.slice(0, this.cursorPos - 1);
-        const after = this.lineBuffer.slice(this.cursorPos);
-        this.lineBuffer = before + after;
+        this.lineBuffer = this.lineBuffer.slice(0, this.cursorPos - 1) + this.lineBuffer.slice(this.cursorPos);
         this.cursorPos--;
-        this.redrawLine();
+        this.redrawAfterDelete(1, true);
       }
       return;
     }
@@ -474,10 +480,8 @@ export class Shell {
     // Delete
     if (data === '\x1b[3~') {
       if (this.cursorPos < this.lineBuffer.length) {
-        const before = this.lineBuffer.slice(0, this.cursorPos);
-        const after = this.lineBuffer.slice(this.cursorPos + 1);
-        this.lineBuffer = before + after;
-        this.redrawLine();
+        this.lineBuffer = this.lineBuffer.slice(0, this.cursorPos) + this.lineBuffer.slice(this.cursorPos + 1);
+        this.redrawAfterDelete(1, false);
       }
       return;
     }
@@ -489,7 +493,23 @@ export class Shell {
       const after = this.lineBuffer.slice(this.cursorPos);
       this.lineBuffer = before + data + after;
       this.cursorPos += data.length;
-      this.redrawLine();
+
+      // Fast path: while the whole line still fits on one screen row, write the
+      // inserted char(s) + the shifted tail in place and reposition — no
+      // redrawLine(). A full redraw (\r + clear-to-end + reprint) is what makes
+      // the line flicker on every keystroke with the WebGL renderer. Only when
+      // the line wraps to a second row (where the cursor row changes) do we fall
+      // back to redrawLine().
+      const cols = this.terminal.cols;
+      const newTotal = this.getPromptWidth() + this.lineBuffer.length;
+      if (cols > 0 && newTotal < cols) {
+        this.terminal.write(data + after);
+        if (after.length > 0) {
+          this.terminal.write(`\x1b[${after.length}D`); // back to just after the insert
+        }
+      } else {
+        this.redrawLine();
+      }
     }
   }
 
@@ -645,6 +665,34 @@ export class Shell {
     return user.length + 1 + host.length + 1 + displayPath.length + 2;
   }
 
+  /**
+   * Repaint after a deletion by overwriting cells in place — no screen clear or
+   * prompt reprint — so it doesn't flicker (the WebGL renderer flashes on the
+   * \x1b[J that redrawLine uses). `removed` cells were deleted; if `movedLeft`
+   * the cursor first moves left `removed` columns to the edit point (backspace /
+   * word-delete-back). Falls back to redrawLine() when the line spans more than
+   * one screen row, where in-place padding can't erase across rows.
+   */
+  private redrawAfterDelete(removed: number, movedLeft: boolean): void {
+    const cols = this.terminal.cols;
+    // Total columns the line occupied BEFORE the deletion (prompt + old buffer).
+    const oldTotal = this.getPromptWidth() + this.lineBuffer.length + removed;
+    if (cols <= 0 || oldTotal >= cols) {
+      this.redrawLine();
+      return;
+    }
+    if (movedLeft && removed > 0) {
+      this.terminal.write(`\x1b[${removed}D`);
+    }
+    const tail = this.lineBuffer.slice(this.cursorPos);
+    // Rewrite the shifted tail, then blank the `removed` now-vacant cells.
+    this.terminal.write(tail + ' '.repeat(removed));
+    const back = tail.length + removed;
+    if (back > 0) {
+      this.terminal.write(`\x1b[${back}D`);
+    }
+  }
+
   private redrawLine(): void {
     const cols = this.terminal.cols;
     const promptWidth = this.getPromptWidth();
@@ -743,6 +791,68 @@ export class Shell {
     if (diff > 0) {
       this.terminal.write(`\x1b[${diff}C`);
       this.cursorPos = this.lineBuffer.length;
+    }
+  }
+
+  // Word boundaries follow readline: a word is a run of alphanumerics; anything
+  // else is a separator.
+  private static isWordChar(ch: string): boolean {
+    return /[A-Za-z0-9]/.test(ch);
+  }
+
+  /** Index at the start of the current/previous word, left of the cursor. */
+  private wordLeftPos(): number {
+    const buf = this.lineBuffer;
+    let i = this.cursorPos;
+    while (i > 0 && !Shell.isWordChar(buf[i - 1])) i--;
+    while (i > 0 && Shell.isWordChar(buf[i - 1])) i--;
+    return i;
+  }
+
+  /** Index just past the end of the next word, right of the cursor. */
+  private wordRightPos(): number {
+    const buf = this.lineBuffer;
+    const n = buf.length;
+    let i = this.cursorPos;
+    while (i < n && !Shell.isWordChar(buf[i])) i++;
+    while (i < n && Shell.isWordChar(buf[i])) i++;
+    return i;
+  }
+
+  private moveCursorWordLeft(): void {
+    const target = this.wordLeftPos();
+    const delta = this.cursorPos - target;
+    if (delta > 0) {
+      this.terminal.write(`\x1b[${delta}D`);
+      this.cursorPos = target;
+    }
+  }
+
+  private moveCursorWordRight(): void {
+    const target = this.wordRightPos();
+    const delta = target - this.cursorPos;
+    if (delta > 0) {
+      this.terminal.write(`\x1b[${delta}C`);
+      this.cursorPos = target;
+    }
+  }
+
+  private deleteWordLeft(): void {
+    const target = this.wordLeftPos();
+    if (target < this.cursorPos) {
+      const removed = this.cursorPos - target;
+      this.lineBuffer = this.lineBuffer.slice(0, target) + this.lineBuffer.slice(this.cursorPos);
+      this.cursorPos = target;
+      this.redrawAfterDelete(removed, true);
+    }
+  }
+
+  private deleteWordRight(): void {
+    const target = this.wordRightPos();
+    if (target > this.cursorPos) {
+      const removed = target - this.cursorPos;
+      this.lineBuffer = this.lineBuffer.slice(0, this.cursorPos) + this.lineBuffer.slice(target);
+      this.redrawAfterDelete(removed, false);
     }
   }
 

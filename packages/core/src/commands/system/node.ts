@@ -66,8 +66,11 @@ function stripShebang(src: string): string {
 
 /** Check if source contains ESM import/export syntax */
 function isEsmSource(source: string): boolean {
+	// Mask strings/comments first so example import/export syntax inside them
+	// (common in babel plugin sources) doesn't misflag a CJS file as ESM.
+	const { masked } = maskStringLiterals(source);
 	// Match import/export at line start, after semicolon, or minified (import{, import*)
-	return /(?:^|\n|;)\s*(?:import\s*[\w{*('".]|export\s+|export\s*\{)/.test(source);
+	return /(?:^|\n|;)\s*(?:import\s*[\w{*('".]|export\s+|export\s*\{)/.test(masked);
 }
 
 /** Determine if source should be treated as ESM based on filename, content, and package.json type */
@@ -243,19 +246,24 @@ function maskStringLiterals(src: string): { masked: string; literals: string[] }
 	while (i < src.length) {
 		const ch = src[i];
 
-		// Skip single-line comments (may contain unmatched quotes)
+		// Single-line comments — mask so ESM regexes don't match example code
+		// inside them (e.g. babel-preset-expo's `// export { foo as default }`).
 		if (ch === '/' && i + 1 < src.length && src[i + 1] === '/') {
 			const nl = src.indexOf('\n', i);
 			const end = nl === -1 ? src.length : nl;
-			masked += src.slice(i, end);
+			const idx = literals.length;
+			literals.push(src.slice(i, end));
+			masked += '/*__LIFO_C' + idx + '__*/';
 			i = end;
 			continue;
 		}
-		// Skip multi-line comments
+		// Multi-line comments — mask likewise
 		if (ch === '/' && i + 1 < src.length && src[i + 1] === '*') {
 			const end = src.indexOf('*/', i + 2);
 			const close = end === -1 ? src.length : end + 2;
-			masked += src.slice(i, close);
+			const idx = literals.length;
+			literals.push(src.slice(i, close));
+			masked += '/*__LIFO_C' + idx + '__*/';
 			i = close;
 			continue;
 		}
@@ -352,10 +360,93 @@ function replaceImportMetaSafely(code: string): string {
  * Restore original string/template literals from masked placeholders.
  */
 function unmaskStringLiterals(src: string, literals: string[]): string {
-	return src.replace(
-		/(['"`])__LIFO_S(\d+)__\1/g,
-		(_match, _quote, idxStr) => literals[parseInt(idxStr, 10)]
+	return src
+		.replace(
+			/(['"`])__LIFO_S(\d+)__\1/g,
+			(_match, _quote, idxStr) => literals[parseInt(idxStr, 10)]
+		)
+		.replace(
+			/\/\*__LIFO_C(\d+)__\*\//g,
+			(_match, idxStr) => literals[parseInt(idxStr, 10)]
+		);
+}
+
+/**
+ * Rewrite dynamic import() calls to __lifoRequire on ALREADY string/comment-masked
+ * source. The browser's native import() cannot resolve bare Node specifiers like
+ * 'fs/promises' (e.g. pglite's CJS bundle does `await import('fs/promises')`), so
+ * every dynamic import must route through our require. Uses __lifoRequire because
+ * modules may shadow `require` inside a factory scope.
+ */
+function rewriteDynamicImportsMasked(result: string): string {
+	// Dynamic import() with a string-literal specifier.
+	result = result.replace(
+		/(?<!\.)(?<!\w)\bimport\s*\(\s*(['"][^'"]+['"])\s*\)/g,
+		(_match, mod) => `Promise.resolve(__lifoRequire(${mod}))`
 	);
+
+	// Dynamic import() with any expression (variables, templates, nested parens).
+	// Programmatic paren-balancing since regex can't handle nested parens.
+	let i = 0;
+	let out = '';
+	while (i < result.length) {
+		const importIdx = result.indexOf('import(', i);
+		if (importIdx === -1) { out += result.slice(i); break; }
+		// char before 'import' must not be [\w$.] (dot = method call)
+		if (importIdx > 0 && /[\w$.]/.test(result[importIdx - 1])) {
+			out += result.slice(i, importIdx + 7);
+			i = importIdx + 7;
+			continue;
+		}
+		// Skip method definitions like `async import(url) {` (a `{` follows the `)`).
+		{
+			let depth = 1;
+			let k = importIdx + 7;
+			while (k < result.length && depth > 0) {
+				if (result[k] === '(') depth++;
+				else if (result[k] === ')') depth--;
+				k++;
+			}
+			if (depth === 0) {
+				let afterClose = k;
+				while (afterClose < result.length && /[ \t]/.test(result[afterClose])) afterClose++;
+				if (result[afterClose] === '{') {
+					out += result.slice(i, importIdx + 7);
+					i = importIdx + 7;
+					continue;
+				}
+			}
+		}
+		out += result.slice(i, importIdx);
+		let depth = 1;
+		let j = importIdx + 7;
+		while (j < result.length && depth > 0) {
+			if (result[j] === '(') depth++;
+			else if (result[j] === ')') depth--;
+			j++;
+		}
+		if (depth === 0) {
+			const arg = result.slice(importIdx + 7, j - 1);
+			out += `Promise.resolve().then(function() { return __lifoRequire(${arg}); })`;
+		} else {
+			out += result.slice(importIdx, j);
+		}
+		i = j;
+	}
+	return out;
+}
+
+/** Mask strings/comments, rewrite dynamic import(), unmask. For CJS modules that skip transformEsmToCjs. */
+function rewriteDynamicImports(source: string): string {
+	if (!source.includes('import(')) return source;
+	const { masked, literals } = maskStringLiterals(source);
+	let result = unmaskStringLiterals(rewriteDynamicImportsMasked(masked), literals);
+	// Stable require alias captured at wrapper scope before any module-level
+	// `var require` shadow can hoist over it.
+	if (result.includes('__lifoRequire(')) {
+		result = 'var __lifoRequire = require;\n' + result;
+	}
+	return result;
 }
 
 /**
@@ -365,14 +456,18 @@ function unmaskStringLiterals(src: string, literals: string[]): string {
  * @babel/generator declares `class Buffer`). The module's own declaration
  * then wins; positional arguments are unaffected.
  */
-const SHADOWABLE_WRAPPER_PARAMS = ['console', 'process', 'Buffer', 'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'global'];
+const SHADOWABLE_WRAPPER_PARAMS = ['console', 'process', 'Buffer', 'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'global', 'window', 'document', 'self'];
 
 function buildWrapperParams(source: string): string {
-	const params = ['exports', 'require', 'module', '__filename', '__dirname', 'console', 'process', 'Buffer', 'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'global', '__importMetaUrl', '__importMeta', '__importMetaResolve'];
+	const params = ['exports', 'require', 'module', '__filename', '__dirname', 'console', 'process', 'Buffer', 'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'global', '__importMetaUrl', '__importMeta', '__importMetaResolve', 'window', 'document', 'self'];
 	return params.map((p) => {
 		if (!SHADOWABLE_WRAPPER_PARAMS.includes(p)) return p;
-		const re = new RegExp(`(?:^|\\n)[ \\t]*(?:class|let|const)\\s+${p}\\b`);
-		return re.test(source) ? `__lifo_shadowed_${p}` : p;
+		// Direct declaration, e.g. `const Buffer = ...` / `class Buffer {}`
+		const direct = new RegExp(`(?:^|\\n)[ \\t]*(?:class|let|const)\\s+${p}\\b`);
+		// Destructuring declaration, e.g. `const { Buffer } = require('node:buffer')` (undici).
+		// A const/let re-binding a wrapper param name is a SyntaxError, so rename the param.
+		const destructured = new RegExp(`(?:^|\\n)[ \\t]*(?:let|const)\\s*\\{[^{}]*\\b${p}\\b[^{}]*\\}`);
+		return direct.test(source) || destructured.test(source) ? `__lifo_shadowed_${p}` : p;
 	}).join(', ');
 }
 
@@ -605,75 +700,8 @@ export function transformEsmToCjs(source: string): string {
 
 	// --- Other transforms ---
 
-	// Dynamic import() with string literal → Promise.resolve(require())
-	// Negative lookbehind: skip obj.import('...') where '.' precedes import
-	// Uses __lifoRequire (aliased below) instead of bare require: modules may
-	// declare their own `var require` inside a factory scope (e.g. Emscripten's
-	// `var require = createRequire(import.meta.url)`), which hoists and shadows
-	// the wrapper parameter as undefined right where the import() executes.
-	result = result.replace(
-		/(?<!\.)(?<!\w)\bimport\s*\(\s*(['"][^'"]+['"])\s*\)/g,
-		(_match, mod) => `Promise.resolve(__lifoRequire(${mod}))`
-	);
-
-	// Dynamic import() with any expression (variables, template literals, nested parens, etc.)
-	// Must come AFTER the string-literal version above.
-	// Use programmatic paren-balancing since regex can't handle nested parens.
-	{
-		let i = 0;
-		let out = '';
-		while (i < result.length) {
-			// Look for `import(`
-			const importIdx = result.indexOf('import(', i);
-			if (importIdx === -1) { out += result.slice(i); break; }
-			// Check word boundary: char before 'import' must not be [\w$.] (dot = method call)
-			if (importIdx > 0 && /[\w$.]/.test(result[importIdx - 1])) {
-				out += result.slice(i, importIdx + 7);
-				i = importIdx + 7;
-				continue;
-			}
-			// Skip class/object method definitions like `async import(url) {` or `import(url) {`
-			// Method definitions have `) {` after the parameter list (opening method body).
-			// Dynamic imports NEVER have `{` directly after `)`.
-			{
-				let depth = 1;
-				let k = importIdx + 7;
-				while (k < result.length && depth > 0) {
-					if (result[k] === '(') depth++;
-					else if (result[k] === ')') depth--;
-					k++;
-				}
-				if (depth === 0) {
-					let afterClose = k;
-					while (afterClose < result.length && /[ \t]/.test(result[afterClose])) afterClose++;
-					if (result[afterClose] === '{') {
-						// This is a method/function definition, not a dynamic import — skip
-						out += result.slice(i, importIdx + 7);
-						i = importIdx + 7;
-						continue;
-					}
-				}
-			}
-			out += result.slice(i, importIdx);
-			// Find matching close paren with depth tracking
-			let depth = 1;
-			let j = importIdx + 7; // after 'import('
-			while (j < result.length && depth > 0) {
-				if (result[j] === '(') depth++;
-				else if (result[j] === ')') depth--;
-				j++;
-			}
-			if (depth === 0) {
-				const arg = result.slice(importIdx + 7, j - 1);
-				out += `Promise.resolve().then(function() { return __lifoRequire(${arg}); })`;
-			} else {
-				// Unbalanced — leave as-is
-				out += result.slice(importIdx, j);
-			}
-			i = j;
-		}
-		result = out;
-	}
+	// Rewrite dynamic import() → __lifoRequire (browser has no bare-specifier import).
+	result = rewriteDynamicImportsMasked(result);
 
 	// --- Final fixups ---
 
@@ -817,6 +845,12 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			if (name.startsWith('node:')) name = name.slice(5);
 			// file:// URLs (e.g. vite importing its bundled config) → plain paths
 			if (name.startsWith('file://')) name = decodeURIComponent(name.slice('file://'.length));
+			// Metro's `--for-<purpose>` distinct-instance marker (e.g.
+			// `@babel/traverse--for-generate-function-map`) → real package.
+			if (!name.startsWith('.') && !name.startsWith('/')) {
+				const m = name.indexOf('--for-');
+				if (m !== -1) name = name.slice(0, m);
+			}
 
 			// rollup/parseAst is a native NAPI binding — serve the acorn-backed shim
 			if (name === 'rollup/parseAst' || name === 'rollup/parseAst.js') return rollupParseShim;
@@ -905,6 +939,57 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			throw new Error(`Cannot find module '${name}'`);
 		}
 
+		// require.resolve(id) — return the resolved path without loading (used
+		// by Metro/@expo/cli to locate transformers, polyfills, externals).
+		function resolveRequirePath(name: string, fromDir: string): string {
+			if (name.startsWith('node:')) name = name.slice(5);
+			if (moduleMap[name]) return name; // builtin — return the id
+			if (name.startsWith('#')) {
+				const r = resolvePackageImport(name, fromDir);
+				if (r) return r.path;
+			} else if (name.startsWith('./') || name.startsWith('../') || name.startsWith('/')) {
+				const r = resolveVfsModule(name, fromDir);
+				if (r) return r.path;
+			} else {
+				const r = resolveNodeModule(name, fromDir);
+				if (r) return r.path;
+			}
+			const err = new Error(`Cannot find module '${name}'`) as Error & { code: string };
+			err.code = 'MODULE_NOT_FOUND';
+			throw err;
+		}
+
+		// Node-internal resolution APIs that resolve-from (and other resolvers,
+		// e.g. @expo/config's SDK-version detection) call:
+		//   Module._resolveFilename(request, { filename }) and
+		//   Module._nodeModulePaths(dir).
+		function moduleResolveExtras(fallbackDir: string) {
+			return {
+				_resolveFilename: (request: string, parent?: { filename?: string; id?: string }): string => {
+					let fromDir = fallbackDir;
+					if (parent && typeof parent.filename === 'string') fromDir = dirname(parent.filename);
+					else if (parent && typeof parent.id === 'string' && parent.id.includes('/')) fromDir = dirname(parent.id);
+					return resolveRequirePath(request, fromDir);
+				},
+				_nodeModulePaths: (from: string): string[] => {
+					const paths: string[] = [];
+					let cur = from;
+					for (;;) {
+						paths.push(join(cur, 'node_modules'));
+						const p = dirname(cur);
+						if (p === cur) break;
+						cur = p;
+					}
+					return paths;
+				},
+			};
+		}
+		(nodeRequire as unknown as { resolve: unknown }).resolve = Object.assign(
+			(id: string) => resolveRequirePath(id, dir),
+			{ paths: () => null },
+		);
+		(nodeRequire as unknown as { cache: unknown }).cache = Object.create(null);
+
 		// Override module shim so createRequire returns nodeRequire (resolves VFS + node_modules)
 		moduleMap.module = () => {
 			const createRequire = (_filename: string | URL) => nodeRequire;
@@ -913,7 +998,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 				const n = s.startsWith('node:') ? s.slice(5) : s;
 				return builtinNames.includes(n);
 			};
-			return { createRequire, builtinModules: builtinNames, isBuiltin, default: { createRequire } };
+			return { createRequire, builtinModules: builtinNames, isBuiltin, ...moduleResolveExtras(dir), default: { createRequire } };
 		};
 
 		function resolveVfsModule(name: string, fromDir: string): { path: string } | null {
@@ -1040,15 +1125,27 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			if (typeof value === 'string') return value;
 			if (value && typeof value === 'object' && !Array.isArray(value)) {
 				const cond = value as Record<string, unknown>;
-				// Prefer require (CJS), then default, then import (ESM)
-				if (typeof cond.require === 'string') return cond.require;
-				if (typeof cond.default === 'string') return cond.default;
-				if (typeof cond.import === 'string') return cond.import;
-				// Recurse into nested conditions (e.g. { node: { require: ... } })
+				// This is a require() context, so honour Node's require conditions
+				// in priority order and recurse into nested condition objects
+				// (e.g. { require: { types, default } }). Crucially, 'import'
+				// (the ESM build) must be tried LAST — a dual package like
+				// signal-exit lists "import" first, and picking it would load an
+				// ESM file in a CJS require.
+				for (const key of ['require', 'node', 'default', 'browser']) {
+					if (key in cond) {
+						const r = resolveExportsCondition(cond[key]);
+						if (r) return r;
+					}
+				}
+				// Any remaining non-standard condition, then finally import.
 				for (const key of Object.keys(cond)) {
-					if (key === 'types') continue; // skip TS declarations
-					const nested = resolveExportsCondition(cond[key]);
-					if (nested) return nested;
+					if (key === 'types' || key === 'import' || key === 'require' || key === 'node' || key === 'default' || key === 'browser') continue;
+					const r = resolveExportsCondition(cond[key]);
+					if (r) return r;
+				}
+				if ('import' in cond) {
+					const r = resolveExportsCondition(cond.import);
+					if (r) return r;
 				}
 			}
 			return null;
@@ -1155,6 +1252,13 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 				if (name.startsWith('node:')) name = name.slice(5);
 				// file:// URLs (e.g. vite importing its bundled config) → plain paths
 				if (name.startsWith('file://')) name = decodeURIComponent(name.slice('file://'.length));
+				// Metro appends `--for-<purpose>` to force a distinct module instance
+				// (e.g. `@babel/traverse--for-generate-function-map`). The real target is
+				// the package before the marker.
+				if (!name.startsWith('.') && !name.startsWith('/')) {
+					const m = name.indexOf('--for-');
+					if (m !== -1) name = name.slice(0, m);
+				}
 
 				// rollup/parseAst is a native NAPI binding — serve the acorn-backed shim
 				if (name === 'rollup/parseAst' || name === 'rollup/parseAst.js') return rollupParseShim;
@@ -1240,6 +1344,13 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 				throw new Error(`Cannot find module '${name}'`);
 			}
 
+			// require.resolve for child modules (resolves relative to this module).
+			(modRequire as unknown as { resolve: unknown }).resolve = Object.assign(
+				(id: string) => resolveRequirePath(id, modDir),
+				{ paths: () => null },
+			);
+			(modRequire as unknown as { cache: unknown }).cache = Object.create(null);
+
 			// Override module shim so createRequire returns modRequire (resolves VFS + node_modules too)
 			modModuleMap.module = () => {
 				const createRequire = (_filename: string | URL) => modRequire;
@@ -1248,18 +1359,26 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 					const n = s.startsWith('node:') ? s.slice(5) : s;
 					return builtinNames.includes(n);
 				};
-				return { createRequire, builtinModules: builtinNames, isBuiltin, default: { createRequire } };
+				return { createRequire, builtinModules: builtinNames, isBuiltin, ...moduleResolveExtras(modDir), default: { createRequire } };
 			};
 
 			let cleanSource = stripShebang(modSource);
 			if (shouldTreatAsEsm(cleanSource, modFilename, ctx.vfs)) {
 				cleanSource = transformEsmToCjs(cleanSource);
+			} else {
+				// CJS modules skip transformEsmToCjs, but still may use dynamic import()
+				// (e.g. pglite's index.cjs → import('fs/promises')). Rewrite those too.
+				cleanSource = rewriteDynamicImports(cleanSource);
 			}
 			const wrapped = `(function(${buildWrapperParams(cleanSource)}) {\n${cleanSource}\n})`;
+			// Give the eval'd module a real filename in stack traces (CallSite.getFileName).
+			// Tools like caller-path/importFresh (used by cosmiconfig) derive paths from the
+			// call stack and break with anonymous eval frames.
+			const sourceUrl = `\n//# sourceURL=${modFilename}`;
 
 			let fn: (...args: unknown[]) => void;
 			try {
-				fn = new Function('return ' + wrapped)();
+				fn = new Function('return ' + wrapped + sourceUrl)();
 			} catch (e) {
 				const err = e instanceof Error ? e : new Error(String(e));
 				ctx.stderr.write(`[ESM-FAIL] file=${modFilename} srcLen=${modSource.length} err=${err.message}\n`);
@@ -1309,6 +1428,10 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 					globalThis.clearTimeout, globalThis.clearInterval,
 					global,
 					importMetaUrl, importMeta, importMetaResolve,
+					// window/document/self undefined: node-executed code must see a Node
+					// environment (no DOM), matching real Node — e.g. so Emscripten
+					// (pglite) doesn't mis-detect the browser and mis-resolve data files.
+					undefined, undefined, undefined,
 				);
 			} catch (e) {
 				if (e instanceof ProcessExitError) throw e;
@@ -1356,7 +1479,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 
 		// Use async IIFE for ESM (supports top-level await)
 		const wrapped = isEsm
-			? `(async function(exports, require, module, __filename, __dirname, console, process, Buffer, setTimeout, setInterval, clearTimeout, clearInterval, global, __importMetaUrl, __importMeta, __importMetaResolve) {\n${cleanMainSource}\n})`
+			? `(async function(exports, require, module, __filename, __dirname, console, process, Buffer, setTimeout, setInterval, clearTimeout, clearInterval, global, __importMetaUrl, __importMeta, __importMetaResolve, window, document, self) {\n${cleanMainSource}\n})`
 			: `(function(${buildWrapperParams(cleanMainSource)}) {\n${cleanMainSource}\n})`;
 
 		// Many npm bundles access globalThis.process directly (not the wrapper param).
@@ -1389,7 +1512,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 		const mainImportMeta = { url: mainImportMetaUrl, dirname: dir, filename };
 		const mainImportMetaResolve = (specifier: string) => { throw new Error(`import.meta.resolve('${specifier}') is not supported`); };
 		try {
-			const fn = new Function('return ' + wrapped)();
+			const fn = new Function('return ' + wrapped + `\n//# sourceURL=${filename}`)();
 			const result = fn(
 				exports, nodeRequire, module, filename, dir,
 				nodeConsole, process, Buffer,
@@ -1397,6 +1520,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 				globalThis.clearTimeout, globalThis.clearInterval,
 				global,
 				mainImportMetaUrl, mainImportMeta, mainImportMetaResolve,
+				undefined, undefined, undefined,
 			);
 
 			// Await if ESM (async IIFE returns a promise)

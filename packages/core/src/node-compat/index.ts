@@ -20,6 +20,8 @@ import * as ttyModule from './tty.js';
 import * as dnsModule from './dns.js';
 import { createModuleShim } from './module.js';
 import * as readlineModule from './readline.js';
+import * as diagnosticsChannelModule from './diagnostics_channel.js';
+import * as asyncHooksModule from './async_hooks.js';
 import { createRimraf } from './rimraf.js';
 import { createEsbuild } from './esbuild.js';
 
@@ -57,7 +59,22 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
       mod.default = EventEmitter;
       return mod;
     },
-    buffer: () => ({ Buffer }),
+    buffer: () => {
+      const g = globalThis as {
+        Blob?: unknown; File?: unknown; atob?: unknown; btoa?: unknown;
+      };
+      return {
+        Buffer,
+        SlowBuffer: Buffer,
+        Blob: g.Blob,
+        File: g.File,
+        atob: g.atob,
+        btoa: g.btoa,
+        kMaxLength: 0x7fffffff,
+        kStringMaxLength: 0x1fffffe8,
+        constants: { MAX_LENGTH: 0x7fffffff, MAX_STRING_LENGTH: 0x1fffffe8 },
+      };
+    },
     util: () => utilModule,
     http: () => createHttp(ctx.portRegistry, 'http:'),
     https: () => createHttp(ctx.portRegistry, 'https:'),
@@ -70,6 +87,7 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
         Readable: typeof streamModule.Readable;
         Writable: typeof streamModule.Writable;
         Duplex: typeof streamModule.Duplex;
+        Transform: typeof streamModule.Transform;
         PassThrough: typeof streamModule.PassThrough;
         default: typeof EventEmitter;
       });
@@ -77,8 +95,40 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
       Stream.Readable = streamModule.Readable;
       Stream.Writable = streamModule.Writable;
       Stream.Duplex = streamModule.Duplex;
+      Stream.Transform = streamModule.Transform;
       Stream.PassThrough = streamModule.PassThrough;
       Stream.default = Stream;
+
+      // Stream state predicates + helpers (undici and others call these).
+      type AnyStream = { destroyed?: boolean; readable?: boolean; writable?: boolean; on(ev: string, fn: (...a: unknown[]) => void): unknown; pipe?: (dest: unknown) => unknown };
+      const S = Stream as unknown as Record<string, unknown>;
+      S.isDisturbed = (s: AnyStream) => !!(s && s.destroyed);
+      S.isErrored = (_s: AnyStream) => false;
+      S.isReadable = (s: AnyStream) => !!(s && s.readable);
+      S.isWritable = (s: AnyStream) => !!(s && s.writable);
+      S.finished = (stream: AnyStream, optsOrCb: unknown, cb?: (err?: Error | null) => void) => {
+        const callback = (typeof optsOrCb === 'function' ? optsOrCb : cb) as ((err?: Error | null) => void) | undefined;
+        let done = false;
+        const finish = (err?: Error | null) => { if (done) return; done = true; callback?.(err ?? null); };
+        stream.on('end', () => finish());
+        stream.on('finish', () => finish());
+        stream.on('close', () => finish());
+        stream.on('error', (e) => finish(e as Error));
+        return () => { done = true; };
+      };
+      S.pipeline = (...args: unknown[]) => {
+        const last = args[args.length - 1];
+        const callback = typeof last === 'function' ? (args.pop() as (err?: Error | null) => void) : undefined;
+        const streams = (args as AnyStream[]).flat() as AnyStream[];
+        let src = streams[0];
+        for (let i = 1; i < streams.length; i++) {
+          src = src.pipe!(streams[i]) as AnyStream;
+        }
+        const tail = streams[streams.length - 1];
+        if (callback) (S.finished as (s: AnyStream, cb: (e?: Error | null) => void) => void)(tail, callback);
+        return tail;
+      };
+      S.addAbortSignal = (_signal: unknown, stream: AnyStream) => stream;
       return Stream;
     },
     url: () => urlModule,
@@ -91,6 +141,41 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
     'dns/promises': () => dnsModule.promises,
     readline: () => readlineModule,
     'readline/promises': () => readlineModule.promises,
+    diagnostics_channel: () => diagnosticsChannelModule,
+    async_hooks: () => asyncHooksModule,
+    'util/types': () => (utilModule as { typesImpl: unknown }).typesImpl,
+    console: () => {
+      const fmt = (utilModule as { format: (...a: unknown[]) => string }).format;
+      const inspect = (utilModule as { inspect: (o: unknown) => string }).inspect;
+      type Wr = { write(s: string): void };
+      class Console {
+        _stdout: Wr;
+        _stderr: Wr;
+        constructor(opts?: { stdout?: Wr; stderr?: Wr } | Wr) {
+          const o = (opts && 'stdout' in opts ? opts.stdout : (opts as Wr)) as Wr | undefined;
+          const e = (opts && 'stderr' in opts ? opts.stderr : undefined) as Wr | undefined;
+          this._stdout = o || (ctx.stdout as unknown as Wr);
+          this._stderr = e || o || (ctx.stderr as unknown as Wr);
+        }
+        log(...a: unknown[]): void { this._stdout.write(fmt(...a) + '\n'); }
+        info(...a: unknown[]): void { this._stdout.write(fmt(...a) + '\n'); }
+        debug(...a: unknown[]): void { this._stdout.write(fmt(...a) + '\n'); }
+        error(...a: unknown[]): void { this._stderr.write(fmt(...a) + '\n'); }
+        warn(...a: unknown[]): void { this._stderr.write(fmt(...a) + '\n'); }
+        dir(o: unknown): void { this._stdout.write(inspect(o) + '\n'); }
+        trace(...a: unknown[]): void { this._stderr.write('Trace: ' + fmt(...a) + '\n'); }
+        assert(cond: unknown, ...a: unknown[]): void { if (!cond) this._stderr.write('Assertion failed' + (a.length ? ': ' + fmt(...a) : '') + '\n'); }
+        table(data: unknown): void { this._stdout.write(inspect(data) + '\n'); }
+        group(...a: unknown[]): void { if (a.length) this.log(...a); }
+        groupEnd(): void { /* no-op */ }
+        time(): void { /* no-op */ }
+        timeEnd(): void { /* no-op */ }
+        count(): void { /* no-op */ }
+        clear(): void { /* no-op */ }
+      }
+      const instance = new Console({ stdout: ctx.stdout as unknown as Wr, stderr: ctx.stderr as unknown as Wr });
+      return Object.assign(instance, { Console });
+    },
     constants: () => {
       const fs = createFs(ctx.vfs, ctx.cwd);
       const os = createOs(ctx.env);
@@ -103,9 +188,21 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
       unescape: decodeURIComponent,
     }),
     assert: () => {
+      // Real AssertionError class so `err instanceof assert.AssertionError`
+      // checks (e.g. in @expo/cli's error handler) don't throw on undefined.
+      class AssertionError extends Error {
+        code = 'ERR_ASSERTION';
+        constructor(opts?: { message?: string } | string) {
+          super(typeof opts === 'string' ? opts : opts?.message || 'AssertionError');
+          this.name = 'AssertionError';
+        }
+      }
+      const fail = (message?: string): never => { throw new AssertionError(message || 'AssertionError'); };
       const assert = (value: unknown, message?: string) => {
-        if (!value) throw new Error(message || 'AssertionError');
+        if (!value) fail(message);
       };
+      assert.AssertionError = AssertionError;
+      assert.fail = (message?: string) => fail(message);
       assert.ok = assert;
       assert.equal = (a: unknown, b: unknown, msg?: string) => { if (a != b) throw new Error(msg || `${a} != ${b}`); };
       assert.strictEqual = (a: unknown, b: unknown, msg?: string) => { if (a !== b) throw new Error(msg || `${a} !== ${b}`); };
