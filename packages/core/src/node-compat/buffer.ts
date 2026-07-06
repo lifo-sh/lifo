@@ -52,6 +52,14 @@ export class Buffer extends Uint8Array {
     return new Buffer(size);
   }
 
+  // Node pools allocUnsafe but not allocUnsafeSlow; for us they're identical.
+  // safe-buffer only uses the real Buffer when from/alloc/allocUnsafe AND
+  // allocUnsafeSlow all exist — otherwise it wraps it and drops static methods
+  // like isBuffer (non-enumerable, so its for..in copy misses them).
+  static allocUnsafeSlow(size: number): Buffer {
+    return new Buffer(size);
+  }
+
   static isBuffer(obj: unknown): obj is Buffer {
     return obj instanceof Buffer;
   }
