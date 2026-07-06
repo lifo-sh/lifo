@@ -508,7 +508,7 @@ const codeSnippets: Record<string, string> = {
 
 // ─── State ───
 
-type ExampleId = 'interactive' | 'headless' | 'multi' | 'http' | 'explorer' | 'git' | 'ffmpeg' | 'npm' | 'cli' | 'lifo-pkg' | 'build-pkg' | 'vite-react' | 'vite-react-ts' | 'create-vite' | 'tinbase' | 'pglite';
+type ExampleId = 'interactive' | 'headless' | 'multi' | 'http' | 'explorer' | 'git' | 'ffmpeg' | 'npm' | 'cli' | 'lifo-pkg' | 'build-pkg' | 'vite-react' | 'vite-react-ts' | 'create-vite' | 'tinbase' | 'pglite' | 'expo';
 
 const examples: Record<ExampleId, { booted: boolean; boot: () => Promise<void> }> = {
 	interactive: { booted: false, boot: bootInteractive },
@@ -527,6 +527,7 @@ const examples: Record<ExampleId, { booted: boolean; boot: () => Promise<void> }
 	'create-vite': { booted: false, boot: bootCreateVite },
 	tinbase: { booted: false, boot: bootTinbase },
 	pglite: { booted: false, boot: bootPglite },
+	expo: { booted: false, boot: bootExpo },
 };
 
 let activeExample: ExampleId = 'interactive';
@@ -2039,6 +2040,122 @@ export default function App() {
 	return files;
 }
 
+/**
+ * Expo (React Native for Web) app exported with Metro. `expo export --platform web`
+ * runs entirely inside the VM and emits a static `dist/` (index.html + a Metro JS
+ * bundle), which a tiny node http server then serves. Metro runs in-band
+ * (maxWorkers=1, no worker forks) with Watchman disabled, and the export runs
+ * offline (EXPO_OFFLINE=1) so no network round-trips to the Expo API are needed.
+ *
+ * The `expo export` CLI is fire-and-forget (its bin does not await the async
+ * command), so we drive the export from a small script that awaits it directly.
+ */
+function expoAppFiles(root: string): Record<string, string> {
+	const files: Record<string, string> = {};
+
+	files[`${root}/package.json`] = JSON.stringify({
+		name: 'expo-app',
+		version: '1.0.0',
+		main: 'expo/AppEntry.js',
+		scripts: {
+			export: 'node export.mjs',
+			serve: 'node serve.mjs',
+		},
+		dependencies: {
+			expo: '~52.0.0',
+			react: '18.3.1',
+			'react-dom': '18.3.1',
+			'react-native': '0.76.5',
+			'react-native-web': '~0.19.13',
+			'@expo/metro-runtime': '~4.0.1',
+		},
+	}, null, 2);
+
+	files[`${root}/app.json`] = JSON.stringify({
+		expo: {
+			name: 'expo-app',
+			slug: 'expo-app',
+			platforms: ['web'],
+			web: { bundler: 'metro', output: 'single' },
+		},
+	}, null, 2);
+
+	files[`${root}/App.js`] = `import { StyleSheet, Text, View } from 'react-native';
+
+export default function App() {
+  return (
+    <View style={styles.container}>
+      <Text style={styles.title}>Expo inside Lifo 🚀</Text>
+      <Text style={styles.subtitle}>
+        This React Native app was bundled by Metro running in your browser,
+        then exported to a static web build.
+      </Text>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#1a1b26', padding: 24 },
+  title: { fontSize: 28, fontWeight: '700', color: '#c0caf5', marginBottom: 12 },
+  subtitle: { fontSize: 15, color: '#9aa5ce', textAlign: 'center', maxWidth: 420, lineHeight: 22 },
+});
+`;
+
+	files[`${root}/babel.config.js`] = `module.exports = function (api) {
+  api.cache(true);
+  return { presets: ['babel-preset-expo'] };
+};
+`;
+
+	// In-band Metro (no worker forks), no Watchman binary.
+	files[`${root}/metro.config.js`] = `const { getDefaultConfig } = require('expo/metro-config');
+const config = getDefaultConfig(__dirname);
+config.maxWorkers = 1;
+config.resolver.useWatchman = false;
+module.exports = config;
+`;
+
+	// The `expo export` CLI doesn't await its async command, so run it directly.
+	files[`${root}/export.mjs`] = `process.env.NODE_ENV = 'production';
+process.env.EXPO_OFFLINE = '1';
+const { expoExport } = await import('@expo/cli/build/src/export/index.js');
+await expoExport([process.cwd(), '--platform', 'web', '--output-dir', 'dist', '--max-workers', '1']);
+console.log('\\nExport complete — dist/ ready. Now run: npm run serve');
+`;
+
+	// Static file server for the exported dist/ (SPA fallback to index.html).
+	files[`${root}/serve.mjs`] = `import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
+
+const DIST = '${root}/dist';
+const PORT = 8081;
+const TYPES = {
+  '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.mjs': 'text/javascript',
+  '.css': 'text/css', '.json': 'application/json', '.map': 'application/json',
+  '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.ico': 'image/x-icon',
+  '.woff': 'font/woff', '.woff2': 'font/woff2', '.ttf': 'font/ttf',
+};
+
+http.createServer((req, res) => {
+  let p = decodeURIComponent((req.url || '/').split('?')[0]);
+  if (p === '/') p = '/index.html';
+  let file = path.join(DIST, p);
+  try {
+    if (!fs.existsSync(file) || fs.statSync(file).isDirectory()) file = path.join(DIST, 'index.html');
+    const data = fs.readFileSync(file);
+    res.setHeader('Content-Type', TYPES[path.extname(file)] || 'application/octet-stream');
+    res.end(data);
+  } catch {
+    res.statusCode = 404;
+    res.end('Not found');
+  }
+}).listen(PORT, () => console.log('Serving dist/ at http://localhost:' + PORT));
+`;
+
+	return files;
+}
+
 // The well-known local anon key tinbase generates with its default JWT secret
 // (fixed iat, so it's stable across boots — like Supabase's local dev anon key).
 const TINBASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRpbmJhc2UiLCJyb2xlIjoiYW5vbiIsImlhdCI6MTc4MzI3MzU0OSwiZXhwIjoyMDk4NjMzNTQ5fQ.yaaSYTyy2tRkx1myq06zU1ieZiWeJyq_hAZk2qCZEmk';
@@ -2406,6 +2523,10 @@ async function bootTinbase() {
 
 async function bootPglite() {
 	await bootProjectExample({ id: 'pglite', files: pgliteFiles('/home/user/pg-demo'), cwd: '/home/user/pg-demo' });
+}
+
+async function bootExpo() {
+	await bootProjectExample({ id: 'expo', files: expoAppFiles('/home/user/expo-app'), cwd: '/home/user/expo-app', previewPort: 8081 });
 }
 
 // ─── Boot ───

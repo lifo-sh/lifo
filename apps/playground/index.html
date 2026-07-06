@@ -76,6 +76,9 @@
 				<button
 					class="sidebar-item block w-full px-4 py-2 bg-transparent border-none text-tokyo-muted text-[13px] text-left cursor-pointer transition-colors hover:bg-tokyo-hover hover:text-tokyo-fg-bright"
 					data-example="pglite">Postgres (PGlite)</button>
+				<button
+					class="sidebar-item block w-full px-4 py-2 bg-transparent border-none text-tokyo-muted text-[13px] text-left cursor-pointer transition-colors hover:bg-tokyo-hover hover:text-tokyo-fg-bright"
+					data-example="expo">Expo (React Native Web)</button>
 			</div>
 			<div class="py-3 border-t border-tokyo-border">
 				<div class="text-[10px] font-semibold uppercase tracking-widest text-tokyo-comment px-4 pb-1.5">Installable
@@ -298,6 +301,22 @@
 					</div>
 					<div class="w-full rounded-lg overflow-hidden border border-tokyo-border p-2 bg-tokyo-bg flex-1">
 						<div id="terminal-pglite" class="w-full h-full"></div>
+					</div>
+				</div>
+
+				<!-- Expo (React Native Web) -->
+				<div id="out-expo" class="output-panel">
+					<div class="text-[13px] font-semibold text-tokyo-fg-bright mb-0.5">Expo (React Native for Web)</div>
+					<div class="text-[11px] text-tokyo-comment mb-3.5">A real Expo app bundled by Metro in your browser and
+						exported to a static web build —
+						<code>cd expo-app && npm install && npm run export && npm run serve &</code>. The preview below is
+						served through a service worker at <code>/_sw/8081/</code>.
+					</div>
+					<div class="flex flex-col gap-2 flex-1 min-h-0">
+						<div class="h-2/5 min-h-0 rounded-lg overflow-hidden border border-tokyo-border p-2 bg-tokyo-bg">
+							<div id="terminal-expo" class="w-full h-full"></div>
+						</div>
+						<div id="preview-expo" class="flex flex-col flex-1 min-h-0"></div>
 					</div>
 				</div>
 
