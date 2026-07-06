@@ -26,9 +26,12 @@ export function ExampleHost({ activeId }: { activeId: string }) {
             <div
               key={e.id}
               className="absolute inset-0 flex flex-col min-h-0"
-              // Keep inactive examples laid out (real size) but hidden, so their
-              // terminals stay correctly fit instead of collapsing to 0 cols.
-              style={{ visibility: e.id === activeId ? 'visible' : 'hidden' }}
+              // Hide inactive examples with display:none (NOT visibility) — a
+              // descendant's `visibility: visible` (e.g. a TerminalTabs tab)
+              // would override `visibility: hidden` and re-reveal the example,
+              // whose transparent xterm link-layer then intercepts clicks. Their
+              // terminals refit on reveal (ResizeObserver fires 0 → real size).
+              style={{ display: e.id === activeId ? 'flex' : 'none' }}
             >
               <Suspense
                 fallback={

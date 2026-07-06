@@ -69,7 +69,7 @@ export function TerminalTabs({ initial, onAdd }: TerminalTabsProps) {
       </div>
       <div className="flex-1 relative border border-tokyo-border border-t-0 rounded-b-lg overflow-hidden">
         {tabs.map((t, i) => (
-          <div key={i} className="absolute inset-0 p-2" style={{ visibility: i === active ? 'visible' : 'hidden' }}>
+          <div key={i} className="absolute inset-0 p-2" style={{ display: i === active ? 'block' : 'none' }}>
             <TerminalView
               className="w-full h-full"
               onReady={(term) => {
