@@ -13,6 +13,7 @@ import type { VirtualRequestHandler } from '../index.js';
 import type { VirtualResponseWithDone } from '../../node-compat/http.js';
 import { getUpgradeHandlers } from '../../node-compat/http.js';
 import { EventEmitter } from '../../node-compat/events.js';
+import { Buffer } from '../../node-compat/buffer.js';
 import { encodeFrame, FrameDecoder, OPCODE, splitHandshake } from './ws-frame.js';
 
 interface SwRequestMessage {
@@ -398,7 +399,10 @@ export class ServiceWorkerBridge {
 		if (!conn || conn.socket.destroyed) return;
 		const payload = base64ToBytes(msg.data);
 		const opcode = msg.binary ? OPCODE.binary : OPCODE.text;
-		conn.socket.emit('data', encodeFrame(opcode, payload, randomMask));
+		// Emit a Buffer (not a raw Uint8Array): in-VM ws servers (e.g. Metro's HMR
+		// server via the `ws` package) parse frames with Buffer methods like
+		// readUInt16BE, which a plain Uint8Array lacks.
+		conn.socket.emit('data', Buffer.from(encodeFrame(opcode, payload, randomMask)));
 	}
 
 	private handleWsClose(msg: SwWsCloseMessage): void {
@@ -407,7 +411,7 @@ export class ServiceWorkerBridge {
 		this.wsConns.delete(msg.connId);
 		// Send a WS close frame, then tear the socket down.
 		if (!conn.socket.destroyed) {
-			conn.socket.emit('data', encodeFrame(OPCODE.close, new Uint8Array(0), randomMask));
+			conn.socket.emit('data', Buffer.from(encodeFrame(OPCODE.close, new Uint8Array(0), randomMask)));
 			conn.socket.destroy();
 		}
 	}

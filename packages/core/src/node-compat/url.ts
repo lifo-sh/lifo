@@ -90,7 +90,12 @@ export function format(urlObj: {
     (!!urlObj.protocol && /^(?:https?|ftp|gopher|file|wss?):?$/i.test(urlObj.protocol));
   if (wantsSlashes) result += '//';
   if (host) result += host;
-  if (urlObj.pathname) result += urlObj.pathname;
+  if (urlObj.pathname) {
+    // Node prepends '/' to a pathname that doesn't start with one when the URL
+    // has an authority — otherwise host and path fuse (e.g. Metro HMR building
+    // "http://host" + "App.bundle" → "http://hostApp.bundle", an empty-path URL).
+    result += wantsSlashes && !urlObj.pathname.startsWith('/') ? '/' + urlObj.pathname : urlObj.pathname;
+  }
   if (urlObj.search) {
     result += urlObj.search.startsWith('?') ? urlObj.search : '?' + urlObj.search;
   } else if (urlObj.query && typeof urlObj.query === 'object') {

@@ -24,7 +24,12 @@ export function createProcess(opts: ProcessOptions) {
   const proc = {
     argv: ['/usr/bin/node', ...opts.argv],
     argv0: 'node',
-    env: { ...opts.env },
+    // Share the env object by reference — Node has a single process.env across
+    // all modules in a process. (The node command copies the shell env once, so
+    // this shares within the run without leaking back to the shell.) Copying
+    // here would isolate each module, so `process.env.X = ...` set in an entry
+    // script wouldn't be visible to required modules.
+    env: opts.env,
     cwd: () => opts.cwd,
     chdir: (_dir: string) => { throw new Error('process.chdir() is not supported in Lifo'); },
     exit: (code = 0) => {
