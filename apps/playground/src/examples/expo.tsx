@@ -7,8 +7,9 @@ export default function ExpoExample() {
       title="Expo (React Native Web)"
       subtitle={
         <>
-          A React Native app built for the web with Metro — <code>npm install</code>, then{' '}
-          <code>npx expo export --platform web</code> and preview the exported build.
+          A React Native app on a live Metro dev server in your browser —{' '}
+          <code>npm install</code>, then <code>npm run start</code>. Edit <code>App.js</code> and
+          save for Fast Refresh in the preview.
         </>
       }
       files={expoAppFiles('/home/user/expo-app')}

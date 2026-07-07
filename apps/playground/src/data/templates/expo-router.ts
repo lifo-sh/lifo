@@ -4,8 +4,9 @@ export function expoRouterAppFiles(root: string): Record<string, string> {
 	files[`${root}/package.json`] = JSON.stringify({
 		name: 'expo-router-app',
 		version: '1.0.0',
-		main: 'expo-router/entry',
+		main: 'index.js',
 		scripts: {
+			start: 'node start.mjs',
 			export: 'node export.mjs',
 			serve: 'node serve.mjs',
 		},
@@ -35,6 +36,14 @@ export function expoRouterAppFiles(root: string): Record<string, string> {
 			plugins: ['expo-router'],
 		},
 	}, null, 2);
+
+	// Fast Refresh requires the react-refresh runtime (installed by
+	// @expo/metro-runtime) to load BEFORE any component module — Metro only
+	// registers a module's components if global.__ReactRefresh exists when the
+	// module executes. So it must be the first import of the entry file.
+	files[`${root}/index.js`] = `import '@expo/metro-runtime';
+import 'expo-router/entry';
+`;
 
 	files[`${root}/babel.config.js`] = `module.exports = function (api) {
   api.cache(true);
@@ -97,6 +106,33 @@ const styles = StyleSheet.create({
   body: { fontSize: 15, color: '#9aa5ce', marginBottom: 20, textAlign: 'center' },
   link: { fontSize: 16, color: '#7aa2f7', fontWeight: '600' },
 });
+`;
+
+	// Boot the Expo web dev server (Metro) non-interactively, with Fast Refresh.
+	files[`${root}/start.mjs`] = `process.env.NODE_ENV = 'development';
+process.env.EXPO_OFFLINE = '1';
+// NOTE: do NOT set CI — Expo is already non-interactive here (isInteractive() is
+// !CI && stdout.isTTY, and the VM's stdout isn't a TTY), and CI=1 makes Metro
+// disable file watching, which kills Fast Refresh.
+process.env.BROWSER = 'none';    // don't try to open a system browser
+process.env.EXPO_NO_TELEMETRY = '1';
+process.env.EXPO_NO_DEPENDENCY_VALIDATION = '1'; // skip the version doctor check
+
+// Metro's efficient recursive watcher (fs.watch(root, { recursive: true })) is
+// gated to macOS; the VM reports platform 'lifo', so Metro would fall back to a
+// per-directory walker-based watcher that doesn't observe VFS writes (no Fast
+// Refresh). Lifo's fs.watch supports { recursive: true }, so force the native
+// watcher — this is what makes editing a file rebuild + hot-reload.
+try {
+  const nw = await import('metro-file-map/src/watchers/NativeWatcher.js');
+  const NativeWatcher = nw.default ?? nw;
+  NativeWatcher.isSupported = () => true;
+} catch (e) { console.warn('[lifo] NativeWatcher patch failed (no Fast Refresh):', e && e.message); }
+
+const { expoStart } = await import('@expo/cli/build/src/start/index.js');
+await expoStart([process.cwd(), '--web', '--port', '8082']);
+console.log('\\nMetro dev server on http://localhost:8082 — open the preview and edit app/index.js.');
+await new Promise(() => {}); // keep the dev server alive
 `;
 
 	files[`${root}/export.mjs`] = `process.env.NODE_ENV = 'production';

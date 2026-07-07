@@ -796,7 +796,9 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 		const nodeCtx: NodeContext = {
 			vfs: ctx.vfs,
 			cwd: ctx.cwd,
-			env: ctx.env,
+			// Copy the shell env once so the node run has its own process.env
+			// (isolated from the shell) that is then shared across all its modules.
+			env: { ...ctx.env },
 			stdout: ctx.stdout,
 			stderr: ctx.stderr,
 			argv: [filename, ...scriptArgs],
