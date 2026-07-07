@@ -399,7 +399,13 @@ class Server extends EventEmitter {
 
     // Register the handler in portRegistry
     const handler: VirtualRequestHandler = (vReq, vRes) => {
-      const req = new IncomingMessage(0, '', vReq.headers);
+      // Browser requests reach us via fetch/service-worker, which strips the
+      // forbidden `Host` header. Servers rely on it (Metro builds its bundle URL
+      // from `req.headers.host`, and a missing host yields a malformed URL), so
+      // default it to this server's own authority.
+      const headers = { ...vReq.headers };
+      if (!headers.host && !headers.Host) headers.host = `localhost:${port}`;
+      const req = new IncomingMessage(0, '', headers);
       req.method = vReq.method;
       req.url = vReq.url;
 

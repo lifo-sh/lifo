@@ -75,6 +75,33 @@ process.env.BROWSER = 'none';    // don't try to open a system browser
 process.env.EXPO_NO_TELEMETRY = '1';
 process.env.EXPO_NO_DEPENDENCY_VALIDATION = '1'; // skip the semver doctor check
 
+// Run Metro's bundle handler (processRequest) ahead of Expo's SPA fallback.
+// Inside Lifo's VM the .bundle request was falling through to the history
+// fallback (index.html), so the bundle never got built. Wrapping
+// createConnectMiddleware lets Metro handle .bundle/.map/assets first and only
+// falls back for real page routes. The [lifo-expo] logs confirm the routing.
+const metroMod = await import('metro');
+const metro = metroMod.default ?? metroMod;
+const origCreateConnectMiddleware = metro.createConnectMiddleware;
+metro.createConnectMiddleware = async function (config, options) {
+  const result = await origCreateConnectMiddleware.call(this, config, options);
+  const processRequest = result.metroServer.processRequest.bind(result.metroServer);
+  const fallback = result.middleware;
+  const wrapped = (req, res, next) => {
+    const isBundle = /\\.(bundle|map)(\\?|$)/.test(req.url || '');
+    if (isBundle) console.log('[lifo-expo] bundle request →', req.url);
+    processRequest(req, res, (err) => {
+      if (isBundle) console.log('[lifo-expo] processRequest fell through for', req.url, err ? 'err=' + err.message : '(no match)');
+      if (err) return next ? next(err) : res.end();
+      return fallback(req, res, next);
+    });
+  };
+  wrapped.use = (...a) => { fallback.use(...a); return wrapped; };
+  Object.defineProperty(wrapped, 'stack', { get: () => fallback.stack, set: (v) => { fallback.stack = v; } });
+  result.middleware = wrapped;
+  return result;
+};
+
 const { expoStart } = await import('@expo/cli/build/src/start/index.js');
 await expoStart([process.cwd(), '--web', '--port', '8081']);
 console.log('\\nMetro dev server on http://localhost:8081 — open the preview and edit App.js.');
