@@ -457,18 +457,18 @@ const CODE_EXPO = `\
 <span class="code-fn">sed</span> -i <span class="code-string">'s/Expo inside Lifo/Hello Metro/'</span> App.js`;
 
 const CODE_EXPO_ROUTER = `\
-<span class="code-comment"># Expo Router — file-based routing — bundled by Metro</span>
-<span class="code-comment"># in your browser and exported to a static web build.</span>
+<span class="code-comment"># Expo Router — file-based routing on a live Metro dev</span>
+<span class="code-comment"># server, running entirely in your browser.</span>
 <span class="code-comment"># Routes live in app/ (app/index.js, app/about.js).</span>
 
 <span class="code-fn">cd</span> expo-router-app
 <span class="code-fn">npm</span> install          <span class="code-comment"># expo-router, react-navigation, …</span>
-<span class="code-fn">npm</span> run export       <span class="code-comment"># expo export --platform web → dist/</span>
-<span class="code-fn">npm</span> run serve &      <span class="code-comment"># static server on virtual port 8082</span>
+<span class="code-fn">npm</span> run start &      <span class="code-comment"># expo start --web → Metro dev server :8082</span>
 
 <span class="code-comment"># preview pane → /_sw/8082/ (service-worker transport).</span>
 <span class="code-comment"># click "Go to About" — client-side routing, no reload.</span>
-<span class="code-comment"># Metro hashes the router's icon assets via md5-file.</span>`;
+<span class="code-comment"># Fast Refresh: edit app/index.js and save — updates in</span>
+<span class="code-comment"># place (HMR rides the same service-worker shim as Vite).</span>`;
 
 export const codeSnippets: Record<string, string> = {
 	interactive: CODE_INTERACTIVE,

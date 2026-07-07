@@ -4,7 +4,7 @@ export function expoAppFiles(root: string): Record<string, string> {
 	files[`${root}/package.json`] = JSON.stringify({
 		name: 'expo-app',
 		version: '1.0.0',
-		main: 'expo/AppEntry.js',
+		main: 'index.js',
 		scripts: {
 			start: 'node start.mjs',
 			export: 'node export.mjs',
@@ -29,16 +29,40 @@ export function expoAppFiles(root: string): Record<string, string> {
 		},
 	}, null, 2);
 
-	files[`${root}/App.js`] = `import { StyleSheet, Text, View } from 'react-native';
+	// Fast Refresh requires the react-refresh runtime to be installed BEFORE any
+	// component module executes — Metro registers a module's components only if
+	// global.__ReactRefresh exists when the module loads. So @expo/metro-runtime
+	// must be the first import of the ENTRY file (the standard Expo web pattern),
+	// not of App.js: importing it inside App.js runs too late, leaving the initial
+	// App unregistered → every edit "invalidates" the boundary → full reload.
+	files[`${root}/index.js`] = `import '@expo/metro-runtime';
+import { registerRootComponent } from 'expo';
+import App from './App';
+
+registerRootComponent(App);
+`;
+
+	files[`${root}/App.js`] = `import { useState } from 'react';
+import { StyleSheet, Text, View, Pressable } from 'react-native';
 
 export default function App() {
+  const [count, setCount] = useState(0);
   return (
     <View style={styles.container}>
       <Text style={styles.title}>Expo inside Lifo 🚀</Text>
       <Text style={styles.subtitle}>
-        This React Native app is served by a Metro dev server running in your
-        browser. Edit this text and save — Fast Refresh updates it in place.
+        Served by a Metro dev server running in your browser. Edit App.js and
+        save — Fast Refresh updates it in place, keeping the counter value.
       </Text>
+      <View style={styles.row}>
+        <Pressable style={styles.btn} onPress={() => setCount((c) => c - 1)}>
+          <Text style={styles.btnText}>–</Text>
+        </Pressable>
+        <Text style={styles.count}>{count}</Text>
+        <Pressable style={styles.btn} onPress={() => setCount((c) => c + 1)}>
+          <Text style={styles.btnText}>+</Text>
+        </Pressable>
+      </View>
     </View>
   );
 }
@@ -46,7 +70,11 @@ export default function App() {
 const styles = StyleSheet.create({
   container: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#1a1b26', padding: 24 },
   title: { fontSize: 28, fontWeight: '700', color: '#c0caf5', marginBottom: 12 },
-  subtitle: { fontSize: 15, color: '#9aa5ce', textAlign: 'center', maxWidth: 420, lineHeight: 22 },
+  subtitle: { fontSize: 15, color: '#9aa5ce', textAlign: 'center', maxWidth: 420, lineHeight: 22, marginBottom: 24 },
+  row: { flexDirection: 'row', alignItems: 'center', gap: 20 },
+  btn: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#7aa2f7', alignItems: 'center', justifyContent: 'center' },
+  btnText: { fontSize: 24, fontWeight: '700', color: '#1a1b26' },
+  count: { fontSize: 28, fontWeight: '700', color: '#c0caf5', minWidth: 48, textAlign: 'center' },
 });
 `;
 
@@ -70,37 +98,23 @@ module.exports = config;
 	// HMR example uses, so edits update the preview in place.
 	files[`${root}/start.mjs`] = `process.env.NODE_ENV = 'development';
 process.env.EXPO_OFFLINE = '1';
-process.env.CI = '1';            // non-interactive: skip keypress UI + prompts
+// NOTE: do NOT set CI — Expo is already non-interactive here (isInteractive() is
+// !CI && stdout.isTTY, and the VM's stdout isn't a TTY), and CI=1 makes Metro
+// disable file watching, which kills Fast Refresh.
 process.env.BROWSER = 'none';    // don't try to open a system browser
 process.env.EXPO_NO_TELEMETRY = '1';
-process.env.EXPO_NO_DEPENDENCY_VALIDATION = '1'; // skip the semver doctor check
+process.env.EXPO_NO_DEPENDENCY_VALIDATION = '1'; // skip the version doctor check
 
-// Run Metro's bundle handler (processRequest) ahead of Expo's SPA fallback.
-// Inside Lifo's VM the .bundle request was falling through to the history
-// fallback (index.html), so the bundle never got built. Wrapping
-// createConnectMiddleware lets Metro handle .bundle/.map/assets first and only
-// falls back for real page routes. The [lifo-expo] logs confirm the routing.
-const metroMod = await import('metro');
-const metro = metroMod.default ?? metroMod;
-const origCreateConnectMiddleware = metro.createConnectMiddleware;
-metro.createConnectMiddleware = async function (config, options) {
-  const result = await origCreateConnectMiddleware.call(this, config, options);
-  const processRequest = result.metroServer.processRequest.bind(result.metroServer);
-  const fallback = result.middleware;
-  const wrapped = (req, res, next) => {
-    const isBundle = /\\.(bundle|map)(\\?|$)/.test(req.url || '');
-    if (isBundle) console.log('[lifo-expo] bundle request →', req.url);
-    processRequest(req, res, (err) => {
-      if (isBundle) console.log('[lifo-expo] processRequest fell through for', req.url, err ? 'err=' + err.message : '(no match)');
-      if (err) return next ? next(err) : res.end();
-      return fallback(req, res, next);
-    });
-  };
-  wrapped.use = (...a) => { fallback.use(...a); return wrapped; };
-  Object.defineProperty(wrapped, 'stack', { get: () => fallback.stack, set: (v) => { fallback.stack = v; } });
-  result.middleware = wrapped;
-  return result;
-};
+// Metro's efficient recursive watcher (fs.watch(root, { recursive: true })) is
+// gated to macOS; the VM reports platform 'lifo', so Metro would fall back to a
+// per-directory walker-based watcher that doesn't observe VFS writes (no Fast
+// Refresh). Lifo's fs.watch supports { recursive: true }, so force the native
+// watcher — this is what makes editing a file rebuild + hot-reload.
+try {
+  const nw = await import('metro-file-map/src/watchers/NativeWatcher.js');
+  const NativeWatcher = nw.default ?? nw;
+  NativeWatcher.isSupported = () => true;
+} catch (e) { console.warn('[lifo] NativeWatcher patch failed (no Fast Refresh):', e && e.message); }
 
 const { expoStart } = await import('@expo/cli/build/src/start/index.js');
 await expoStart([process.cwd(), '--web', '--port', '8081']);
