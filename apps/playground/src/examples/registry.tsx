@@ -18,6 +18,7 @@ const TinbaseExample = lazy(() => import('@/examples/tinbase'));
 const PgliteExample = lazy(() => import('@/examples/pglite'));
 const ExpoExample = lazy(() => import('@/examples/expo'));
 const ExpoRouterExample = lazy(() => import('@/examples/expo-router'));
+const CreateExpoAppExample = lazy(() => import('@/examples/create-expo-app'));
 const CliExample = lazy(() => import('@/examples/cli'));
 const LifoPkgExample = lazy(() => import('@/examples/lifo-pkg'));
 const BuildPkgExample = lazy(() => import('@/examples/build-pkg'));
@@ -50,6 +51,7 @@ export const examples: ExampleConfig[] = [
   { id: 'pglite', label: 'Postgres (PGlite)', group: 'Real-World Stacks', Component: PgliteExample },
   { id: 'expo', label: 'Expo (React Native Web)', group: 'Real-World Stacks', Component: ExpoExample },
   { id: 'expo-router', label: 'Expo Router', group: 'Real-World Stacks', Component: ExpoRouterExample },
+  { id: 'create-expo-app', label: 'create-expo-app (1:1)', group: 'Real-World Stacks', Component: CreateExpoAppExample },
   // ── Installable Packages ──
   { id: 'git', label: 'Git', group: 'Installable Packages', Component: GitExample },
   { id: 'ffmpeg', label: 'FFmpeg', group: 'Installable Packages', Component: FfmpegExample },

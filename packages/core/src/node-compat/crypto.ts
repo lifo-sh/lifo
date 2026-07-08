@@ -50,6 +50,13 @@ class Hash extends EventEmitter {
     const result = this._digest ?? digestOf(this.algo, this.chunks);
     if (encoding === 'hex') return toHex(result);
     if (encoding === 'base64') return Buffer.from(result).toString('base64');
+    // base64url (RFC 4648 §5): base64 with -/_ and no padding. write-file-atomic
+    // builds its temp filename as `${path}.${sha256(data).digest('base64url')}`,
+    // so a missing case here yielded a raw Buffer stringified into the filename
+    // (binary garbage → ENOENT), breaking every atomic write (e.g. create-expo-app).
+    if (encoding === 'base64url') {
+      return Buffer.from(result).toString('base64').replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
+    }
     return Buffer.from(result);
   }
 
