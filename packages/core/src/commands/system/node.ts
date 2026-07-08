@@ -4,6 +4,22 @@ import { createModuleMap, ProcessExitError } from '../../node-compat/index.js';
 import type { NodeContext } from '../../node-compat/index.js';
 import { createProcess } from '../../node-compat/process.js';
 import { createModuleClass } from '../../node-compat/module.js';
+
+/**
+ * Build the `global` object handed to executed modules. Real Node's `global`
+ * exposes every JS built-in (Math, Number, String, JSON, Object, Array, ...);
+ * babel's constant-evaluator does `context = global[calleeName]` then
+ * `hasOwnProperty.call(context, key)` when folding calls like `Math.pow(...)`,
+ * so a bare `{process, Buffer, console}` makes it throw "Cannot convert
+ * undefined or null to object". Inherit from globalThis so the built-ins
+ * resolve, layer the Node shims as own props, and self-reference (in Node,
+ * `global.global === global`).
+ */
+function makeNodeGlobal(overrides: Record<string, unknown>): Record<string, unknown> {
+	const g = Object.assign(Object.create(globalThis as object), overrides) as Record<string, unknown>;
+	g.global = g;
+	return g;
+}
 import { createConsole } from '../../node-compat/console.js';
 import { Buffer } from '../../node-compat/buffer.js';
 import { VFSError } from '../../kernel/vfs/index.js';
@@ -1189,17 +1205,30 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 							if (resolved) return resolved;
 						}
 					}
-					// Also try wildcard/glob patterns like "./dist/*": "./dist/*"
+					// Wildcard subpath patterns (Node "exports" globs). The key has
+					// exactly one '*' that matches any substring; the capture is
+					// substituted into the target's '*', which may sit ANYWHERE in
+					// the target — not just at the end. e.g. metro SDK 54+ maps
+					// "./private/*": "./src/*.js", so metro/private/lib/Foo →
+					// metro/src/lib/Foo.js. Most-specific (longest prefix) wins.
+					const wildcardMatches: Array<{ prefixLen: number; target: string }> = [];
 					for (const pattern of Object.keys(exportsMap)) {
-						if (pattern.endsWith('/*') && key.startsWith(pattern.slice(0, -1))) {
-							const targetPattern = resolveExportsCondition(exportsMap[pattern]);
-							if (targetPattern && targetPattern.endsWith('/*')) {
-								const suffix = key.slice(pattern.length - 1);
-								const target = targetPattern.slice(0, -1) + suffix;
-								const resolved = resolveVfsModule(target, pkgDir);
-								if (resolved) return resolved;
-							}
+						const star = pattern.indexOf('*');
+						if (star === -1) continue;
+						const pre = pattern.slice(0, star);
+						const post = pattern.slice(star + 1);
+						if (key.length < pre.length + post.length) continue;
+						if (!key.startsWith(pre) || !key.endsWith(post)) continue;
+						const captured = key.slice(pre.length, key.length - post.length);
+						const targetPattern = resolveExportsCondition(exportsMap[pattern]);
+						if (targetPattern && targetPattern.includes('*')) {
+							wildcardMatches.push({ prefixLen: pre.length, target: targetPattern.replace('*', captured) });
 						}
+					}
+					wildcardMatches.sort((a, b) => b.prefixLen - a.prefixLen);
+					for (const m of wildcardMatches) {
+						const resolved = resolveVfsModule(m.target, pkgDir);
+						if (resolved) return resolved;
 					}
 				}
 				// 2. Fall back to direct file resolution
@@ -1427,7 +1456,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 				err.message = `[${modFilename}] ${err.message}`;
 				throw err;
 			}
-			const global = { process: modProcess, Buffer, console: modConsole };
+			const global = makeNodeGlobal({ process: modProcess, Buffer, console: modConsole });
 			// Many npm bundles access globalThis.process directly (not the wrapper param).
 			// Only override in browser-like envs; skip in real Node.js (test runner).
 			const ga = globalThis as Record<string, unknown>;
@@ -1495,7 +1524,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 
 		const module = { exports: {} as Record<string, unknown> };
 		const exports = module.exports;
-		const global = { process, Buffer, console: nodeConsole };
+		const global = makeNodeGlobal({ process, Buffer, console: nodeConsole });
 
 		let cleanMainSource = stripShebang(source);
 		const isEsm = shouldTreatAsEsm(cleanMainSource, filename, ctx.vfs);

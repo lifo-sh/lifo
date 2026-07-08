@@ -493,6 +493,36 @@ class Server extends EventEmitter {
 
 // --- Factory function ---
 
+// --- Agent class ---
+/**
+ * Minimal http(s).Agent. Real Node's Agent manages a socket pool; the VM has
+ * no real sockets, but many packages SUBCLASS it and call super(options) at
+ * module-load time — e.g. agent-base → https-proxy-agent → metro-cache's
+ * HttpStore (pulled in by Expo SDK 54's Metro). So it must be a constructable
+ * EventEmitter with the usual fields + no-op methods, even though it never
+ * actually connects.
+ */
+class Agent extends EventEmitter {
+  options: Record<string, unknown>;
+  maxSockets = Infinity;
+  maxFreeSockets = 256;
+  maxTotalSockets = Infinity;
+  sockets: Record<string, unknown[]> = {};
+  freeSockets: Record<string, unknown[]> = {};
+  requests: Record<string, unknown[]> = {};
+  protocol = 'http:';
+  constructor(options: Record<string, unknown> = {}) {
+    super();
+    this.options = options || {};
+  }
+  addRequest(): void {}
+  createConnection(): never {
+    throw new Error('http.Agent.createConnection() is not supported in Lifo');
+  }
+  getName(): string { return 'lifo:agent'; }
+  destroy(): void {}
+}
+
 export function createHttp(portRegistry?: Map<number, VirtualRequestHandler>, protocol: 'http:' | 'https:' = 'http:') {
   // Track active servers created by this http module instance
   const activeServers: Server[] = [];
@@ -544,6 +574,9 @@ export function createHttp(portRegistry?: Map<number, VirtualRequestHandler>, pr
     return new Server(portRegistry, activeServers, requestHandler);
   }
 
+  const agent = new Agent();
+  agent.protocol = protocol;
+
   const mod = {
     request: httpRequest,
     get: httpGet,
@@ -552,6 +585,8 @@ export function createHttp(portRegistry?: Map<number, VirtualRequestHandler>, pr
     ClientRequest,
     Server,
     ServerResponse,
+    Agent,
+    globalAgent: agent,
     STATUS_CODES,
     METHODS,
     [ACTIVE_SERVERS]: activeServers,
@@ -594,4 +629,4 @@ export function createServer(): never {
   throw new Error('http.createServer() is not supported in Lifo');
 }
 
-export default { request, get, createServer, IncomingMessage, ClientRequest };
+export default { request, get, createServer, IncomingMessage, ClientRequest, Agent };
