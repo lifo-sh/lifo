@@ -84,37 +84,45 @@ const styles = StyleSheet.create({
 };
 `;
 
-	// In-band Metro (no worker forks), no Watchman binary.
 	files[`${root}/metro.config.js`] = `const { getDefaultConfig } = require('expo/metro-config');
 const config = getDefaultConfig(__dirname);
-config.maxWorkers = 1;
-config.resolver.useWatchman = false;
+
+if (require('os').platform() === 'lifo') {
+  // In-band Metro (no worker forks), no Watchman binary.
+  config.maxWorkers = 1;
+  config.resolver.useWatchman = false;
+}
+
 module.exports = config;
 `;
 
-	// Boot the Expo web dev server (Metro) non-interactively. Unlike \`expo export\`
-	// (a one-shot static build), this stays alive serving bundles + a Fast Refresh
-	// HMR websocket — which rides the same service-worker WebSocket shim the Vite
-	// HMR example uses, so edits update the preview in place.
-	files[`${root}/start.mjs`] = `process.env.NODE_ENV = 'development';
-process.env.EXPO_OFFLINE = '1';
-// NOTE: do NOT set CI — Expo is already non-interactive here (isInteractive() is
-// !CI && stdout.isTTY, and the VM's stdout isn't a TTY), and CI=1 makes Metro
-// disable file watching, which kills Fast Refresh.
-process.env.BROWSER = 'none';    // don't try to open a system browser
-process.env.EXPO_NO_TELEMETRY = '1';
-process.env.EXPO_NO_DEPENDENCY_VALIDATION = '1'; // skip the version doctor check
+	// Boot the Expo web dev server (Metro) with Fast Refresh. Portable: on a real
+	// machine this is equivalent to \`expo start --web\`; the Lifo-specific
+	// adaptations only apply when os.platform() === 'lifo'.
+	files[`${root}/start.mjs`] = `import os from 'os';
+const isLifo = os.platform() === 'lifo';
 
-// Metro's efficient recursive watcher (fs.watch(root, { recursive: true })) is
-// gated to macOS; the VM reports platform 'lifo', so Metro would fall back to a
-// per-directory walker-based watcher that doesn't observe VFS writes (no Fast
-// Refresh). Lifo's fs.watch supports { recursive: true }, so force the native
-// watcher — this is what makes editing a file rebuild + hot-reload.
-try {
-  const nw = await import('metro-file-map/src/watchers/NativeWatcher.js');
-  const NativeWatcher = nw.default ?? nw;
-  NativeWatcher.isSupported = () => true;
-} catch (e) { console.warn('[lifo] NativeWatcher patch failed (no Fast Refresh):', e && e.message); }
+process.env.NODE_ENV = 'development';
+process.env.EXPO_NO_TELEMETRY = '1';
+// NOTE: do NOT set CI — Expo is non-interactive without a TTY anyway, and CI=1
+// makes Metro disable file watching, which kills Fast Refresh.
+
+if (isLifo) {
+  process.env.EXPO_OFFLINE = '1';
+  process.env.BROWSER = 'none';    // the preview iframe IS the browser
+  process.env.EXPO_NO_DEPENDENCY_VALIDATION = '1'; // skip the version doctor check
+
+  // Metro's efficient recursive watcher (fs.watch(root, { recursive: true })) is
+  // gated to macOS; the VM reports platform 'lifo', so Metro would fall back to
+  // a per-directory walker-based watcher that doesn't observe VFS writes (no
+  // Fast Refresh). Lifo's fs.watch supports { recursive: true }, so force the
+  // native watcher — this is what makes editing a file rebuild + hot-reload.
+  try {
+    const nw = await import('metro-file-map/src/watchers/NativeWatcher.js');
+    const NativeWatcher = nw.default ?? nw;
+    NativeWatcher.isSupported = () => true;
+  } catch (e) { console.warn('[lifo] NativeWatcher patch failed (no Fast Refresh):', e && e.message); }
+}
 
 const { expoStart } = await import('@expo/cli/build/src/start/index.js');
 await expoStart([process.cwd(), '--web', '--port', '8081']);
