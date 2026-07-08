@@ -68,6 +68,12 @@ export interface NodeContext {
   signal: AbortSignal;
   executeCapture?: (input: string) => Promise<string>;
   portRegistry?: Map<number, VirtualRequestHandler>;
+  /**
+   * Execute CJS source in the VM's module system and return its module.exports.
+   * Set by the node command; backs `require('module')`'s Module#_compile (used
+   * by require-from-string, e.g. @expo/config evaluating app.config.js).
+   */
+  executeCjs?: (code: string, filename: string) => unknown;
 }
 
 export function createModuleMap(ctx: NodeContext): Record<string, () => unknown> {
@@ -400,8 +406,9 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
     }),
   };
 
-  // module shim needs access to the map itself for createRequire
-  map.module = () => createModuleShim(map);
+  // module shim needs access to the map itself for createRequire, and to the
+  // context for Module#_compile (CJS execution via the node command).
+  map.module = () => createModuleShim(map, ctx);
 
   // npm package shims
   map.rimraf = () => createRimraf(ctx.vfs, ctx.cwd);

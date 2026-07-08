@@ -37,6 +37,22 @@ export function expoRouterAppFiles(root: string): Record<string, string> {
 		},
 	}, null, 2);
 
+	// Conditional config (standard Expo mechanism): under Lifo the preview iframe
+	// serves the app at /_sw/8082/, so set Expo's first-class sub-path option,
+	// experiments.baseUrl — inlined as EXPO_BASE_URL at transform time, it makes
+	// Expo Router match routes and generate hrefs/pushState under the prefix.
+	// Outside Lifo (real machine, dev server at the domain root) it's a no-op.
+	files[`${root}/app.config.js`] = `const isLifo = require('os').platform() === 'lifo';
+
+module.exports = ({ config }) => ({
+  ...config,
+  experiments: {
+    ...config.experiments,
+    ...(isLifo ? { baseUrl: '/_sw/8082' } : {}),
+  },
+});
+`;
+
 	// Fast Refresh requires the react-refresh runtime (installed by
 	// @expo/metro-runtime) to load BEFORE any component module — Metro only
 	// registers a module's components if global.__ReactRefresh exists when the
@@ -53,8 +69,24 @@ import 'expo-router/entry';
 
 	files[`${root}/metro.config.js`] = `const { getDefaultConfig } = require('expo/metro-config');
 const config = getDefaultConfig(__dirname);
-config.maxWorkers = 1;
-config.resolver.useWatchman = false;
+
+if (require('os').platform() === 'lifo') {
+  // In-band Metro (no worker forks), no Watchman binary.
+  config.maxWorkers = 1;
+  config.resolver.useWatchman = false;
+
+  // With experiments.baseUrl (see app.config.js), the page's script src is
+  // /_sw/8082/index.bundle and the HMR client registers that full URL as its
+  // entry point. Metro resolves entries against the server root, so strip the
+  // prefix from incoming URLs (Metro applies rewriteRequestUrl to both HTTP
+  // and HMR-registration URLs).
+  const prevRewrite = config.server.rewriteRequestUrl;
+  config.server.rewriteRequestUrl = (url) => {
+    const stripped = url.replace(/^(https?:\\/\\/[^/]+)?\\/_sw\\/\\d+/, '$1');
+    return prevRewrite ? prevRewrite(stripped) : stripped;
+  };
+}
+
 module.exports = config;
 `;
 
@@ -108,26 +140,53 @@ const styles = StyleSheet.create({
 });
 `;
 
-	// Boot the Expo web dev server (Metro) non-interactively, with Fast Refresh.
-	files[`${root}/start.mjs`] = `process.env.NODE_ENV = 'development';
-process.env.EXPO_OFFLINE = '1';
-// NOTE: do NOT set CI — Expo is already non-interactive here (isInteractive() is
-// !CI && stdout.isTTY, and the VM's stdout isn't a TTY), and CI=1 makes Metro
-// disable file watching, which kills Fast Refresh.
-process.env.BROWSER = 'none';    // don't try to open a system browser
-process.env.EXPO_NO_TELEMETRY = '1';
-process.env.EXPO_NO_DEPENDENCY_VALIDATION = '1'; // skip the version doctor check
+	// Boot the Expo web dev server (Metro) with Fast Refresh. Portable: on a real
+	// machine this is equivalent to \`expo start --web\`; the Lifo-specific
+	// adaptations only apply when os.platform() === 'lifo'.
+	files[`${root}/start.mjs`] = `import os from 'os';
+const isLifo = os.platform() === 'lifo';
 
-// Metro's efficient recursive watcher (fs.watch(root, { recursive: true })) is
-// gated to macOS; the VM reports platform 'lifo', so Metro would fall back to a
-// per-directory walker-based watcher that doesn't observe VFS writes (no Fast
-// Refresh). Lifo's fs.watch supports { recursive: true }, so force the native
-// watcher — this is what makes editing a file rebuild + hot-reload.
-try {
-  const nw = await import('metro-file-map/src/watchers/NativeWatcher.js');
-  const NativeWatcher = nw.default ?? nw;
-  NativeWatcher.isSupported = () => true;
-} catch (e) { console.warn('[lifo] NativeWatcher patch failed (no Fast Refresh):', e && e.message); }
+process.env.NODE_ENV = 'development';
+process.env.EXPO_NO_TELEMETRY = '1';
+// NOTE: do NOT set CI — Expo is non-interactive without a TTY anyway, and CI=1
+// makes Metro disable file watching, which kills Fast Refresh.
+
+if (isLifo) {
+  process.env.EXPO_OFFLINE = '1';
+  process.env.BROWSER = 'none';    // the preview iframe IS the browser
+  process.env.EXPO_NO_DEPENDENCY_VALIDATION = '1'; // skip the version doctor check
+
+  // Metro's efficient recursive watcher (fs.watch(root, { recursive: true })) is
+  // gated to macOS; the VM reports platform 'lifo', so Metro would fall back to
+  // a per-directory walker-based watcher that doesn't observe VFS writes (no
+  // Fast Refresh). Lifo's fs.watch supports { recursive: true }, so force the
+  // native watcher — this is what makes editing a file rebuild + hot-reload.
+  try {
+    const nw = await import('metro-file-map/src/watchers/NativeWatcher.js');
+    const NativeWatcher = nw.default ?? nw;
+    NativeWatcher.isSupported = () => true;
+  } catch (e) { console.warn('[lifo] NativeWatcher patch failed (no Fast Refresh):', e && e.message); }
+
+  // expo-router hard-disables baseUrl handling in development (stripBaseUrl /
+  // appendBaseUrl are gated on NODE_ENV !== 'development'), assuming the dev
+  // server is always at the domain root. Under Lifo the app legitimately serves
+  // at /_sw/8082 (experiments.baseUrl, see app.config.js), so remove the gate —
+  // otherwise the router sees pathname /_sw/8082/ and shows "Unmatched Route".
+  // Patched at the source so Metro bundles the corrected code.
+  try {
+    const fs = await import('fs');
+    const gate = "= process.env.EXPO_BASE_URL) {\\n    if (process.env.NODE_ENV !== 'development') {";
+    const opened = "= process.env.EXPO_BASE_URL) {\\n    if (true) { // lifo: baseUrl applies in dev too (served under /_sw/<port>)";
+    for (const f of [
+      'node_modules/expo-router/build/fork/getStateFromPath-forks.js',
+      'node_modules/expo-router/build/fork/getPathFromState-forks.js',
+      'node_modules/expo-router/build/fork/getPathFromState.js',
+    ]) {
+      const src = fs.readFileSync(f, 'utf8');
+      if (src.includes(gate)) fs.writeFileSync(f, src.replace(gate, opened));
+    }
+  } catch (e) { console.warn('[lifo] expo-router baseUrl patch failed:', e && e.message); }
+}
 
 const { expoStart } = await import('@expo/cli/build/src/start/index.js');
 await expoStart([process.cwd(), '--web', '--port', '8082']);

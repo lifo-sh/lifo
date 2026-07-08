@@ -95,6 +95,12 @@ export function makeCreateRequire(
 /**
  * Minimal Module class matching the shape code typically expects.
  */
+
+/** Context hooks the node command wires in so Module instances can execute code. */
+interface ModuleShimHooks {
+  executeCjs?: (code: string, filename: string) => unknown;
+}
+
 export class Module {
   id: string;
   filename: string;
@@ -118,10 +124,44 @@ export class Module {
     throw new Error('Module.require() is not supported — use createRequire() instead');
   }
 
+  /**
+   * Compile + execute CJS source as this module's body (Node semantics), via
+   * the node command's module executor. Packages like require-from-string
+   * (used by @expo/config to evaluate app.config.js) construct a Module and
+   * call this directly.
+   */
+  _compile(code: string, filename: string): unknown {
+    const ctor = this.constructor as typeof Module;
+    const exec = ctor._hooks?.executeCjs ?? Module._hooks?.executeCjs;
+    if (!exec) {
+      throw new Error('module._compile is unavailable outside the node command');
+    }
+    this.exports = exec(code, filename || this.filename);
+    this.loaded = true;
+    return this.exports;
+  }
+
   static builtinModules = builtinModules;
   static isBuiltin = isBuiltin;
   // createRequire is attached dynamically in createModuleShim()
   static createRequire: (filename: string | URL) => RequireFunction;
+  /** Runtime hooks (CJS executor) — attached by createModuleShim. */
+  static _hooks: ModuleShimHooks | undefined;
+
+  /** Node's node_modules lookup chain for a directory (posix walk-up). */
+  static _nodeModulePaths(from: string): string[] {
+    const paths: string[] = [];
+    let dir = (from || '/').replace(/\/+$/, '') || '/';
+    for (;;) {
+      if (!dir.endsWith('/node_modules')) {
+        paths.push(dir === '/' ? '/node_modules' : dir + '/node_modules');
+      }
+      const parent = dir.slice(0, dir.lastIndexOf('/')) || '/';
+      if (parent === dir) break;
+      dir = parent;
+    }
+    return paths;
+  }
 
   static _resolveFilename(request: string): string {
     return request;
@@ -131,18 +171,42 @@ export class Module {
 }
 
 /**
- * Create the full module shim object with createRequire bound to a module map.
+ * Create the module shim with createRequire bound to a module map. Returns the
+ * Module class itself — in Node, `require('module')` IS the Module constructor
+ * (require-from-string does `new (require('module'))(...)`) — with the named
+ * APIs attached as statics.
  */
-export function createModuleShim(moduleMap: Record<string, () => unknown>) {
-  const createRequire = makeCreateRequire(moduleMap);
+export function createModuleShim(
+  moduleMap: Record<string, () => unknown>,
+  hooks?: ModuleShimHooks,
+) {
+  Module.createRequire = makeCreateRequire(moduleMap);
+  if (hooks) Module._hooks = hooks;
 
-  Module.createRequire = createRequire;
-
-  return {
-    Module,
-    builtinModules,
-    isBuiltin,
-    createRequire,
-    default: Module,
+  const M = Module as typeof Module & {
+    Module: typeof Module;
+    default: typeof Module;
   };
+  M.Module = Module;
+  M.default = Module;
+  return M;
+}
+
+/**
+ * Create a fresh, constructable Module class with its own static overrides —
+ * used by the node command, whose `require('module')` must expose its scoped
+ * require (VFS + node_modules resolution) while staying `new`-able with a
+ * working #_compile (require-from-string, @expo/config dynamic configs).
+ */
+export function createModuleClass(
+  hooks: ModuleShimHooks | undefined,
+  statics: Record<string, unknown>,
+): typeof Module {
+  class NodeModule extends Module {}
+  const M = NodeModule as typeof Module & Record<string, unknown>;
+  M._hooks = hooks;
+  Object.assign(M, statics);
+  M.Module = M;
+  M.default = M;
+  return M;
 }
