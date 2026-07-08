@@ -173,31 +173,34 @@ export function createInterface(
   return new Interface({ input: inputOrOpts as InterfaceOptions['input'], output });
 }
 
+// These write real ANSI to the stream (they were no-op stubs). Metro's progress
+// bar, ora spinners, and Expo's interface redraw in place via readline.cursorTo
+// + readline.clearLine; without emitting the escapes nothing updated, so bars
+// never filled and status lines never refreshed.
 export function clearLine(stream: { write?: (data: string) => void }, dir: number, cb?: () => void): boolean {
-  void stream;
-  void dir;
+  stream.write?.(dir < 0 ? '\x1b[1K' : dir > 0 ? '\x1b[0K' : '\x1b[2K');
   cb?.();
   return true;
 }
 
 export function clearScreenDown(stream: { write?: (data: string) => void }, cb?: () => void): boolean {
-  void stream;
+  stream.write?.('\x1b[0J');
   cb?.();
   return true;
 }
 
 export function cursorTo(stream: { write?: (data: string) => void }, x: number, y?: number | (() => void), cb?: () => void): boolean {
-  void stream;
-  void x;
-  if (typeof y === 'function') { y(); return true; }
+  if (typeof y === 'number') stream.write?.(`\x1b[${(y | 0) + 1};${(x | 0) + 1}H`);
+  else { stream.write?.(`\x1b[${(x | 0) + 1}G`); cb = y as (() => void) | undefined; }
   cb?.();
   return true;
 }
 
 export function moveCursor(stream: { write?: (data: string) => void }, dx: number, dy: number, cb?: () => void): boolean {
-  void stream;
-  void dx;
-  void dy;
+  let s = '';
+  if (dx > 0) s += `\x1b[${dx}C`; else if (dx < 0) s += `\x1b[${-dx}D`;
+  if (dy > 0) s += `\x1b[${dy}B`; else if (dy < 0) s += `\x1b[${-dy}A`;
+  if (s) stream.write?.(s);
   cb?.();
   return true;
 }

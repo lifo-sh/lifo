@@ -714,10 +714,20 @@ export function createFs(vfs: VFS, cwd: string) {
     }
   }
 
-  function watchFile(filename: string | URL, optionsOrListener?: { persistent?: boolean; interval?: number } | ((curr: unknown, prev: unknown) => void), listener?: (curr: unknown, prev: unknown) => void): void {
+  function watchFile(filename: string | URL, optionsOrListener?: { persistent?: boolean; interval?: number } | ((curr: unknown, prev: unknown) => void), listener?: (curr: unknown, prev: unknown) => void): EventEmitter {
     const abs = resolvePath(cwd, filename);
     const cb = typeof optionsOrListener === 'function' ? optionsOrListener : listener;
-    if (!cb) return;
+
+    // Node returns a StatWatcher (EventEmitter with ref/unref/stop). Callers
+    // store it and call .unref()/.stop() — e.g. Expo's FileNotifier does
+    // `watchFile(...).unref()`, which crashed when we returned undefined.
+    const watcher = new EventEmitter() as EventEmitter & {
+      ref: () => unknown; unref: () => unknown; stop: () => void;
+    };
+    watcher.ref = () => watcher;
+    watcher.unref = () => watcher;
+
+    if (!cb) { watcher.stop = () => {}; return watcher; }
 
     let prev = statOrZero(abs);
     const unsubscribe = vfs.watch(abs, () => {
@@ -725,6 +735,7 @@ export function createFs(vfs: VFS, cwd: string) {
       const p = prev;
       prev = curr;
       cb(curr, p);
+      watcher.emit('change', curr, p);
     });
 
     let subs = watchFileSubs.get(abs);
@@ -733,6 +744,13 @@ export function createFs(vfs: VFS, cwd: string) {
       watchFileSubs.set(abs, subs);
     }
     subs.set(cb, unsubscribe);
+
+    watcher.stop = () => {
+      unsubscribe();
+      subs!.delete(cb);
+      if (subs!.size === 0) watchFileSubs.delete(abs);
+    };
+    return watcher;
   }
 
   function unwatchFile(filename: string | URL, listener?: (curr: unknown, prev: unknown) => void): void {

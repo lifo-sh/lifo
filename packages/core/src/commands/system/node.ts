@@ -2,7 +2,7 @@ import type { Command } from '../types.js';
 import { resolve, dirname, join, extname } from '../../utils/path.js';
 import { createModuleMap, ProcessExitError } from '../../node-compat/index.js';
 import type { NodeContext } from '../../node-compat/index.js';
-import { createProcess } from '../../node-compat/process.js';
+import { createProcess, createInteractiveStdin } from '../../node-compat/process.js';
 import { createModuleClass } from '../../node-compat/module.js';
 
 /**
@@ -831,6 +831,30 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 		// below in this scope; the arrow defers the reference until call time.
 		nodeCtx.executeCjs = (code, fname) => executeModule(code, fname);
 
+		// One interactive stdin for the whole run, backed by the shell's terminal
+		// input. `ctx.setRawMode` is only provided on interactive terminal runs, so
+		// its presence is our isTTY signal (enables Expo's keypress UI, etc.). The
+		// SAME object is shared across main + all module processes so keypresses
+		// aren't split between competing readers.
+		const interactive = !!ctx.setRawMode;
+		const nodeStdin = createInteractiveStdin(ctx.stdin, ctx.setRawMode, interactive);
+
+		// process.exit() handling. While the main script is still executing
+		// synchronously, exit() must throw (to abort it). Once we're purely
+		// event-driven (a long-running server is up and we're just awaiting it),
+		// an exit() from an event handler — e.g. Expo's Ctrl+C, which calls
+		// process.exit() inside a try/catch right after stopping the server —
+		// should end the run WITHOUT throwing, so that handler completes cleanly
+		// instead of hitting its catch ("Failed to stop server") and cascading.
+		let interceptExit = false;
+		let asyncExitCode: number | null = null;
+		const requestExit = (code: number): boolean => {
+			if (!interceptExit) return false; // still in the sync script → throw as usual
+			asyncExitCode = code;
+			signalExit();
+			return true;
+		};
+
 		const moduleMap = createModuleMap(nodeCtx);
 		const moduleCache = new Map<string, unknown>();
 
@@ -1291,6 +1315,9 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 				cwd: nodeCtx.cwd,
 				stdout: ctx.stdout,
 				stderr: ctx.stderr,
+				stdin: nodeStdin,
+				interactive,
+				onExit: requestExit,
 			});
 			const modConsole = createConsole(ctx.stdout, ctx.stderr);
 
@@ -1519,6 +1546,9 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			cwd: nodeCtx.cwd,
 			stdout: ctx.stdout,
 			stderr: ctx.stderr,
+			stdin: nodeStdin,
+			interactive,
+			onExit: requestExit,
 		});
 		const nodeConsole = createConsole(ctx.stdout, ctx.stderr);
 
@@ -1554,10 +1584,20 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 		for (const k of Object.keys(_rollupHelpers)) { savedHelpers[k] = ga[k]; ga[k] = _rollupHelpers[k]; }
 		// Capture unhandled promise rejections from fire-and-forget async actions
 		let pendingRejection: unknown = null;
+		// Resolves when the run should end because of an async exit — e.g. an
+		// interactive keypress handler (Expo's Ctrl+C) calls process.exit(), which
+		// throws ProcessExitError from the detached stdin pump. Without this the
+		// long-lived server race below would never notice and the run would hang.
+		let signalExit: () => void = () => {};
+		const exitPromise = new Promise<void>((r) => { signalExit = r; });
 		const rejectionHandler = (event: PromiseRejectionEvent) => {
 			pendingRejection = event.reason;
 			event.preventDefault(); // prevent browser default logging
-			ctx.stderr.write(`[unhandledRejection] ${event.reason instanceof Error ? event.reason.stack || event.reason.message : String(event.reason)}\n`);
+			if (event.reason instanceof ProcessExitError) {
+				signalExit();
+			} else {
+				ctx.stderr.write(`[unhandledRejection] ${event.reason instanceof Error ? event.reason.stack || event.reason.message : String(event.reason)}\n`);
+			}
 		};
 		if (typeof globalThis.addEventListener === 'function') {
 			globalThis.addEventListener('unhandledrejection', rejectionHandler as EventListener);
@@ -1578,9 +1618,21 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 				undefined, undefined, undefined,
 			);
 
-			// Await if ESM (async IIFE returns a promise)
+			// Await if ESM (async IIFE returns a promise). The synchronous body of
+			// the script has now run, so we're event-driven from here — a
+			// process.exit() (e.g. Expo's Ctrl+C handler) should end the run
+			// gracefully rather than throw. Race the main promise against
+			// exitPromise: long-running servers await forever (`new Promise(()=>{})`),
+			// so without this a graceful exit would hang on the never-resolving main.
 			if (isEsm && result && typeof result.then === 'function') {
-				await result;
+				interceptExit = true;
+				await Promise.race([result, exitPromise]);
+			}
+
+			// Graceful async process.exit() (interactive keypress, etc.) — the
+			// server was already torn down by whoever called exit(); just end.
+			if (asyncExitCode !== null) {
+				return asyncExitCode;
 			}
 
 			// Check if any servers were started (long-running process).
@@ -1647,19 +1699,28 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 						ctx.signal.addEventListener('abort', () => resolve(), { once: true });
 					});
 
+					// We're now purely event-driven — a process.exit() from here on
+					// (e.g. an interactive keypress handler) should end the run
+					// gracefully rather than throw.
+					interceptExit = true;
+
 					await Promise.race([
 						Promise.all(serverPromises),
 						abortPromise,
+						exitPromise,
 					]);
 
-					// On abort, close all active servers
-					if (ctx.signal.aborted) {
+					// On abort or an async process.exit(), close all active servers.
+					if (ctx.signal.aborted || pendingRejection || asyncExitCode !== null) {
 						for (const server of [...activeServers]) {
 							server.close();
 						}
 					}
 				}
 			}
+
+			// A graceful async process.exit(code) (e.g. Expo's Ctrl+C) ended the run.
+			if (asyncExitCode !== null) return asyncExitCode;
 
 			// If an async action failed (e.g. unhandled rejection from ProcessExitError)
 			if (pendingRejection) {
