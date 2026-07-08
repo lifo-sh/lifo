@@ -14,6 +14,8 @@ export interface ProjectExampleProps {
   cwd: string;
   /** Virtual port to mount an iframe preview browser for (server examples). */
   previewPort?: number;
+  /** Extra env for the sandbox (e.g. Expo-friendly defaults for a stock scaffold). */
+  env?: Record<string, string>;
 }
 
 /**
@@ -21,12 +23,12 @@ export interface ProjectExampleProps {
  * service-worker-backed preview (bottom), split by a resizable handle. The SW
  * bridge serves /_sw/<port>/ with no host process (last-booted example wins).
  */
-export function ProjectExample({ title, subtitle, files, cwd, previewPort }: ProjectExampleProps) {
+export function ProjectExample({ title, subtitle, files, cwd, previewPort, env }: ProjectExampleProps) {
   // null = connecting, true = SW ready, false = unavailable
   const [swReady, setSwReady] = useState<boolean | null>(previewPort ? null : true);
 
   const bootTerminal = async (term: Terminal) => {
-    const sandbox = await Sandbox.create({ terminal: term, files, cwd });
+    const sandbox = await Sandbox.create({ terminal: term, files, cwd, env });
 
     // No tunnel service here: the service worker below is the browser transport;
     // a relay (ws://localhost:3005) only exists for the CLI, so starting the

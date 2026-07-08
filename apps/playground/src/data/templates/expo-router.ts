@@ -7,6 +7,7 @@ export function expoRouterAppFiles(root: string): Record<string, string> {
 		main: 'index.js',
 		scripts: {
 			start: 'node start.mjs',
+			tunnel: 'node start-tunnel.mjs',
 			export: 'node export.mjs',
 			serve: 'node serve.mjs',
 		},
@@ -31,24 +32,27 @@ export function expoRouterAppFiles(root: string): Record<string, string> {
 			name: 'expo-router-app',
 			slug: 'expo-router-app',
 			scheme: 'lifoexpo',
-			platforms: ['web'],
+			platforms: ['ios', 'android', 'web'],
 			web: { bundler: 'metro', output: 'single' },
 			plugins: ['expo-router'],
 		},
 	}, null, 2);
 
-	// Conditional config (standard Expo mechanism): under Lifo the preview iframe
-	// serves the app at /_sw/8082/, so set Expo's first-class sub-path option,
+	// Conditional config (standard Expo mechanism). The web preview iframe serves
+	// the app under /_sw/8082/, so it needs Expo's first-class sub-path option,
 	// experiments.baseUrl — inlined as EXPO_BASE_URL at transform time, it makes
 	// Expo Router match routes and generate hrefs/pushState under the prefix.
-	// Outside Lifo (real machine, dev server at the domain root) it's a no-op.
-	files[`${root}/app.config.js`] = `const isLifo = require('os').platform() === 'lifo';
+	// The value comes from LIFO_BASE_URL, set ONLY by the web launcher (start.mjs);
+	// the native launcher (start-tunnel.mjs, Expo Go over the tunnel) leaves it
+	// unset because the app is served at the tunnel root, not a sub-path. Outside
+	// Lifo the var is never set, so this is a no-op (dev server at the domain root).
+	files[`${root}/app.config.js`] = `const baseUrl = process.env.LIFO_BASE_URL;
 
 module.exports = ({ config }) => ({
   ...config,
   experiments: {
     ...config.experiments,
-    ...(isLifo ? { baseUrl: '/_sw/8082' } : {}),
+    ...(baseUrl ? { baseUrl } : {}),
   },
 });
 `;
@@ -155,6 +159,7 @@ if (isLifo) {
   process.env.EXPO_OFFLINE = '1';
   process.env.BROWSER = 'none';    // the preview iframe IS the browser
   process.env.EXPO_NO_DEPENDENCY_VALIDATION = '1'; // skip the version doctor check
+  process.env.LIFO_BASE_URL = '/_sw/8082'; // web preview is served under this sub-path (see app.config.js)
 
   // Metro's efficient recursive watcher (fs.watch(root, { recursive: true })) is
   // gated to macOS; the VM reports platform 'lifo', so Metro would fall back to
@@ -191,6 +196,58 @@ if (isLifo) {
 const { expoStart } = await import('@expo/cli/build/src/start/index.js');
 await expoStart([process.cwd(), '--web', '--port', '8082']);
 console.log('\\nMetro dev server on http://localhost:8082 — open the preview and edit app/index.js.');
+await new Promise(() => {}); // keep the dev server alive
+`;
+
+	// Boot the dev server for a PHYSICAL PHONE via Expo Go (native bundle), served
+	// over the Lifo tunnel. Runs plain \`expo start\` (no --web) so the manifest
+	// serves for Expo Go. NOTE: no LIFO_BASE_URL here — native is served at the
+	// tunnel root (EXPO_PACKAGER_PROXY_URL), not the /_sw sub-path, so the router
+	// must NOT apply a baseUrl.
+	//
+	// Setup:
+	//   1. On your Mac:   node apps/tunnel-server/server.js
+	//   2. In this VM:    tunnel --port 8082 &
+	//   3. In this VM:    export EXPO_PACKAGER_PROXY_URL=http://<your-mac-LAN-ip>:3005
+	//   4. In this VM:    npm run tunnel
+	//   5. Scan the printed QR with Expo Go.
+	files[`${root}/start-tunnel.mjs`] = `import os from 'os';
+const isLifo = os.platform() === 'lifo';
+
+process.env.NODE_ENV = 'development';
+process.env.EXPO_NO_TELEMETRY = '1';
+
+if (isLifo) {
+  process.env.EXPO_OFFLINE = '1';
+  process.env.BROWSER = 'none';
+  process.env.EXPO_NO_DEPENDENCY_VALIDATION = '1';
+  try {
+    const nw = await import('metro-file-map/src/watchers/NativeWatcher.js');
+    const NativeWatcher = nw.default ?? nw;
+    NativeWatcher.isSupported = () => true;
+  } catch (e) { console.warn('[lifo] NativeWatcher patch failed (no Fast Refresh):', e && e.message); }
+}
+
+const proxy = process.env.EXPO_PACKAGER_PROXY_URL;
+if (!proxy) {
+  console.warn('\\n[lifo] EXPO_PACKAGER_PROXY_URL is not set — the phone will get');
+  console.warn('       unreachable localhost URLs. Before running this, do:');
+  console.warn('         export EXPO_PACKAGER_PROXY_URL=http://<your-mac-LAN-ip>:3005\\n');
+}
+
+const { expoStart } = await import('@expo/cli/build/src/start/index.js');
+await expoStart([process.cwd(), '--port', '8082']); // no --web: serve the native manifest
+
+if (proxy) {
+  const expUrl = proxy.replace(/^https?:\\/\\//, 'exp://');
+  console.log('\\nOpen in Expo Go:  ' + expUrl);
+  try {
+    const qrmod = await import('qrcode-terminal');
+    const qrcode = qrmod.default ?? qrmod;
+    qrcode.generate(expUrl, { small: true });
+  } catch (e) { console.warn('[lifo] QR render failed (type the URL above manually):', e && e.message); }
+}
+console.log('\\nMetro running (native). Keep this open; edits hot-reload on the device.');
 await new Promise(() => {}); // keep the dev server alive
 `;
 
