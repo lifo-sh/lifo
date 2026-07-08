@@ -166,8 +166,28 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
         return tail;
       };
       S.addAbortSignal = (_signal: unknown, stream: AnyStream) => stream;
+      // Promise-based API (require('stream').promises / 'stream/promises').
+      // @expo/cli's FileSystemResponseCache does `stream.promises.finished(ws)`;
+      // a missing .promises threw "reading 'finished' of undefined".
+      const finishedP = (s: AnyStream): Promise<void> => new Promise((resolve, reject) => {
+        const st = s as AnyStream & { destroyed?: boolean; _ended?: boolean; _writableState?: { finished?: boolean } };
+        if (st.destroyed || st._ended || st._writableState?.finished) { resolve(); return; }
+        let done = false;
+        const ok = () => { if (!done) { done = true; resolve(); } };
+        const bad = (e: unknown) => { if (!done) { done = true; reject(e as Error); } };
+        s.on('finish', ok); s.on('end', ok); s.on('close', ok); s.on('error', bad);
+      });
+      S.promises = {
+        finished: finishedP,
+        pipeline: (...args: unknown[]) => {
+          const streams = (args as AnyStream[]).flat().filter((a) => typeof a !== 'function') as AnyStream[];
+          for (let i = 0; i < streams.length - 1; i++) streams[i].pipe!(streams[i + 1]);
+          return finishedP(streams[streams.length - 1]);
+        },
+      };
       return Stream;
     },
+    'stream/promises': () => (map.stream() as unknown as { promises: unknown }).promises,
     url: () => urlModule,
     timers: () => timersModule,
     crypto: () => cryptoModule,
