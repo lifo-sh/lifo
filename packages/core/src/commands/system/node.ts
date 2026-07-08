@@ -3,6 +3,7 @@ import { resolve, dirname, join, extname } from '../../utils/path.js';
 import { createModuleMap, ProcessExitError } from '../../node-compat/index.js';
 import type { NodeContext } from '../../node-compat/index.js';
 import { createProcess } from '../../node-compat/process.js';
+import { createModuleClass } from '../../node-compat/module.js';
 import { createConsole } from '../../node-compat/console.js';
 import { Buffer } from '../../node-compat/buffer.js';
 import { VFSError } from '../../kernel/vfs/index.js';
@@ -808,6 +809,12 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			portRegistry,
 		};
 
+		// Back require('module')'s Module#_compile with the real module executor
+		// (require-from-string constructs a Module and compiles source directly —
+		// e.g. @expo/config evaluating app.config.js). executeModule is declared
+		// below in this scope; the arrow defers the reference until call time.
+		nodeCtx.executeCjs = (code, fname) => executeModule(code, fname);
+
 		const moduleMap = createModuleMap(nodeCtx);
 		const moduleCache = new Map<string, unknown>();
 
@@ -992,15 +999,24 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 		);
 		(nodeRequire as unknown as { cache: unknown }).cache = Object.create(null);
 
-		// Override module shim so createRequire returns nodeRequire (resolves VFS + node_modules)
+		// Override module shim so createRequire returns nodeRequire (resolves VFS +
+		// node_modules). Must stay a constructable Module class with a working
+		// _compile: require-from-string does `new (require('module'))(...)` +
+		// `m._compile(code)` (e.g. @expo/config evaluating app.config.js).
 		moduleMap.module = () => {
-			const createRequire = (_filename: string | URL) => nodeRequire;
 			const builtinNames = Object.keys(moduleMap);
-			const isBuiltin = (s: string) => {
-				const n = s.startsWith('node:') ? s.slice(5) : s;
-				return builtinNames.includes(n);
-			};
-			return { createRequire, builtinModules: builtinNames, isBuiltin, ...moduleResolveExtras(dir), default: { createRequire } };
+			return createModuleClass(
+				{ executeCjs: nodeCtx.executeCjs },
+				{
+					createRequire: (_filename: string | URL) => nodeRequire,
+					builtinModules: builtinNames,
+					isBuiltin: (s: string) => {
+						const n = s.startsWith('node:') ? s.slice(5) : s;
+						return builtinNames.includes(n);
+					},
+					...moduleResolveExtras(dir),
+				},
+			);
 		};
 
 		function resolveVfsModule(name: string, fromDir: string): { path: string } | null {
@@ -1354,14 +1370,22 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			(modRequire as unknown as { cache: unknown }).cache = Object.create(null);
 
 			// Override module shim so createRequire returns modRequire (resolves VFS + node_modules too)
+			// Same as the main map's override: a constructable Module class whose
+			// createRequire is this module's scoped require.
 			modModuleMap.module = () => {
-				const createRequire = (_filename: string | URL) => modRequire;
 				const builtinNames = Object.keys(modModuleMap);
-				const isBuiltin = (s: string) => {
-					const n = s.startsWith('node:') ? s.slice(5) : s;
-					return builtinNames.includes(n);
-				};
-				return { createRequire, builtinModules: builtinNames, isBuiltin, ...moduleResolveExtras(modDir), default: { createRequire } };
+				return createModuleClass(
+					{ executeCjs: nodeCtx.executeCjs },
+					{
+						createRequire: (_filename: string | URL) => modRequire,
+						builtinModules: builtinNames,
+						isBuiltin: (s: string) => {
+							const n = s.startsWith('node:') ? s.slice(5) : s;
+							return builtinNames.includes(n);
+						},
+						...moduleResolveExtras(modDir),
+					},
+				);
 			};
 
 			let cleanSource = stripShebang(modSource);
