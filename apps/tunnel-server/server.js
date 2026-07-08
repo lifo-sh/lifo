@@ -72,6 +72,38 @@ const server = http.createServer(async (req, res) => {
 
   console.log(`[HTTP] ${req.method} ${req.url}`);
 
+  // CORS proxy: /_cors?url=<encoded>. The browser VM can't fetch non-CORS hosts
+  // (e.g. api.expo.dev, which create-expo-app hits for SDK versions); this
+  // fetches server-side and returns with permissive CORS headers. This is the
+  // local stand-in for a hosted Lifo proxy service. Not tunneled — answered
+  // directly by the relay, so it works with no tunnel client connected.
+  if (req.url.startsWith("/_cors")) {
+    const cors = {
+      "access-control-allow-origin": "*",
+      "access-control-allow-methods": "GET,POST,OPTIONS",
+      "access-control-allow-headers": "*",
+    };
+    if (req.method === "OPTIONS") { res.writeHead(204, cors); res.end(); return; }
+    const target = new URL(req.url, "http://localhost").searchParams.get("url");
+    if (!target) { res.writeHead(400, cors); res.end("missing url param"); return; }
+    try {
+      const upstream = await fetch(target, {
+        method: req.method,
+        headers: { accept: req.headers["accept"] || "*/*", "user-agent": req.headers["user-agent"] || "lifo" },
+      });
+      const body = Buffer.from(await upstream.arrayBuffer());
+      res.writeHead(upstream.status, {
+        ...cors,
+        "content-type": upstream.headers.get("content-type") || "application/octet-stream",
+      });
+      res.end(body);
+    } catch (e) {
+      res.writeHead(502, cors);
+      res.end("cors proxy error: " + e.message);
+    }
+    return;
+  }
+
   // Check if tunnel client is connected
   if (!tunnelClient || tunnelClient.readyState !== 1) {
     res.writeHead(503, { "Content-Type": "text/plain" });
