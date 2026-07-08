@@ -850,6 +850,9 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			dirname: dir,
 			signal: ctx.signal,
 			portRegistry,
+			// Lets child_process (exec/spawn) shell out to other VM commands —
+			// e.g. create-expo-app running `npm pack` / `npm install`.
+			executeCapture: ctx.executeCapture,
 		};
 
 		// Back require('module')'s Module#_compile with the real module executor

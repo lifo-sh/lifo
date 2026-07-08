@@ -933,6 +933,79 @@ function registerPkgBins(vfs: VFS, pkgDir: string, registry: CommandRegistry, ke
 	return count;
 }
 
+/** npm's tarball filename convention: @scope/pkg → scope-pkg-version.tgz. */
+function tarballFilename(name: string, version: string): string {
+	return `${name.replace(/^@/, '').replace(/\//g, '-')}-${version}.tgz`;
+}
+
+/**
+ * `npm pack <spec> [--dry-run] [--json] [--pack-destination <dir>]`.
+ *
+ * Resolves the package from the registry; with --dry-run just reports the info,
+ * otherwise downloads the raw .tgz to the (destination or cwd). create-expo-app
+ * uses --dry-run --json to resolve a template, then a real pack to fetch the
+ * tarball (which it extracts itself), all via child_process → executeCapture.
+ */
+async function npmPack(ctx: CommandContext): Promise<number> {
+	const args = ctx.args.slice(1);
+	const dryRun = args.includes('--dry-run');
+	const asJson = args.includes('--json');
+	const destIdx = args.indexOf('--pack-destination');
+	const destArg = destIdx !== -1 ? args[destIdx + 1] : undefined;
+	const destination = destArg ? (destArg.startsWith('/') ? destArg : join(ctx.cwd, destArg)) : ctx.cwd;
+
+	const spec = args.find((a, i) => !a.startsWith('-') && (destIdx === -1 || i !== destIdx + 1));
+	if (!spec) {
+		ctx.stderr.write('npm pack: missing package spec\n');
+		return 1;
+	}
+
+	// Split name@version (handles scoped @scope/pkg@version — lastIndexOf('@')).
+	const at = spec.lastIndexOf('@');
+	const name = at > 0 ? spec.slice(0, at) : spec;
+	const version = at > 0 ? spec.slice(at + 1) : null;
+
+	const registry = ctx.env.NPM_REGISTRY || DEFAULT_REGISTRY;
+	let meta: RegistryVersionInfo;
+	try {
+		meta = await fetchPackageInfo(registry, name, version, ctx.signal);
+	} catch (e) {
+		ctx.stderr.write(`npm pack: ${e instanceof Error ? e.message : String(e)}\n`);
+		return 1;
+	}
+
+	const filename = tarballFilename(meta.name, meta.version);
+	const info = {
+		id: `${meta.name}@${meta.version}`,
+		name: meta.name,
+		version: meta.version,
+		size: 0,
+		unpackedSize: 0,
+		shasum: meta.dist.shasum || '',
+		integrity: meta.dist.integrity || '',
+		filename,
+		files: [] as unknown[],
+		entryCount: 0,
+		bundled: [] as unknown[],
+	};
+
+	if (!dryRun) {
+		try {
+			const response = await fetch(meta.dist.tarball, { signal: ctx.signal });
+			if (!response.ok) throw new Error(`download failed: ${response.status}`);
+			const buf = new Uint8Array(await response.arrayBuffer());
+			try { ctx.vfs.mkdir(destination, { recursive: true }); } catch { /* exists */ }
+			ctx.vfs.writeFile(join(destination, filename), buf);
+		} catch (e) {
+			ctx.stderr.write(`npm pack: ${e instanceof Error ? e.message : String(e)}\n`);
+			return 1;
+		}
+	}
+
+	ctx.stdout.write(asJson ? JSON.stringify([info]) + '\n' : filename + '\n');
+	return 0;
+}
+
 async function npmInfo(ctx: CommandContext): Promise<number> {
 	const args = ctx.args.slice(1);
 	const spec = args[0];
@@ -1055,6 +1128,8 @@ export function createNpmCommand(registry: CommandRegistry, shellExecute?: Shell
 				return npmRun({ ...ctx, args: ['run', 'start', ...ctx.args.slice(1)] }, shellExecute, registry);
 			case 'test':
 				return npmRun({ ...ctx, args: ['run', 'test', ...ctx.args.slice(1)] }, shellExecute, registry);
+			case 'pack':
+				return npmPack(ctx);
 			case 'info':
 			case 'view':
 			case 'show':
