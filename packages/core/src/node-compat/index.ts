@@ -66,7 +66,7 @@ export interface NodeContext {
   filename: string;
   dirname: string;
   signal: AbortSignal;
-  executeCapture?: (input: string) => Promise<string>;
+  executeCapture?: (input: string, opts?: { cwd?: string }) => Promise<string>;
   portRegistry?: Map<number, VirtualRequestHandler>;
   /**
    * Execute CJS source in the VM's module system and return its module.exports.
@@ -245,12 +245,71 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
       assert.strictEqual = (a: unknown, b: unknown, msg?: string) => { if (a !== b) throw new Error(msg || `${a} !== ${b}`); };
       assert.notEqual = (a: unknown, b: unknown, msg?: string) => { if (a == b) throw new Error(msg || `${a} == ${b}`); };
       assert.notStrictEqual = (a: unknown, b: unknown, msg?: string) => { if (a === b) throw new Error(msg || `${a} === ${b}`); };
-      assert.deepStrictEqual = (a: unknown, b: unknown, msg?: string) => {
-        if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error(msg || 'deepStrictEqual failed');
+
+      // Structural deep-equality (Node semantics). recast's patcher calls
+      // assert.deepEqual on AST fragments during native codegen; JSON.stringify
+      // is not a valid substitute (key order, undefined, NaN, cycles), so walk
+      // the values. `strict` toggles ===/SameValueZero vs == for primitives and
+      // whether prototypes must match.
+      const deepEq = (a: unknown, b: unknown, strict: boolean, seen: WeakMap<object, unknown>): boolean => {
+        if (a === b) return true;
+        // NaN
+        if (typeof a === 'number' && typeof b === 'number' && Number.isNaN(a) && Number.isNaN(b)) return true;
+        if (a === null || b === null || typeof a !== 'object' || typeof b !== 'object') {
+          // primitives / mixed
+          return strict ? a === b : a == b; // eslint-disable-line eqeqeq
+        }
+        const oa = a as Record<string, unknown> & object;
+        const ob = b as Record<string, unknown> & object;
+        if (strict && Object.getPrototypeOf(oa) !== Object.getPrototypeOf(ob)) return false;
+        // cycle guard
+        const prev = seen.get(oa);
+        if (prev === ob) return true;
+        seen.set(oa, ob);
+        if (a instanceof Date || b instanceof Date) {
+          return a instanceof Date && b instanceof Date && a.getTime() === b.getTime();
+        }
+        if (a instanceof RegExp || b instanceof RegExp) {
+          return a instanceof RegExp && b instanceof RegExp && a.source === b.source && a.flags === b.flags;
+        }
+        const aArr = Array.isArray(a), bArr = Array.isArray(b);
+        if (aArr !== bArr) return false;
+        if (aArr && bArr) {
+          if (a.length !== b.length) return false;
+          for (let i = 0; i < a.length; i++) if (!deepEq(a[i], b[i], strict, seen)) return false;
+          return true;
+        }
+        if (a instanceof Map || b instanceof Map) {
+          if (!(a instanceof Map && b instanceof Map) || a.size !== b.size) return false;
+          for (const [k, v] of a) { if (!b.has(k) || !deepEq(v, b.get(k), strict, seen)) return false; }
+          return true;
+        }
+        if (a instanceof Set || b instanceof Set) {
+          if (!(a instanceof Set && b instanceof Set) || a.size !== b.size) return false;
+          for (const v of a) if (!b.has(v)) return false;
+          return true;
+        }
+        const ka = Object.keys(oa), kb = Object.keys(ob);
+        if (ka.length !== kb.length) return false;
+        for (const k of ka) {
+          if (!Object.prototype.hasOwnProperty.call(ob, k)) return false;
+          if (!deepEq(oa[k], ob[k], strict, seen)) return false;
+        }
+        return true;
       };
+      assert.deepEqual = (a: unknown, b: unknown, msg?: string) => { if (!deepEq(a, b, false, new WeakMap())) throw new AssertionError(msg || 'deepEqual failed'); };
+      assert.deepStrictEqual = (a: unknown, b: unknown, msg?: string) => { if (!deepEq(a, b, true, new WeakMap())) throw new AssertionError(msg || 'deepStrictEqual failed'); };
+      assert.notDeepEqual = (a: unknown, b: unknown, msg?: string) => { if (deepEq(a, b, false, new WeakMap())) throw new AssertionError(msg || 'notDeepEqual failed'); };
+      assert.notDeepStrictEqual = (a: unknown, b: unknown, msg?: string) => { if (deepEq(a, b, true, new WeakMap())) throw new AssertionError(msg || 'notDeepStrictEqual failed'); };
       assert.throws = (fn: () => void, msg?: string) => {
         try { fn(); throw new Error(msg || 'Expected function to throw'); } catch (e) { if (e instanceof Error && e.message === (msg || 'Expected function to throw')) throw e; }
       };
+      assert.doesNotThrow = (fn: () => void, msg?: string) => { try { fn(); } catch (e) { throw new AssertionError(msg || `Got unwanted exception: ${(e as Error)?.message ?? e}`); } };
+      assert.ifError = (value: unknown) => { if (value !== null && value !== undefined) throw new AssertionError(`ifError got unwanted exception: ${value}`); };
+      // Node exposes the assert function as both the default and .strict, and
+      // (for transpiled `import assert from 'assert'`) as .default.
+      assert.strict = assert;
+      (assert as unknown as { default: unknown }).default = assert;
       return assert;
     },
     // v8 — stub (vite side-effect imports it)

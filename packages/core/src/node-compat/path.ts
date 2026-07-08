@@ -8,6 +8,15 @@ import {
   extname as _extname,
 } from '../utils/path.js';
 
+// Node's path.resolve() bases relative paths on process.cwd(); mirror that so a
+// tool doing path.resolve('my-app') gets <cwd>/my-app, not /my-app. During a
+// node run globalThis.process is the run's process (cwd = the run's cwd);
+// elsewhere it falls back to '/'.
+function cwdBase(): string {
+  const p = (globalThis as { process?: { cwd?: () => string } }).process;
+  try { return p?.cwd?.() || '/'; } catch { return '/'; }
+}
+
 // Some npm packages (import-fresh via cosmiconfig, caller-path) derive a path
 // from a call-stack frame's getFileName(), which is undefined for our eval-based
 // module execution. They then call path.dirname(undefined). Node would throw a
@@ -72,12 +81,12 @@ export function format(pathObj: Partial<ParsedPath>): string {
 export const sep = '/';
 export const delimiter = ':';
 export const posix = {
-  normalize, isAbsolute, join, resolve: (...args: string[]) => resolve('/', ...args),
+  normalize, isAbsolute, join, resolve: (...args: string[]) => resolve(cwdBase(), ...args),
   dirname, basename, extname, relative, parse, format, sep, delimiter,
 };
 // Minimal win32 path — Lifo is posix-only but packages like vite reference win32.sep
 export const win32 = {
-  normalize, isAbsolute, join, resolve: (...args: string[]) => resolve('/', ...args),
+  normalize, isAbsolute, join, resolve: (...args: string[]) => resolve(cwdBase(), ...args),
   dirname, basename, extname, relative, parse, format,
   sep: '\\',
   delimiter: ';',
@@ -85,6 +94,6 @@ export const win32 = {
 
 export { normalize, isAbsolute, join, resolve };
 export default {
-  normalize, isAbsolute, join, resolve: (...args: string[]) => resolve('/', ...args),
+  normalize, isAbsolute, join, resolve: (...args: string[]) => resolve(cwdBase(), ...args),
   dirname, basename, extname, relative, parse, format, sep, delimiter, posix, win32,
 };

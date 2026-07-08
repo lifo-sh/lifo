@@ -392,11 +392,6 @@ class Server extends EventEmitter {
       this._closeResolve = resolve;
     });
 
-    // Debug logging
-    console.log(`[lifo-http] Server.listen() called for port ${port}`);
-    console.log(`[lifo-http] portRegistry exists: ${!!this.portRegistry}`);
-    console.log(`[lifo-http] portRegistry is Map: ${this.portRegistry instanceof Map}`);
-
     // Register the handler in portRegistry
     const handler: VirtualRequestHandler = (vReq, vRes) => {
       // Browser requests reach us via fetch/service-worker, which strips the
@@ -424,7 +419,6 @@ class Server extends EventEmitter {
       });
     };
     this.portRegistry.set(port, handler);
-    console.log(`[lifo-http] ✅ Registered port ${port} in portRegistry (size: ${this.portRegistry.size})`);
 
     // WebSocket upgrade delivery (e.g. Vite's HMR server attaches an
     // 'upgrade' listener and runs the ws frame protocol over the socket).
@@ -450,13 +444,9 @@ class Server extends EventEmitter {
   }
 
   close(callback?: () => void): this {
-    console.log(`[lifo-http] ❌ Server.close() called for port ${this._port}`);
-    console.log(`[lifo-http] Stack trace:`, new Error().stack);
-
     if (this._port !== null) {
       this.portRegistry.delete(this._port);
       getUpgradeHandlers(this.portRegistry).delete(this._port);
-      console.log(`[lifo-http] Deleted port ${this._port} from registry (size now: ${this.portRegistry.size})`);
     }
 
     // Remove from active servers list
@@ -468,11 +458,18 @@ class Server extends EventEmitter {
       this._closeResolve = null;
     }
 
+    this.emit('close');
+
+    // Invoke the callback SYNCHRONOUSLY (before returning). Expo's wrapper does
+    // `originalClose(callback); <tear down ws endpoints>` — the teardown throws
+    // in the VM, so if our callback were deferred (queueMicrotask) the throw
+    // would reject Expo's close promise ("Failed to stop server") before the
+    // callback resolved it. Resolving first means the later throw is swallowed
+    // (promise already settled).
     if (callback) {
-      queueMicrotask(callback);
+      try { callback(); } catch { /* caller's callback threw; not our concern */ }
     }
 
-    this.emit('close');
     return this;
   }
 
@@ -492,6 +489,36 @@ class Server extends EventEmitter {
 }
 
 // --- Factory function ---
+
+// --- Agent class ---
+/**
+ * Minimal http(s).Agent. Real Node's Agent manages a socket pool; the VM has
+ * no real sockets, but many packages SUBCLASS it and call super(options) at
+ * module-load time — e.g. agent-base → https-proxy-agent → metro-cache's
+ * HttpStore (pulled in by Expo SDK 54's Metro). So it must be a constructable
+ * EventEmitter with the usual fields + no-op methods, even though it never
+ * actually connects.
+ */
+class Agent extends EventEmitter {
+  options: Record<string, unknown>;
+  maxSockets = Infinity;
+  maxFreeSockets = 256;
+  maxTotalSockets = Infinity;
+  sockets: Record<string, unknown[]> = {};
+  freeSockets: Record<string, unknown[]> = {};
+  requests: Record<string, unknown[]> = {};
+  protocol = 'http:';
+  constructor(options: Record<string, unknown> = {}) {
+    super();
+    this.options = options || {};
+  }
+  addRequest(): void {}
+  createConnection(): never {
+    throw new Error('http.Agent.createConnection() is not supported in Lifo');
+  }
+  getName(): string { return 'lifo:agent'; }
+  destroy(): void {}
+}
 
 export function createHttp(portRegistry?: Map<number, VirtualRequestHandler>, protocol: 'http:' | 'https:' = 'http:') {
   // Track active servers created by this http module instance
@@ -544,6 +571,9 @@ export function createHttp(portRegistry?: Map<number, VirtualRequestHandler>, pr
     return new Server(portRegistry, activeServers, requestHandler);
   }
 
+  const agent = new Agent();
+  agent.protocol = protocol;
+
   const mod = {
     request: httpRequest,
     get: httpGet,
@@ -552,6 +582,8 @@ export function createHttp(portRegistry?: Map<number, VirtualRequestHandler>, pr
     ClientRequest,
     Server,
     ServerResponse,
+    Agent,
+    globalAgent: agent,
     STATUS_CODES,
     METHODS,
     [ACTIVE_SERVERS]: activeServers,
@@ -594,4 +626,4 @@ export function createServer(): never {
   throw new Error('http.createServer() is not supported in Lifo');
 }
 
-export default { request, get, createServer, IncomingMessage, ClientRequest };
+export default { request, get, createServer, IncomingMessage, ClientRequest, Agent };

@@ -2,8 +2,51 @@ import type { Command } from '../types.js';
 import { resolve, dirname, join, extname } from '../../utils/path.js';
 import { createModuleMap, ProcessExitError } from '../../node-compat/index.js';
 import type { NodeContext } from '../../node-compat/index.js';
-import { createProcess } from '../../node-compat/process.js';
+import { createProcess, createInteractiveStdin } from '../../node-compat/process.js';
 import { createModuleClass } from '../../node-compat/module.js';
+
+/**
+ * Build the `global` object handed to executed modules. Real Node's `global`
+ * exposes every JS built-in (Math, Number, String, JSON, Object, Array, ...);
+ * babel's constant-evaluator does `context = global[calleeName]` then
+ * `hasOwnProperty.call(context, key)` when folding calls like `Math.pow(...)`,
+ * so a bare `{process, Buffer, console}` makes it throw "Cannot convert
+ * undefined or null to object". Inherit from globalThis so the built-ins
+ * resolve, layer the Node shims as own props, and self-reference (in Node,
+ * `global.global === global`).
+ */
+function makeNodeGlobal(overrides: Record<string, unknown>): Record<string, unknown> {
+	const g = Object.assign(Object.create(globalThis as object), overrides) as Record<string, unknown>;
+	g.global = g;
+	return g;
+}
+
+/**
+ * Wrap `fetch` so requests to known non-CORS hosts are routed through a CORS
+ * proxy the browser CAN reach; every other request passes straight through.
+ *
+ * The browser VM can't fetch hosts that don't send CORS headers — e.g.
+ * api.expo.dev, which create-expo-app calls for SDK versions. The proxy base
+ * defaults to the local tunnel-server's /_cors endpoint (the stand-in for a
+ * hosted Lifo proxy); override with LIFO_CORS_PROXY, and the host allow-list
+ * with LIFO_CORS_PROXY_HOSTS (comma-separated).
+ */
+function makeProxyingFetch(realFetch: typeof fetch, env: Record<string, string>): typeof fetch {
+	const base = env.LIFO_CORS_PROXY || 'http://localhost:3005/_cors?url=';
+	const hosts = new Set(
+		(env.LIFO_CORS_PROXY_HOSTS || 'api.expo.dev,exp.host,u.expo.dev')
+			.split(',').map((h) => h.trim()).filter(Boolean),
+	);
+	return ((input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+		try {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : (input as Request).url;
+			if (url && hosts.has(new URL(url).hostname)) {
+				return realFetch(base + encodeURIComponent(url), init);
+			}
+		} catch { /* not a proxyable URL — fall through */ }
+		return realFetch(input, init);
+	}) as typeof fetch;
+}
 import { createConsole } from '../../node-compat/console.js';
 import { Buffer } from '../../node-compat/buffer.js';
 import { VFSError } from '../../kernel/vfs/index.js';
@@ -457,10 +500,10 @@ function rewriteDynamicImports(source: string): string {
  * @babel/generator declares `class Buffer`). The module's own declaration
  * then wins; positional arguments are unaffected.
  */
-const SHADOWABLE_WRAPPER_PARAMS = ['console', 'process', 'Buffer', 'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'global', 'window', 'document', 'self'];
+const SHADOWABLE_WRAPPER_PARAMS = ['console', 'process', 'Buffer', 'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'global', 'window', 'document', 'self', 'fetch'];
 
 function buildWrapperParams(source: string): string {
-	const params = ['exports', 'require', 'module', '__filename', '__dirname', 'console', 'process', 'Buffer', 'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'global', '__importMetaUrl', '__importMeta', '__importMetaResolve', 'window', 'document', 'self'];
+	const params = ['exports', 'require', 'module', '__filename', '__dirname', 'console', 'process', 'Buffer', 'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'global', '__importMetaUrl', '__importMeta', '__importMetaResolve', 'window', 'document', 'self', 'fetch'];
 	return params.map((p) => {
 		if (!SHADOWABLE_WRAPPER_PARAMS.includes(p)) return p;
 		// Direct declaration, e.g. `const Buffer = ...` / `class Buffer {}`
@@ -807,6 +850,9 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			dirname: dir,
 			signal: ctx.signal,
 			portRegistry,
+			// Lets child_process (exec/spawn) shell out to other VM commands —
+			// e.g. create-expo-app running `npm pack` / `npm install`.
+			executeCapture: ctx.executeCapture,
 		};
 
 		// Back require('module')'s Module#_compile with the real module executor
@@ -814,6 +860,52 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 		// e.g. @expo/config evaluating app.config.js). executeModule is declared
 		// below in this scope; the arrow defers the reference until call time.
 		nodeCtx.executeCjs = (code, fname) => executeModule(code, fname);
+
+		// One interactive stdin for the whole run, backed by the shell's terminal
+		// input. `ctx.setRawMode` is only provided on interactive terminal runs, so
+		// its presence is our isTTY signal (enables Expo's keypress UI, etc.). The
+		// SAME object is shared across main + all module processes so keypresses
+		// aren't split between competing readers.
+		const interactive = !!ctx.setRawMode;
+		const nodeStdin = createInteractiveStdin(ctx.stdin, ctx.setRawMode, interactive);
+
+		// Injected as the `fetch` wrapper param for every executed module, so calls
+		// to known non-CORS hosts (api.expo.dev, which create-expo-app hits) are
+		// routed through a browser-reachable CORS proxy. Injecting as a param
+		// (rather than overriding globalThis.fetch) reliably shadows the bundle's
+		// fetch reference. Undefined in real Node (test runner) — falls through to
+		// the global fetch.
+		const realFetch = (globalThis as { fetch?: typeof fetch }).fetch;
+		// Count in-flight fetches so the completion wait below knows the run still
+		// has pending async work (e.g. create-expo-app fetching SDK versions).
+		let pendingAsync = 0;
+		const proxying = typeof realFetch === 'function'
+			? makeProxyingFetch(realFetch.bind(globalThis), nodeCtx.env)
+			: realFetch;
+		const nodeFetch = (typeof proxying === 'function'
+			? ((input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+					pendingAsync++;
+					let p: Promise<Response>;
+					try { p = proxying(input, init); } catch (e) { pendingAsync--; throw e; }
+					return Promise.resolve(p).finally(() => { pendingAsync--; });
+				})
+			: proxying) as typeof fetch;
+
+		// process.exit() handling. While the main script is still executing
+		// synchronously, exit() must throw (to abort it). Once we're purely
+		// event-driven (a long-running server is up and we're just awaiting it),
+		// an exit() from an event handler — e.g. Expo's Ctrl+C, which calls
+		// process.exit() inside a try/catch right after stopping the server —
+		// should end the run WITHOUT throwing, so that handler completes cleanly
+		// instead of hitting its catch ("Failed to stop server") and cascading.
+		let interceptExit = false;
+		let asyncExitCode: number | null = null;
+		const requestExit = (code: number): boolean => {
+			if (!interceptExit) return false; // still in the sync script → throw as usual
+			asyncExitCode = code;
+			signalExit();
+			return true;
+		};
 
 		const moduleMap = createModuleMap(nodeCtx);
 		const moduleCache = new Map<string, unknown>();
@@ -1189,17 +1281,30 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 							if (resolved) return resolved;
 						}
 					}
-					// Also try wildcard/glob patterns like "./dist/*": "./dist/*"
+					// Wildcard subpath patterns (Node "exports" globs). The key has
+					// exactly one '*' that matches any substring; the capture is
+					// substituted into the target's '*', which may sit ANYWHERE in
+					// the target — not just at the end. e.g. metro SDK 54+ maps
+					// "./private/*": "./src/*.js", so metro/private/lib/Foo →
+					// metro/src/lib/Foo.js. Most-specific (longest prefix) wins.
+					const wildcardMatches: Array<{ prefixLen: number; target: string }> = [];
 					for (const pattern of Object.keys(exportsMap)) {
-						if (pattern.endsWith('/*') && key.startsWith(pattern.slice(0, -1))) {
-							const targetPattern = resolveExportsCondition(exportsMap[pattern]);
-							if (targetPattern && targetPattern.endsWith('/*')) {
-								const suffix = key.slice(pattern.length - 1);
-								const target = targetPattern.slice(0, -1) + suffix;
-								const resolved = resolveVfsModule(target, pkgDir);
-								if (resolved) return resolved;
-							}
+						const star = pattern.indexOf('*');
+						if (star === -1) continue;
+						const pre = pattern.slice(0, star);
+						const post = pattern.slice(star + 1);
+						if (key.length < pre.length + post.length) continue;
+						if (!key.startsWith(pre) || !key.endsWith(post)) continue;
+						const captured = key.slice(pre.length, key.length - post.length);
+						const targetPattern = resolveExportsCondition(exportsMap[pattern]);
+						if (targetPattern && targetPattern.includes('*')) {
+							wildcardMatches.push({ prefixLen: pre.length, target: targetPattern.replace('*', captured) });
 						}
+					}
+					wildcardMatches.sort((a, b) => b.prefixLen - a.prefixLen);
+					for (const m of wildcardMatches) {
+						const resolved = resolveVfsModule(m.target, pkgDir);
+						if (resolved) return resolved;
 					}
 				}
 				// 2. Fall back to direct file resolution
@@ -1262,6 +1367,9 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 				cwd: nodeCtx.cwd,
 				stdout: ctx.stdout,
 				stderr: ctx.stderr,
+				stdin: nodeStdin,
+				interactive,
+				onExit: requestExit,
 			});
 			const modConsole = createConsole(ctx.stdout, ctx.stderr);
 
@@ -1427,7 +1535,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 				err.message = `[${modFilename}] ${err.message}`;
 				throw err;
 			}
-			const global = { process: modProcess, Buffer, console: modConsole };
+			const global = makeNodeGlobal({ process: modProcess, Buffer, console: modConsole });
 			// Many npm bundles access globalThis.process directly (not the wrapper param).
 			// Only override in browser-like envs; skip in real Node.js (test runner).
 			const ga = globalThis as Record<string, unknown>;
@@ -1458,6 +1566,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 					// environment (no DOM), matching real Node — e.g. so Emscripten
 					// (pglite) doesn't mis-detect the browser and mis-resolve data files.
 					undefined, undefined, undefined,
+					nodeFetch, // fetch (CORS-proxied for known hosts)
 				);
 			} catch (e) {
 				if (e instanceof ProcessExitError) throw e;
@@ -1490,12 +1599,15 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			cwd: nodeCtx.cwd,
 			stdout: ctx.stdout,
 			stderr: ctx.stderr,
+			stdin: nodeStdin,
+			interactive,
+			onExit: requestExit,
 		});
 		const nodeConsole = createConsole(ctx.stdout, ctx.stderr);
 
 		const module = { exports: {} as Record<string, unknown> };
 		const exports = module.exports;
-		const global = { process, Buffer, console: nodeConsole };
+		const global = makeNodeGlobal({ process, Buffer, console: nodeConsole });
 
 		let cleanMainSource = stripShebang(source);
 		const isEsm = shouldTreatAsEsm(cleanMainSource, filename, ctx.vfs);
@@ -1525,10 +1637,20 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 		for (const k of Object.keys(_rollupHelpers)) { savedHelpers[k] = ga[k]; ga[k] = _rollupHelpers[k]; }
 		// Capture unhandled promise rejections from fire-and-forget async actions
 		let pendingRejection: unknown = null;
+		// Resolves when the run should end because of an async exit — e.g. an
+		// interactive keypress handler (Expo's Ctrl+C) calls process.exit(), which
+		// throws ProcessExitError from the detached stdin pump. Without this the
+		// long-lived server race below would never notice and the run would hang.
+		let signalExit: () => void = () => {};
+		const exitPromise = new Promise<void>((r) => { signalExit = r; });
 		const rejectionHandler = (event: PromiseRejectionEvent) => {
 			pendingRejection = event.reason;
 			event.preventDefault(); // prevent browser default logging
-			ctx.stderr.write(`[unhandledRejection] ${event.reason instanceof Error ? event.reason.stack || event.reason.message : String(event.reason)}\n`);
+			if (event.reason instanceof ProcessExitError) {
+				signalExit();
+			} else {
+				ctx.stderr.write(`[unhandledRejection] ${event.reason instanceof Error ? event.reason.stack || event.reason.message : String(event.reason)}\n`);
+			}
 		};
 		if (typeof globalThis.addEventListener === 'function') {
 			globalThis.addEventListener('unhandledrejection', rejectionHandler as EventListener);
@@ -1547,60 +1669,66 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 				global,
 				mainImportMetaUrl, mainImportMeta, mainImportMetaResolve,
 				undefined, undefined, undefined,
+				nodeFetch, // fetch (CORS-proxied for known hosts)
 			);
 
-			// Await if ESM (async IIFE returns a promise)
+			// Await if ESM (async IIFE returns a promise). The synchronous body of
+			// the script has now run, so we're event-driven from here — a
+			// process.exit() (e.g. Expo's Ctrl+C handler) should end the run
+			// gracefully rather than throw. Race the main promise against
+			// exitPromise: long-running servers await forever (`new Promise(()=>{})`),
+			// so without this a graceful exit would hang on the never-resolving main.
 			if (isEsm && result && typeof result.then === 'function') {
-				await result;
+				interceptExit = true;
+				await Promise.race([result, exitPromise]);
 			}
 
-			// Check if any servers were started (long-running process).
-			// Many CLI tools (e.g. vite) fire async actions from cli.parse() whose
-			// promises are discarded. We poll briefly to let those async chains
-			// progress and create servers before deciding the process is done.
-			// Only poll if http was actually loaded (indicating server intent).
+			// Graceful async process.exit() (interactive keypress, etc.) — the
+			// server was already torn down by whoever called exit(); just end.
+			if (asyncExitCode !== null) {
+				return asyncExitCode;
+			}
+
+			// We're event-driven now — a process.exit() should end the run
+			// gracefully rather than throw.
+			interceptExit = true;
+
 			const getActiveServers = () => {
 				const httpMod = moduleCache.get('http') as { [key: symbol]: unknown[] } | undefined;
 				return httpMod?.[ACTIVE_SERVERS] as Array<{ getPromise(): Promise<void> | null; close(): void }> | undefined;
 			};
 			let activeServers = getActiveServers();
-			if ((!activeServers || activeServers.length === 0) && isEsm) {
-				// ESM scripts may have fire-and-forget async actions (e.g. vite's
-				// cli.parse() triggers an async action whose promise is discarded).
-				// Yield briefly to let those chains start, then poll for servers.
-				// Phase 1: Quick yield — watch for new modules being loaded, which
-				// indicates async work is in progress. Stop early if nothing changes.
+
+			// Keep the run alive while there's pending async work. Both CJS and ESM
+			// CLIs run mostly async AFTER their synchronous entry — e.g.
+			// create-expo-app: fetch SDK versions → interactive prompts → scaffold →
+			// install. Returning right after the sync body would hand stdin back to
+			// the shell mid-prompt. "Working" = an in-flight fetch, an active
+			// interactive prompt reading stdin, or modules still loading. Ends when a
+			// server starts (→ server race below), process.exit() fires, the run
+			// aborts, or things stay quiescent for ~300ms (the script finished).
+			if (!activeServers || activeServers.length === 0) {
 				let prevCacheSize = moduleCache.size;
 				let staleCount = 0;
-				const quickDeadline = Date.now() + 2000;
-				while (Date.now() < quickDeadline) {
-					await new Promise<void>((r) => setTimeout(r, 30));
+				const hardDeadline = Date.now() + 600000; // 10 min cap (long installs)
+				while (Date.now() < hardDeadline) {
+					const tick = await Promise.race([
+						new Promise<'tick'>((r) => setTimeout(() => r('tick'), 50)),
+						exitPromise.then(() => 'exit' as const),
+					]);
+					if (tick === 'exit' || ctx.signal.aborted || pendingRejection || asyncExitCode !== null) break;
 					activeServers = getActiveServers();
 					if (activeServers && activeServers.length > 0) break;
-					if (ctx.signal.aborted || pendingRejection) break;
-					// If new modules are loading, async work is progressing
-					const newSize = moduleCache.size;
-					if (newSize > prevCacheSize) {
+					if (pendingAsync > 0 || nodeStdin.isActive() || moduleCache.size > prevCacheSize) {
 						staleCount = 0;
-						prevCacheSize = newSize;
-					} else {
-						staleCount++;
-						// No new modules for 5 ticks (150ms) — async chain likely done
-						if (staleCount >= 5) break;
-					}
-				}
-				// Phase 2: If http was loaded during Phase 1 (indicating server intent)
-				// but no servers yet, keep polling up to 10s for the full server startup.
-				if ((!activeServers || activeServers.length === 0) && moduleCache.has('http')) {
-					const longDeadline = Date.now() + 10000;
-					while (Date.now() < longDeadline) {
-						await new Promise<void>((r) => setTimeout(r, 50));
-						activeServers = getActiveServers();
-						if (activeServers && activeServers.length > 0) break;
-						if (ctx.signal.aborted || pendingRejection) break;
+						prevCacheSize = moduleCache.size;
+					} else if (++staleCount >= 6) {
+						break;
 					}
 				}
 			}
+
+			if (asyncExitCode !== null) return asyncExitCode;
 
 			if (activeServers && activeServers.length > 0) {
 				// Collect all server promises
@@ -1618,19 +1746,28 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 						ctx.signal.addEventListener('abort', () => resolve(), { once: true });
 					});
 
+					// We're now purely event-driven — a process.exit() from here on
+					// (e.g. an interactive keypress handler) should end the run
+					// gracefully rather than throw.
+					interceptExit = true;
+
 					await Promise.race([
 						Promise.all(serverPromises),
 						abortPromise,
+						exitPromise,
 					]);
 
-					// On abort, close all active servers
-					if (ctx.signal.aborted) {
+					// On abort or an async process.exit(), close all active servers.
+					if (ctx.signal.aborted || pendingRejection || asyncExitCode !== null) {
 						for (const server of [...activeServers]) {
 							server.close();
 						}
 					}
 				}
 			}
+
+			// A graceful async process.exit(code) (e.g. Expo's Ctrl+C) ended the run.
+			if (asyncExitCode !== null) return asyncExitCode;
 
 			// If an async action failed (e.g. unhandled rejection from ProcessExitError)
 			if (pendingRejection) {

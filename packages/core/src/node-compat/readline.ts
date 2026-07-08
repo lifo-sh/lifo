@@ -173,37 +173,101 @@ export function createInterface(
   return new Interface({ input: inputOrOpts as InterfaceOptions['input'], output });
 }
 
+// These write real ANSI to the stream (they were no-op stubs). Metro's progress
+// bar, ora spinners, and Expo's interface redraw in place via readline.cursorTo
+// + readline.clearLine; without emitting the escapes nothing updated, so bars
+// never filled and status lines never refreshed.
 export function clearLine(stream: { write?: (data: string) => void }, dir: number, cb?: () => void): boolean {
-  void stream;
-  void dir;
+  stream.write?.(dir < 0 ? '\x1b[1K' : dir > 0 ? '\x1b[0K' : '\x1b[2K');
   cb?.();
   return true;
 }
 
 export function clearScreenDown(stream: { write?: (data: string) => void }, cb?: () => void): boolean {
-  void stream;
+  stream.write?.('\x1b[0J');
   cb?.();
   return true;
 }
 
 export function cursorTo(stream: { write?: (data: string) => void }, x: number, y?: number | (() => void), cb?: () => void): boolean {
-  void stream;
-  void x;
-  if (typeof y === 'function') { y(); return true; }
+  if (typeof y === 'number') stream.write?.(`\x1b[${(y | 0) + 1};${(x | 0) + 1}H`);
+  else { stream.write?.(`\x1b[${(x | 0) + 1}G`); cb = y as (() => void) | undefined; }
   cb?.();
   return true;
 }
 
 export function moveCursor(stream: { write?: (data: string) => void }, dx: number, dy: number, cb?: () => void): boolean {
-  void stream;
-  void dx;
-  void dy;
+  let s = '';
+  if (dx > 0) s += `\x1b[${dx}C`; else if (dx < 0) s += `\x1b[${-dx}D`;
+  if (dy > 0) s += `\x1b[${dy}B`; else if (dy < 0) s += `\x1b[${-dy}A`;
+  if (s) stream.write?.(s);
   cb?.();
   return true;
 }
 
-export function emitKeypressEvents(_stream: unknown): void {
-  // no-op
+/** Parse a raw input chunk into Node-style keypress events: [sequence, key]. */
+function parseKeypress(chunk: string): Array<[string, Record<string, unknown>]> {
+  const mk = (seq: string, extra: Record<string, unknown>): [string, Record<string, unknown>] =>
+    [seq, { sequence: seq, name: undefined, ctrl: false, meta: false, shift: false, ...extra }];
+
+  // Escape sequences (arrows, home/end, etc.) — xterm delivers these as one chunk.
+  const ESC: Record<string, string> = {
+    '\x1b[A': 'up', '\x1bOA': 'up', '\x1b[B': 'down', '\x1bOB': 'down',
+    '\x1b[C': 'right', '\x1bOC': 'right', '\x1b[D': 'left', '\x1bOD': 'left',
+    '\x1b[H': 'home', '\x1bOH': 'home', '\x1b[F': 'end', '\x1bOF': 'end',
+    '\x1b[3~': 'delete', '\x1b[5~': 'pageup', '\x1b[6~': 'pagedown',
+    '\x1b[Z': 'tab', // shift-tab
+  };
+  if (ESC[chunk]) {
+    return [mk(chunk, { name: ESC[chunk], meta: chunk.startsWith('\x1bO'), shift: chunk === '\x1b[Z' })];
+  }
+
+  // Single control/printable characters.
+  if (chunk.length === 1) {
+    const c = chunk;
+    const code = c.charCodeAt(0);
+    if (c === '\r' || c === '\n') return [mk(c, { name: 'return' })];
+    if (c === '\t') return [mk(c, { name: 'tab' })];
+    if (c === '\x7f' || c === '\b') return [mk(c, { name: 'backspace' })];
+    if (c === '\x1b') return [mk(c, { name: 'escape' })];
+    if (c === ' ') return [mk(c, { name: 'space' })];
+    // Ctrl+letter: 0x01–0x1a → a–z
+    if (code >= 1 && code <= 26) {
+      return [mk(c, { name: String.fromCharCode(code + 96), ctrl: true })];
+    }
+    // Printable
+    const name = c.toLowerCase();
+    return [mk(c, { name, shift: c !== name && c === c.toUpperCase() })];
+  }
+
+  // A multi-char paste / unknown sequence: emit per character so text input works.
+  if (!chunk.startsWith('\x1b')) {
+    return [...chunk].flatMap((c) => parseKeypress(c));
+  }
+  // Unknown escape sequence — surface it as a single opaque keypress.
+  return [mk(chunk, { name: undefined })];
+}
+
+const KEYPRESS_ATTACHED = Symbol.for('lifo.readline.keypressAttached');
+
+export function emitKeypressEvents(stream: unknown): void {
+  const s = stream as {
+    [KEYPRESS_ATTACHED]?: boolean;
+    on?: (event: string, cb: (chunk: unknown) => void) => void;
+    emit?: (event: string, ...args: unknown[]) => void;
+  };
+  if (!s || typeof s.on !== 'function' || typeof s.emit !== 'function') return;
+  if (s[KEYPRESS_ATTACHED]) return;
+  s[KEYPRESS_ATTACHED] = true;
+  // Adding a 'data' listener puts our interactive stdin into flowing mode; each
+  // keypress becomes 'keypress' events that prompt libraries (prompts/inquirer)
+  // listen on. Arrow keys arrive as escape sequences and parse to up/down/etc.
+  s.on('data', (chunk: unknown) => {
+    const str = typeof chunk === 'string' ? chunk : String(chunk);
+    for (const [seq, key] of parseKeypress(str)) {
+      s.emit!('keypress', seq, key);
+    }
+  });
 }
 
 // readline/promises API

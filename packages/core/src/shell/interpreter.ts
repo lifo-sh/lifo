@@ -571,6 +571,7 @@ export class Interpreter {
               setRawMode: terminalStdin
                 ? (v: boolean) => { terminalStdin.rawMode = v; }
                 : undefined,
+              executeCapture: (captureInput, captureOpts) => this.executeCapture(captureInput, captureOpts),
             };
 
             // Register process BEFORE executing so ps can see itself
@@ -690,7 +691,7 @@ export class Interpreter {
     return exitCode;
   }
 
-  async executeCapture(input: string): Promise<string> {
+  async executeCapture(input: string, opts?: { cwd?: string }): Promise<string> {
     let captured = '';
     const stdout: CommandOutputStream = {
       write: (text: string) => { captured += text; },
@@ -699,13 +700,21 @@ export class Interpreter {
     const tokens = lex(input);
     const script = parse(tokens);
 
-    // Execute with captured stdout
-    for (const list of script.lists) {
-      for (const entry of list.entries) {
-        for (const cmd of entry.pipeline.commands) {
-          await this.executeCommand(cmd, undefined, stdout);
+    // Optionally run in a different cwd (e.g. child_process spawn with {cwd}),
+    // restoring afterward so the caller's cwd is unaffected.
+    const prevCwd = opts?.cwd !== undefined ? this.config.getCwd() : undefined;
+    if (opts?.cwd !== undefined) this.config.setCwd(opts.cwd);
+    try {
+      // Execute with captured stdout
+      for (const list of script.lists) {
+        for (const entry of list.entries) {
+          for (const cmd of entry.pipeline.commands) {
+            await this.executeCommand(cmd, undefined, stdout);
+          }
         }
       }
+    } finally {
+      if (prevCwd !== undefined) this.config.setCwd(prevCwd);
     }
 
     return captured;

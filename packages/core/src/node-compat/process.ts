@@ -1,4 +1,81 @@
-import type { CommandOutputStream } from '../commands/types.js';
+import type { CommandOutputStream, CommandInputStream } from '../commands/types.js';
+import { Buffer } from './buffer.js';
+
+/**
+ * Build a Node-like `process.stdin` backed by the shell's terminal input.
+ *
+ * This is what makes interactive CLIs work in the VM (e.g. `expo start`'s
+ * keypress menu, which needs setRawMode + resume + on('data')). The shell
+ * already delivers raw keypresses to `input` (a TerminalStdin) once raw mode is
+ * on, so here we: toggle raw mode through `setRawMode`, and in flowing mode pump
+ * `input.read()` and emit each keypress as a 'data' event (Node semantics:
+ * adding a 'data' listener or calling resume() starts the flow).
+ */
+export function createInteractiveStdin(
+  input: CommandInputStream | undefined,
+  setRawMode: ((enabled: boolean) => void) | undefined,
+  interactive: boolean,
+) {
+  const listeners: Record<string, Array<(...a: unknown[]) => void>> = {};
+  let flowing = false;
+  let ended = false;
+  let encoding: string | null = null;
+
+  const emit = (event: string, ...args: unknown[]) => {
+    (listeners[event] ? [...listeners[event]] : []).forEach((fn) => fn(...args));
+  };
+
+  async function pump() {
+    while (flowing && !ended && input) {
+      const chunk = await input.read();
+      if (chunk === null) { ended = true; emit('end'); break; }
+      if (chunk === '') continue;
+      emit('data', encoding ? chunk : Buffer.from(chunk));
+    }
+  }
+
+  const stdin = {
+    isTTY: interactive,
+    isRaw: false,
+    fd: 0,
+    readable: true,
+    setRawMode(v: boolean) { stdin.isRaw = !!v; setRawMode?.(!!v); return stdin; },
+    resume() { if (!flowing && !ended) { flowing = true; void pump(); } return stdin; },
+    pause() { flowing = false; return stdin; },
+    setEncoding(enc: string) { encoding = enc; return stdin; },
+    read() { return null; },
+    ref() { return stdin; },
+    unref() { return stdin; },
+    on(event: string, fn: (...a: unknown[]) => void) {
+      (listeners[event] ||= []).push(fn);
+      if (event === 'data') stdin.resume();
+      return stdin;
+    },
+    addListener(event: string, fn: (...a: unknown[]) => void) { return stdin.on(event, fn); },
+    once(event: string, fn: (...a: unknown[]) => void) {
+      const wrapped = (...a: unknown[]) => { stdin.off(event, wrapped); fn(...a); };
+      return stdin.on(event, wrapped);
+    },
+    off(event: string, fn: (...a: unknown[]) => void) {
+      if (listeners[event]) listeners[event] = listeners[event].filter((f) => f !== fn);
+      return stdin;
+    },
+    removeListener(event: string, fn: (...a: unknown[]) => void) { return stdin.off(event, fn); },
+    removeAllListeners(event?: string) {
+      if (event) delete listeners[event]; else Object.keys(listeners).forEach((k) => delete listeners[k]);
+      return stdin;
+    },
+    emit,
+    listeners: (event: string) => (listeners[event] ? [...listeners[event]] : []),
+    listenerCount: (event: string) => listeners[event]?.length ?? 0,
+    pipe: () => stdin,
+    destroy() { ended = true; flowing = false; return stdin; },
+    /** True while something is actively reading stdin (an interactive prompt is
+     * waiting). The node command uses this to keep the run alive. */
+    isActive: () => (stdin.isRaw || flowing) && !ended,
+  };
+  return stdin;
+}
 
 export class ProcessExitError extends Error {
   exitCode: number;
@@ -9,12 +86,64 @@ export class ProcessExitError extends Error {
   }
 }
 
+/**
+ * Build a Node-like writable stream for stdout/stderr with the tty.WriteStream
+ * cursor API. When isTTY is true, CLIs (ora spinners, Expo's interface, inquirer)
+ * call clearLine/cursorTo/moveCursor; we emit the matching ANSI so they render in
+ * xterm instead of throwing "clearLine is not a function".
+ */
+function makeTtyStream(write: (data: string) => void, fd: number, isTTY: boolean) {
+  const cb = (maybeCb: unknown) => { if (typeof maybeCb === 'function') (maybeCb as () => void)(); };
+  return {
+    write: (data: string, ...rest: unknown[]) => { write(data); cb(rest[rest.length - 1]); return true; },
+    isTTY,
+    fd,
+    bytesWritten: 0,
+    columns: 80,
+    rows: 24,
+    // -1 → to line start, 1 → to line end, 0/default → entire line
+    clearLine: (dir: number, done?: unknown) => { write(dir < 0 ? '\x1b[1K' : dir > 0 ? '\x1b[0K' : '\x1b[2K'); cb(done); return true; },
+    clearScreenDown: (done?: unknown) => { write('\x1b[0J'); cb(done); return true; },
+    cursorTo: (x: number, y?: number | (() => void), done?: unknown) => {
+      if (typeof y === 'number') write(`\x1b[${(y | 0) + 1};${(x | 0) + 1}H`);
+      else { write(`\x1b[${(x | 0) + 1}G`); done = y; }
+      cb(done); return true;
+    },
+    moveCursor: (dx: number, dy: number, done?: unknown) => {
+      let s = '';
+      if (dx > 0) s += `\x1b[${dx}C`; else if (dx < 0) s += `\x1b[${-dx}D`;
+      if (dy > 0) s += `\x1b[${dy}B`; else if (dy < 0) s += `\x1b[${-dy}A`;
+      if (s) write(s); cb(done); return true;
+    },
+    getColorDepth: () => (isTTY ? 8 : 1),
+    hasColors: () => isTTY,
+    getWindowSize: () => [80, 24],
+    on: () => {},
+    once: () => {},
+    end: () => {},
+  };
+}
+
 export interface ProcessOptions {
   argv: string[];
   env: Record<string, string>;
   cwd: string;
   stdout: CommandOutputStream;
   stderr: CommandOutputStream;
+  /** Interactive terminal stdin (built via createInteractiveStdin) shared across the run. */
+  stdin?: ReturnType<typeof createInteractiveStdin>;
+  /** True when attached to an interactive terminal → report isTTY (enables Expo's CLI UI, etc.). */
+  interactive?: boolean;
+  /**
+   * Called by process.exit(). Returns true if the run handled the exit
+   * asynchronously (the command will end on its own) — in which case exit()
+   * returns WITHOUT throwing. Real process.exit() never returns, but in the VM
+   * we can only throw, and a throw from an event handler (e.g. Expo's Ctrl+C
+   * calls process.exit() inside a try/catch after the server stopped) gets
+   * caught and mislabelled. Returning false → exit() throws ProcessExitError as
+   * usual (needed to abort a still-running synchronous script).
+   */
+  onExit?: (code: number) => boolean;
 }
 
 export function createProcess(opts: ProcessOptions) {
@@ -33,38 +162,41 @@ export function createProcess(opts: ProcessOptions) {
     cwd: () => opts.cwd,
     chdir: (_dir: string) => { throw new Error('process.chdir() is not supported in Lifo'); },
     exit: (code = 0) => {
+      // If the run can end the process asynchronously (long-running server,
+      // main script already settled), let it — returning instead of throwing
+      // so a caller like Expo's Ctrl+C handler completes its try block cleanly.
+      if (opts.onExit?.(code)) return undefined as never;
       if (code !== 0) {
         opts.stderr.write(`[process.exit] code=${code}\n`);
       }
       throw new ProcessExitError(code);
     },
-    stdout: {
-      write: (data: string) => { opts.stdout.write(data); return true; },
+    // Report a TTY on interactive runs so CLIs that gate their interactive UI on
+    // stdout.isTTY (Expo's isInteractive(), chalk colour detection, …) turn it
+    // on — matching how the command behaves in a real terminal. That also means
+    // libraries like ora will call tty.WriteStream cursor methods, so we provide
+    // them (emitting real ANSI so spinners/menus render in xterm).
+    stdout: makeTtyStream((d) => opts.stdout.write(d), 1, !!opts.interactive),
+    stderr: makeTtyStream((d) => opts.stderr.write(d), 2, !!opts.interactive),
+    stdin: opts.stdin ?? {
       isTTY: false,
-      fd: 1,
-      bytesWritten: 0,
-      columns: 80,
-      on: () => {},
-      once: () => {},
-    },
-    stderr: {
-      write: (data: string) => { opts.stderr.write(data); return true; },
-      isTTY: false,
-      fd: 2,
-      bytesWritten: 0,
-      columns: 80,
-      on: () => {},
-      once: () => {},
-    },
-    stdin: {
-      isTTY: false,
+      isRaw: false,
       fd: 0,
+      readable: true,
+      setRawMode: () => {},
       on: () => {},
       once: () => {},
+      off: () => {},
+      removeListener: () => {},
+      removeAllListeners: () => {},
+      addListener: () => {},
+      emit: () => {},
       resume: () => {},
       pause: () => {},
       setEncoding: () => {},
       read: () => null,
+      ref: () => {},
+      unref: () => {},
     },
     platform: 'linux' as string,
     arch: 'x64' as string,

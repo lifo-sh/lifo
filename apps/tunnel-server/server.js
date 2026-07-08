@@ -72,6 +72,38 @@ const server = http.createServer(async (req, res) => {
 
   console.log(`[HTTP] ${req.method} ${req.url}`);
 
+  // CORS proxy: /_cors?url=<encoded>. The browser VM can't fetch non-CORS hosts
+  // (e.g. api.expo.dev, which create-expo-app hits for SDK versions); this
+  // fetches server-side and returns with permissive CORS headers. This is the
+  // local stand-in for a hosted Lifo proxy service. Not tunneled — answered
+  // directly by the relay, so it works with no tunnel client connected.
+  if (req.url.startsWith("/_cors")) {
+    const cors = {
+      "access-control-allow-origin": "*",
+      "access-control-allow-methods": "GET,POST,OPTIONS",
+      "access-control-allow-headers": "*",
+    };
+    if (req.method === "OPTIONS") { res.writeHead(204, cors); res.end(); return; }
+    const target = new URL(req.url, "http://localhost").searchParams.get("url");
+    if (!target) { res.writeHead(400, cors); res.end("missing url param"); return; }
+    try {
+      const upstream = await fetch(target, {
+        method: req.method,
+        headers: { accept: req.headers["accept"] || "*/*", "user-agent": req.headers["user-agent"] || "lifo" },
+      });
+      const body = Buffer.from(await upstream.arrayBuffer());
+      res.writeHead(upstream.status, {
+        ...cors,
+        "content-type": upstream.headers.get("content-type") || "application/octet-stream",
+      });
+      res.end(body);
+    } catch (e) {
+      res.writeHead(502, cors);
+      res.end("cors proxy error: " + e.message);
+    }
+    return;
+  }
+
   // Check if tunnel client is connected
   if (!tunnelClient || tunnelClient.readyState !== 1) {
     res.writeHead(503, { "Content-Type": "text/plain" });
@@ -171,11 +203,21 @@ const wss = new WebSocketServer({
 
 server.on("upgrade", (req, socket, head) => {
   const proto = req.headers["sec-websocket-protocol"] || "";
-  if (proto.includes("vite-hmr")) {
+  const path = (req.url || "/").split("?")[0];
+  // The in-VM tunnel client connects to the ROOT path with no subprotocol.
+  // Every other WebSocket is an application socket that must be piped RAW to
+  // the VM's own ws server — Metro's Fast Refresh channels /hot and /message
+  // (React Native uses no subprotocol), Vite HMR ("vite-hmr"), etc. The old
+  // code only piped "vite-hmr" and treated everything else as a tunnel client,
+  // so a phone's /hot socket hijacked `tunnelClient` and never reached Metro.
+  const isTunnelClient = (path === "/" || path === "/_tunnel") && !proto.includes("vite-hmr");
+  if (isTunnelClient) {
+    console.log(`[WS] tunnel client upgrade (${path})`);
+    wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
+  } else {
+    console.log(`[WS] raw-pipe app socket → VM (${path})`);
     rawPipeUpgrade(req, socket, head);
-    return;
   }
-  wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
 });
 
 /**

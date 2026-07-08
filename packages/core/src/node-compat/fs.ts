@@ -4,6 +4,42 @@ import type { Stat as VfsStat } from '../kernel/vfs/types.js';
 import { resolve, basename } from '../utils/path.js';
 import { encode, decode } from '../utils/encoding.js';
 import { Readable, Writable } from './stream.js';
+
+function concatChunks(parts: Uint8Array[]): Uint8Array {
+  let len = 0;
+  for (const p of parts) len += p.length;
+  const out = new Uint8Array(len);
+  let off = 0;
+  for (const p of parts) { out.set(p, off); off += p.length; }
+  return out;
+}
+
+/**
+ * Normalize fs write data. Node's writeFile/appendFile accept a string, a
+ * TypedArray, OR an (async) iterable / stream, draining the latter. create-expo-app
+ * writes tar entries as `writeFile(path, streamToAsyncIterable(entry.stream()))`,
+ * so without draining we'd write `undefined` (files with no content).
+ */
+async function drainWriteData(data: unknown): Promise<string | Uint8Array> {
+  if (typeof data === 'string' || data instanceof Uint8Array) return data;
+  const toBytes = (c: unknown): Uint8Array =>
+    typeof c === 'string' ? new TextEncoder().encode(c)
+      : c instanceof Uint8Array ? c
+      : new Uint8Array(c as ArrayBuffer);
+  const asAsync = data as AsyncIterable<unknown> | null;
+  if (asAsync && typeof asAsync[Symbol.asyncIterator] === 'function') {
+    const parts: Uint8Array[] = [];
+    for await (const chunk of asAsync) parts.push(toBytes(chunk));
+    return concatChunks(parts);
+  }
+  const asSync = data as Iterable<unknown> | null;
+  if (asSync && typeof asSync[Symbol.iterator] === 'function') {
+    const parts: Uint8Array[] = [];
+    for (const chunk of asSync) parts.push(toBytes(chunk));
+    return concatChunks(parts);
+  }
+  return data as Uint8Array;
+}
 import { EventEmitter } from './events.js';
 import { Buffer } from './buffer.js';
 
@@ -714,10 +750,20 @@ export function createFs(vfs: VFS, cwd: string) {
     }
   }
 
-  function watchFile(filename: string | URL, optionsOrListener?: { persistent?: boolean; interval?: number } | ((curr: unknown, prev: unknown) => void), listener?: (curr: unknown, prev: unknown) => void): void {
+  function watchFile(filename: string | URL, optionsOrListener?: { persistent?: boolean; interval?: number } | ((curr: unknown, prev: unknown) => void), listener?: (curr: unknown, prev: unknown) => void): EventEmitter {
     const abs = resolvePath(cwd, filename);
     const cb = typeof optionsOrListener === 'function' ? optionsOrListener : listener;
-    if (!cb) return;
+
+    // Node returns a StatWatcher (EventEmitter with ref/unref/stop). Callers
+    // store it and call .unref()/.stop() — e.g. Expo's FileNotifier does
+    // `watchFile(...).unref()`, which crashed when we returned undefined.
+    const watcher = new EventEmitter() as EventEmitter & {
+      ref: () => unknown; unref: () => unknown; stop: () => void;
+    };
+    watcher.ref = () => watcher;
+    watcher.unref = () => watcher;
+
+    if (!cb) { watcher.stop = () => {}; return watcher; }
 
     let prev = statOrZero(abs);
     const unsubscribe = vfs.watch(abs, () => {
@@ -725,6 +771,7 @@ export function createFs(vfs: VFS, cwd: string) {
       const p = prev;
       prev = curr;
       cb(curr, p);
+      watcher.emit('change', curr, p);
     });
 
     let subs = watchFileSubs.get(abs);
@@ -733,6 +780,13 @@ export function createFs(vfs: VFS, cwd: string) {
       watchFileSubs.set(abs, subs);
     }
     subs.set(cb, unsubscribe);
+
+    watcher.stop = () => {
+      unsubscribe();
+      subs!.delete(cb);
+      if (subs!.size === 0) watchFileSubs.delete(abs);
+    };
+    return watcher;
   }
 
   function unwatchFile(filename: string | URL, listener?: (curr: unknown, prev: unknown) => void): void {
@@ -753,8 +807,8 @@ export function createFs(vfs: VFS, cwd: string) {
 
   const promises = {
     readFile: async (path: string | URL, options?: string | { encoding?: string }) => readFileSync(path, options),
-    writeFile: async (path: string | URL, data: string | Uint8Array) => writeFileSync(path, data),
-    appendFile: async (path: string | URL, data: string | Uint8Array) => appendFileSync(path, data),
+    writeFile: async (path: string | URL, data: unknown) => writeFileSync(path, await drainWriteData(data)),
+    appendFile: async (path: string | URL, data: unknown) => appendFileSync(path, await drainWriteData(data)),
     stat: async (path: string | URL) => statSync(path),
     lstat: async (path: string | URL) => lstatSync(path),
     mkdir: async (path: string | URL, options?: { recursive?: boolean }) => { mkdirSync(path, options); },
