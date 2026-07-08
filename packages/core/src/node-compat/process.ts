@@ -70,6 +70,9 @@ export function createInteractiveStdin(
     listenerCount: (event: string) => listeners[event]?.length ?? 0,
     pipe: () => stdin,
     destroy() { ended = true; flowing = false; return stdin; },
+    /** True while something is actively reading stdin (an interactive prompt is
+     * waiting). The node command uses this to keep the run alive. */
+    isActive: () => (stdin.isRaw || flowing) && !ended,
   };
   return stdin;
 }

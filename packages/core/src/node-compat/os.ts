@@ -7,15 +7,17 @@ export function createOs(env: Record<string, string>) {
     hostname: () => env.HOSTNAME || 'lifo',
     homedir: () => env.HOME || '/home/user',
     tmpdir: () => '/tmp',
-    cpus: () => {
-      const count = (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 4;
-      return Array.from({ length: count }, () => ({
-        model: 'Browser CPU',
-        speed: 2400,
-        times: { user: 0, nice: 0, sys: 0, idle: 0, irq: 0 },
-      }));
-    },
-    availableParallelism: () => (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 4,
+    // Report a single CPU. The VM has no real threads or child_process, so tools
+    // that scale worker pools by core count (Metro/jest-worker fork one worker
+    // per CPU) would otherwise spawn workers that can't be serviced and hang.
+    // One core makes them run in-band — accurate for the VM and what lets a
+    // stock `expo start` (no maxWorkers override) work without freezing.
+    cpus: () => [{
+      model: 'Lifo CPU',
+      speed: 2400,
+      times: { user: 0, nice: 0, sys: 0, idle: 0, irq: 0 },
+    }],
+    availableParallelism: () => 1,
     totalmem: () => {
       const m = (performance as unknown as { memory?: { jsHeapSizeLimit: number } }).memory;
       return m?.jsHeapSizeLimit ?? 4 * 1024 * 1024 * 1024;

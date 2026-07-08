@@ -20,6 +20,33 @@ function makeNodeGlobal(overrides: Record<string, unknown>): Record<string, unkn
 	g.global = g;
 	return g;
 }
+
+/**
+ * Wrap `fetch` so requests to known non-CORS hosts are routed through a CORS
+ * proxy the browser CAN reach; every other request passes straight through.
+ *
+ * The browser VM can't fetch hosts that don't send CORS headers — e.g.
+ * api.expo.dev, which create-expo-app calls for SDK versions. The proxy base
+ * defaults to the local tunnel-server's /_cors endpoint (the stand-in for a
+ * hosted Lifo proxy); override with LIFO_CORS_PROXY, and the host allow-list
+ * with LIFO_CORS_PROXY_HOSTS (comma-separated).
+ */
+function makeProxyingFetch(realFetch: typeof fetch, env: Record<string, string>): typeof fetch {
+	const base = env.LIFO_CORS_PROXY || 'http://localhost:3005/_cors?url=';
+	const hosts = new Set(
+		(env.LIFO_CORS_PROXY_HOSTS || 'api.expo.dev,exp.host,u.expo.dev')
+			.split(',').map((h) => h.trim()).filter(Boolean),
+	);
+	return ((input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+		try {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : (input as Request).url;
+			if (url && hosts.has(new URL(url).hostname)) {
+				return realFetch(base + encodeURIComponent(url), init);
+			}
+		} catch { /* not a proxyable URL — fall through */ }
+		return realFetch(input, init);
+	}) as typeof fetch;
+}
 import { createConsole } from '../../node-compat/console.js';
 import { Buffer } from '../../node-compat/buffer.js';
 import { VFSError } from '../../kernel/vfs/index.js';
@@ -473,10 +500,10 @@ function rewriteDynamicImports(source: string): string {
  * @babel/generator declares `class Buffer`). The module's own declaration
  * then wins; positional arguments are unaffected.
  */
-const SHADOWABLE_WRAPPER_PARAMS = ['console', 'process', 'Buffer', 'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'global', 'window', 'document', 'self'];
+const SHADOWABLE_WRAPPER_PARAMS = ['console', 'process', 'Buffer', 'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'global', 'window', 'document', 'self', 'fetch'];
 
 function buildWrapperParams(source: string): string {
-	const params = ['exports', 'require', 'module', '__filename', '__dirname', 'console', 'process', 'Buffer', 'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'global', '__importMetaUrl', '__importMeta', '__importMetaResolve', 'window', 'document', 'self'];
+	const params = ['exports', 'require', 'module', '__filename', '__dirname', 'console', 'process', 'Buffer', 'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'global', '__importMetaUrl', '__importMeta', '__importMetaResolve', 'window', 'document', 'self', 'fetch'];
 	return params.map((p) => {
 		if (!SHADOWABLE_WRAPPER_PARAMS.includes(p)) return p;
 		// Direct declaration, e.g. `const Buffer = ...` / `class Buffer {}`
@@ -838,6 +865,28 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 		// aren't split between competing readers.
 		const interactive = !!ctx.setRawMode;
 		const nodeStdin = createInteractiveStdin(ctx.stdin, ctx.setRawMode, interactive);
+
+		// Injected as the `fetch` wrapper param for every executed module, so calls
+		// to known non-CORS hosts (api.expo.dev, which create-expo-app hits) are
+		// routed through a browser-reachable CORS proxy. Injecting as a param
+		// (rather than overriding globalThis.fetch) reliably shadows the bundle's
+		// fetch reference. Undefined in real Node (test runner) — falls through to
+		// the global fetch.
+		const realFetch = (globalThis as { fetch?: typeof fetch }).fetch;
+		// Count in-flight fetches so the completion wait below knows the run still
+		// has pending async work (e.g. create-expo-app fetching SDK versions).
+		let pendingAsync = 0;
+		const proxying = typeof realFetch === 'function'
+			? makeProxyingFetch(realFetch.bind(globalThis), nodeCtx.env)
+			: realFetch;
+		const nodeFetch = (typeof proxying === 'function'
+			? ((input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+					pendingAsync++;
+					let p: Promise<Response>;
+					try { p = proxying(input, init); } catch (e) { pendingAsync--; throw e; }
+					return Promise.resolve(p).finally(() => { pendingAsync--; });
+				})
+			: proxying) as typeof fetch;
 
 		// process.exit() handling. While the main script is still executing
 		// synchronously, exit() must throw (to abort it). Once we're purely
@@ -1514,6 +1563,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 					// environment (no DOM), matching real Node — e.g. so Emscripten
 					// (pglite) doesn't mis-detect the browser and mis-resolve data files.
 					undefined, undefined, undefined,
+					nodeFetch, // fetch (CORS-proxied for known hosts)
 				);
 			} catch (e) {
 				if (e instanceof ProcessExitError) throw e;
@@ -1616,6 +1666,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 				global,
 				mainImportMetaUrl, mainImportMeta, mainImportMetaResolve,
 				undefined, undefined, undefined,
+				nodeFetch, // fetch (CORS-proxied for known hosts)
 			);
 
 			// Await if ESM (async IIFE returns a promise). The synchronous body of
@@ -1635,53 +1686,46 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 				return asyncExitCode;
 			}
 
-			// Check if any servers were started (long-running process).
-			// Many CLI tools (e.g. vite) fire async actions from cli.parse() whose
-			// promises are discarded. We poll briefly to let those async chains
-			// progress and create servers before deciding the process is done.
-			// Only poll if http was actually loaded (indicating server intent).
+			// We're event-driven now — a process.exit() should end the run
+			// gracefully rather than throw.
+			interceptExit = true;
+
 			const getActiveServers = () => {
 				const httpMod = moduleCache.get('http') as { [key: symbol]: unknown[] } | undefined;
 				return httpMod?.[ACTIVE_SERVERS] as Array<{ getPromise(): Promise<void> | null; close(): void }> | undefined;
 			};
 			let activeServers = getActiveServers();
-			if ((!activeServers || activeServers.length === 0) && isEsm) {
-				// ESM scripts may have fire-and-forget async actions (e.g. vite's
-				// cli.parse() triggers an async action whose promise is discarded).
-				// Yield briefly to let those chains start, then poll for servers.
-				// Phase 1: Quick yield — watch for new modules being loaded, which
-				// indicates async work is in progress. Stop early if nothing changes.
+
+			// Keep the run alive while there's pending async work. Both CJS and ESM
+			// CLIs run mostly async AFTER their synchronous entry — e.g.
+			// create-expo-app: fetch SDK versions → interactive prompts → scaffold →
+			// install. Returning right after the sync body would hand stdin back to
+			// the shell mid-prompt. "Working" = an in-flight fetch, an active
+			// interactive prompt reading stdin, or modules still loading. Ends when a
+			// server starts (→ server race below), process.exit() fires, the run
+			// aborts, or things stay quiescent for ~300ms (the script finished).
+			if (!activeServers || activeServers.length === 0) {
 				let prevCacheSize = moduleCache.size;
 				let staleCount = 0;
-				const quickDeadline = Date.now() + 2000;
-				while (Date.now() < quickDeadline) {
-					await new Promise<void>((r) => setTimeout(r, 30));
+				const hardDeadline = Date.now() + 600000; // 10 min cap (long installs)
+				while (Date.now() < hardDeadline) {
+					const tick = await Promise.race([
+						new Promise<'tick'>((r) => setTimeout(() => r('tick'), 50)),
+						exitPromise.then(() => 'exit' as const),
+					]);
+					if (tick === 'exit' || ctx.signal.aborted || pendingRejection || asyncExitCode !== null) break;
 					activeServers = getActiveServers();
 					if (activeServers && activeServers.length > 0) break;
-					if (ctx.signal.aborted || pendingRejection) break;
-					// If new modules are loading, async work is progressing
-					const newSize = moduleCache.size;
-					if (newSize > prevCacheSize) {
+					if (pendingAsync > 0 || nodeStdin.isActive() || moduleCache.size > prevCacheSize) {
 						staleCount = 0;
-						prevCacheSize = newSize;
-					} else {
-						staleCount++;
-						// No new modules for 5 ticks (150ms) — async chain likely done
-						if (staleCount >= 5) break;
-					}
-				}
-				// Phase 2: If http was loaded during Phase 1 (indicating server intent)
-				// but no servers yet, keep polling up to 10s for the full server startup.
-				if ((!activeServers || activeServers.length === 0) && moduleCache.has('http')) {
-					const longDeadline = Date.now() + 10000;
-					while (Date.now() < longDeadline) {
-						await new Promise<void>((r) => setTimeout(r, 50));
-						activeServers = getActiveServers();
-						if (activeServers && activeServers.length > 0) break;
-						if (ctx.signal.aborted || pendingRejection) break;
+						prevCacheSize = moduleCache.size;
+					} else if (++staleCount >= 6) {
+						break;
 					}
 				}
 			}
+
+			if (asyncExitCode !== null) return asyncExitCode;
 
 			if (activeServers && activeServers.length > 0) {
 				// Collect all server promises
