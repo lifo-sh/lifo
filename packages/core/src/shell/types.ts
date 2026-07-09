@@ -13,6 +13,7 @@ export enum TokenKind {
   RedirectErr,    // 2>
   RedirectErrAppend, // 2>>
   RedirectAll,    // &>
+  RedirectDup,    // 2>&1 / >&2 / >&1 — stream duplication, takes no target word
   DoubleSemi,     // ;;
   LParen,         // (
   RParen,         // )
@@ -62,7 +63,9 @@ export interface SimpleCommandNode {
 }
 
 export interface RedirectionNode {
-  operator: '>' | '>>' | '<' | '2>' | '2>>' | '&>';
+  operator: '>' | '>>' | '<' | '2>' | '2>>' | '&>' | '2>&1' | '>&2' | '>&1';
+  /** Empty for dup operators (2>&1 / >&2 / >&1) — they duplicate an existing
+   *  stream rather than open a file. */
   target: WordPart[];
 }
 

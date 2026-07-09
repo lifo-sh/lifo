@@ -464,6 +464,11 @@ export class Interpreter {
 
     // Apply redirections
     for (const redir of cmd.redirections) {
+      // Stream duplication — no file target; applied left-to-right like bash,
+      // so `> f 2>&1` sends stderr into f, while `2>&1 > f` doesn't.
+      if (redir.operator === '2>&1') { stderr = stdout; continue; }
+      if (redir.operator === '>&2') { stdout = stderr; continue; }
+      if (redir.operator === '>&1') { continue; } // self-dup, no-op
       const target = await expandWord(redir.target, expandCtx);
       const targetPath = resolve(this.config.getCwd(), target);
 
@@ -534,7 +539,9 @@ export class Interpreter {
           // Check registry
           const command = await this.config.registry.resolve(name);
           if (!command) {
-            this.config.writeToTerminal(`${name}: command not found\n`);
+            // To stderr (not the terminal directly) so `2>&1` / `2>/dev/null`
+            // apply to it, as in bash.
+            stderr.write(`${name}: command not found\n`);
             exitCode = 127;
           } else {
             // Only register if NOT part of a background job (which has its own registration)
@@ -744,9 +751,12 @@ export class Interpreter {
   }
 
   private createFileWriter(path: string): CommandOutputStream {
+    // Append per write — the redirect setup already truncated the file once.
+    // Truncating on EVERY write kept only a command's final chunk (and lost
+    // stdout entirely under `> f 2>&1`, where both streams share this writer).
     return {
       write: (text: string) => {
-        this.config.vfs.writeFile(path, text);
+        this.config.vfs.appendFile(path, text);
       },
     };
   }

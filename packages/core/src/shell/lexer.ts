@@ -79,6 +79,22 @@ function tryOperator(input: string, pos: number): { token: Token; end: number } 
     return { token: { kind: TokenKind.Pipe, value: '|', pos }, end: pos + 1 };
   }
 
+  // 2>&1 (dup stderr onto stdout) — must precede the 2> rule
+  if (ch === '2' && next === '>' && input[pos + 2] === '&' && input[pos + 3] === '1') {
+    if (pos > 0 && !isOperatorBreak(input[pos - 1])) {
+      return null; // part of a larger word (e.g. foo2>&1x is not a redirect)
+    }
+    return { token: { kind: TokenKind.RedirectDup, value: '2>&1', pos }, end: pos + 4 };
+  }
+
+  // 1>&2 (dup stdout onto stderr) — must precede word scanning of '1'
+  if (ch === '1' && next === '>' && input[pos + 2] === '&' && input[pos + 3] === '2') {
+    if (pos > 0 && !isOperatorBreak(input[pos - 1])) {
+      return null;
+    }
+    return { token: { kind: TokenKind.RedirectDup, value: '>&2', pos }, end: pos + 4 };
+  }
+
   // 2>> (stderr append)
   if (ch === '2' && next === '>' && input[pos + 2] === '>') {
     return { token: { kind: TokenKind.RedirectErrAppend, value: '2>>', pos }, end: pos + 3 };
@@ -97,6 +113,14 @@ function tryOperator(input: string, pos: number): { token: Token; end: number } 
   // >> (append)
   if (ch === '>' && next === '>') {
     return { token: { kind: TokenKind.RedirectAppend, value: '>>', pos }, end: pos + 2 };
+  }
+
+  // >&2 (dup stdout onto stderr) / >&1 (self-dup, no-op) — before the > rule
+  if (ch === '>' && next === '&' && input[pos + 2] === '2') {
+    return { token: { kind: TokenKind.RedirectDup, value: '>&2', pos }, end: pos + 3 };
+  }
+  if (ch === '>' && next === '&' && input[pos + 2] === '1') {
+    return { token: { kind: TokenKind.RedirectDup, value: '>&1', pos }, end: pos + 3 };
   }
 
   // > (redirect out)
