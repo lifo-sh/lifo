@@ -16,6 +16,7 @@ export const builtinModules: string[] = [
   'console',
   'constants',
   'crypto',
+  'dgram',
   'dns',
   'dns/promises',
   'events',

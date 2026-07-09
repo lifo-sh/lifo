@@ -18,6 +18,7 @@ import * as zlibModule from './zlib.js';
 import * as stringDecoderModule from './string_decoder.js';
 import * as ttyModule from './tty.js';
 import * as dnsModule from './dns.js';
+import * as dgramModule from './dgram.js';
 import { createModuleShim } from './module.js';
 import * as readlineModule from './readline.js';
 import * as diagnosticsChannelModule from './diagnostics_channel.js';
@@ -245,6 +246,7 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
     tty: () => ttyModule,
     dns: () => dnsModule,
     'dns/promises': () => dnsModule.promises,
+    dgram: () => dgramModule,
     readline: () => readlineModule,
     'readline/promises': () => readlineModule.promises,
     diagnostics_channel: () => diagnosticsChannelModule,

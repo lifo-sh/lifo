@@ -488,7 +488,13 @@ function rewriteDynamicImports(source: string): string {
 	// Stable require alias captured at wrapper scope before any module-level
 	// `var require` shadow can hoist over it.
 	if (result.includes('__lifoRequire(')) {
-		result = 'var __lifoRequire = require;\n' + result;
+		// Node's dynamic import() of a CJS module exposes module.exports as the
+		// namespace `.default`. Our import() maps to require(), so add that interop
+		// (e.g. @expo/metro-config does `(await import('browserslist')).default(...)`
+		// — browserslist is `module.exports = fn`, so without a `.default` it throws
+		// "browserslist.default is not a function"). Non-enumerable + only when
+		// absent, so it's invisible to spreads and leaves ESM modules untouched.
+		result = 'var __lifoRequire = function (id) { var m = require(id); if (m != null && !m.__esModule && (typeof m === "object" || typeof m === "function") && !("default" in m)) { try { Object.defineProperty(m, "default", { value: m, configurable: true }); } catch (e) {} } return m; };\n' + result;
 	}
 	return result;
 }
@@ -768,7 +774,13 @@ export function transformEsmToCjs(source: string): string {
 	// Stable require alias for the dynamic-import transforms above — captured
 	// at wrapper scope before any module-level `var require` shadow can hoist.
 	if (result.includes('__lifoRequire(')) {
-		result = 'var __lifoRequire = require;\n' + result;
+		// Node's dynamic import() of a CJS module exposes module.exports as the
+		// namespace `.default`. Our import() maps to require(), so add that interop
+		// (e.g. @expo/metro-config does `(await import('browserslist')).default(...)`
+		// — browserslist is `module.exports = fn`, so without a `.default` it throws
+		// "browserslist.default is not a function"). Non-enumerable + only when
+		// absent, so it's invisible to spreads and leaves ESM modules untouched.
+		result = 'var __lifoRequire = function (id) { var m = require(id); if (m != null && !m.__esModule && (typeof m === "object" || typeof m === "function") && !("default" in m)) { try { Object.defineProperty(m, "default", { value: m, configurable: true }); } catch (e) {} } return m; };\n' + result;
 	}
 
 	return result;
@@ -941,6 +953,31 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			},
 		};
 
+		// Stub for `lightningcss` — a native (Rust NAPI) CSS transformer that
+		// can't load in the browser (`Cannot find module '../lightningcss.*.node'`).
+		// SDK 57's @expo/metro-config uses it to transform/minify web CSS
+		// (transformCssModuleWeb → require('lightningcss')), which otherwise
+		// crashes `expo start --web` bundling. Pass CSS through unchanged — dev
+		// bundles don't need minification, and react-native-web injects its own
+		// styles at runtime rather than via these CSS files.
+		const toBuf = (v: unknown) => (Buffer.isBuffer(v) ? v : Buffer.from((v as string | Uint8Array) ?? ''));
+		const lightningcssStub = {
+			transform: (opts: { code?: unknown; cssModules?: unknown }) => ({
+				code: toBuf(opts?.code),
+				map: undefined,
+				exports: opts?.cssModules ? {} : undefined,
+				references: {},
+				dependencies: [],
+				warnings: [],
+			}),
+			transformStyleAttribute: (opts: { code?: unknown }) => ({ code: toBuf(opts?.code), warnings: [] }),
+			bundle: () => ({ code: Buffer.from(''), map: undefined, exports: undefined, warnings: [] }),
+			bundleAsync: () => Promise.resolve({ code: Buffer.from(''), map: undefined, exports: undefined, warnings: [] }),
+			browserslistToTargets: () => ({}),
+			composeVisitors: () => ({}),
+			Features: new Proxy({}, { get: () => 0 }),
+		};
+
 		// Build require function (declared first, module shim overrides below)
 		function nodeRequire(name: string): unknown {
 			// Strip node: prefix
@@ -956,6 +993,11 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 
 			// rollup/parseAst is a native NAPI binding — serve the acorn-backed shim
 			if (name === 'rollup/parseAst' || name === 'rollup/parseAst.js') return rollupParseShim;
+
+			// lightningcss (native CSS transformer) — intercept before node_modules
+			// resolution, since it IS installed (its index.js would load a missing
+			// .node binary). See lightningcssStub.
+			if (name === 'lightningcss') return lightningcssStub;
 
 			// @babel/core: answer the async API with sync execution (see babel-sync.ts)
 			if (name === '@babel/core') {
@@ -1405,6 +1447,11 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 
 				// rollup/parseAst is a native NAPI binding — serve the acorn-backed shim
 				if (name === 'rollup/parseAst' || name === 'rollup/parseAst.js') return rollupParseShim;
+
+			// lightningcss (native CSS transformer) — intercept before node_modules
+			// resolution, since it IS installed (its index.js would load a missing
+			// .node binary). See lightningcssStub.
+			if (name === 'lightningcss') return lightningcssStub;
 
 				// @babel/core: answer the async API with sync execution (see babel-sync.ts)
 				if (name === '@babel/core') {
