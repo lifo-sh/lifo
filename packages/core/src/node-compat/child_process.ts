@@ -2,6 +2,7 @@ import { EventEmitter } from './events.js';
 import { Buffer } from './buffer.js';
 
 type ExecuteCapture = (input: string, opts?: { cwd?: string }) => Promise<string>;
+type ExecuteCaptureResult = (input: string, opts?: { cwd?: string }) => Promise<{ stdout: string; code: number }>;
 
 /** Quote an argv token for the shell command line executeCapture parses. */
 function quoteArg(a: string): string {
@@ -39,7 +40,7 @@ function makeChild() {
   return child;
 }
 
-export function createChildProcess(executeCapture?: ExecuteCapture) {
+export function createChildProcess(executeCapture?: ExecuteCapture, executeCaptureResult?: ExecuteCaptureResult) {
   // Run a shell command line and deliver the result to a child object: stream
   // stdout, fire the callback, emit close/exit. This is the bridge that lets
   // in-VM tools shell out to other commands (e.g. create-expo-app → `npm pack`).
@@ -52,20 +53,63 @@ export function createChildProcess(executeCapture?: ExecuteCapture) {
     queueMicrotask(async () => {
       let out = '';
       let err: Error | null = null;
+      let code = 0;
       try {
-        if (executeCapture) out = await executeCapture(cmdLine, cwd ? { cwd } : undefined);
-        else err = new Error('child_process requires a shell executor');
+        if (executeCaptureResult) {
+          const r = await executeCaptureResult(cmdLine, cwd ? { cwd } : undefined);
+          out = r.stdout; code = r.code;
+        } else if (executeCapture) {
+          out = await executeCapture(cmdLine, cwd ? { cwd } : undefined);
+        } else {
+          err = new Error('child_process requires a shell executor');
+        }
       } catch (e) {
         err = e instanceof Error ? e : new Error(String(e));
       }
+      // Shell exit 127 = command not found. Surface it as ENOENT like Node, so
+      // callers that probe for an optional binary detect its absence instead of
+      // treating an empty-stdout "success" as real. Notably fb-watchman spawns
+      // `watchman get-sockname`; without this it saw exit 0 + empty output and
+      // hung connecting to a phantom socket, stalling Metro's first bundle
+      // (spurious 504 on `expo start --web`). It now falls back to the node
+      // file crawler and bundles normally.
+      if (!err && code === 127) {
+        const cmd0 = cmdLine.trim().split(/\s+/)[0];
+        err = Object.assign(new Error(`spawn ${cmd0} ENOENT`), {
+          code: 'ENOENT', errno: -2, syscall: `spawn ${cmd0}`, path: cmd0,
+        });
+      }
+      const isEnoent = !!err && (err as { code?: string }).code === 'ENOENT';
       if (out) child.stdout.emit('data', Buffer.from(out));
       child.stdout.emit('end');
+      // Node readable streams emit 'close' after 'end'. Some consumers wait on
+      // it exclusively — notably Metro's node file crawler (findNative) resolves
+      // its crawl only from `child.stdout.on('close')`; without it the crawl
+      // promise never settles and the first bundle hangs (the create-expo-app
+      // `expo start --web` 504).
+      child.stdout.emit('close');
       if (err) child.stderr.emit('data', Buffer.from(err.message));
       child.stderr.emit('end');
-      const code = err ? 1 : 0;
+      child.stderr.emit('close');
       if (cb) cb(err, out, err ? err.message : '');
-      child.emit('close', code, null);
-      child.emit('exit', code, null);
+      if (isEnoent) {
+        // Node emits 'error' (and no 'exit') when a binary never launches. Only
+        // emit it if something is listening — an unhandled 'error' would throw
+        // and crash the VM; tools that spawn optional helpers (e.g. expo probing
+        // xcodebuild/osascript) without an error handler instead see a nonzero
+        // close, which they treat as "not available" rather than crashing.
+        if (child.listenerCount('error') > 0) {
+          child.emit('error', err);
+          child.emit('close', null, null);
+        } else {
+          child.emit('close', 127, null);
+          child.emit('exit', 127, null);
+        }
+        return;
+      }
+      const exitCode = err ? 1 : code;
+      child.emit('close', exitCode, null);
+      child.emit('exit', exitCode, null);
     });
   }
 
@@ -110,7 +154,9 @@ export function createChildProcess(executeCapture?: ExecuteCapture) {
       // so tools spawning optional helpers (a browser opener, etc.) don't crash.
       queueMicrotask(() => {
         child.stdout.emit('end');
+        child.stdout.emit('close');
         child.stderr.emit('end');
+        child.stderr.emit('close');
         child.emit('close', 0, null);
         child.emit('exit', 0, null);
       });

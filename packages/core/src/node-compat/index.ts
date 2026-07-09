@@ -67,6 +67,7 @@ export interface NodeContext {
   dirname: string;
   signal: AbortSignal;
   executeCapture?: (input: string, opts?: { cwd?: string }) => Promise<string>;
+  executeCaptureResult?: (input: string, opts?: { cwd?: string }) => Promise<{ stdout: string; code: number }>;
   portRegistry?: Map<number, VirtualRequestHandler>;
   /**
    * Execute CJS source in the VM's module system and return its module.exports.
@@ -115,7 +116,7 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
     util: () => utilModule,
     http: () => createHttp(ctx.portRegistry, 'http:'),
     https: () => createHttp(ctx.portRegistry, 'https:'),
-    child_process: () => createChildProcess(ctx.executeCapture),
+    child_process: () => createChildProcess(ctx.executeCapture, ctx.executeCaptureResult),
     stream: () => {
       // Node.js CJS: require('stream') returns the Stream base class with
       // .Readable, .Writable, .Duplex, .PassThrough, .Stream attached

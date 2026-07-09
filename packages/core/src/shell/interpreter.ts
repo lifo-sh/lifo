@@ -572,6 +572,7 @@ export class Interpreter {
                 ? (v: boolean) => { terminalStdin.rawMode = v; }
                 : undefined,
               executeCapture: (captureInput, captureOpts) => this.executeCapture(captureInput, captureOpts),
+              executeCaptureResult: (captureInput, captureOpts) => this.executeCaptureResult(captureInput, captureOpts),
             };
 
             // Register process BEFORE executing so ps can see itself
@@ -692,6 +693,17 @@ export class Interpreter {
   }
 
   async executeCapture(input: string, opts?: { cwd?: string }): Promise<string> {
+    return (await this.executeCaptureResult(input, opts)).stdout;
+  }
+
+  /**
+   * Like executeCapture but also reports the final exit code, so callers that
+   * need to distinguish success from failure can. child_process relies on this
+   * to emit an ENOENT `error` for a missing command (exit 127) — matching Node,
+   * so libraries like fb-watchman detect "watchman not installed" and fall back
+   * instead of hanging on a phantom child that never errors.
+   */
+  async executeCaptureResult(input: string, opts?: { cwd?: string }): Promise<{ stdout: string; code: number }> {
     let captured = '';
     const stdout: CommandOutputStream = {
       write: (text: string) => { captured += text; },
@@ -704,12 +716,13 @@ export class Interpreter {
     // restoring afterward so the caller's cwd is unaffected.
     const prevCwd = opts?.cwd !== undefined ? this.config.getCwd() : undefined;
     if (opts?.cwd !== undefined) this.config.setCwd(opts.cwd);
+    let code = 0;
     try {
       // Execute with captured stdout
       for (const list of script.lists) {
         for (const entry of list.entries) {
           for (const cmd of entry.pipeline.commands) {
-            await this.executeCommand(cmd, undefined, stdout);
+            code = await this.executeCommand(cmd, undefined, stdout);
           }
         }
       }
@@ -717,7 +730,7 @@ export class Interpreter {
       if (prevCwd !== undefined) this.config.setCwd(prevCwd);
     }
 
-    return captured;
+    return { stdout: captured, code };
   }
 
   private createExpandContext(): ExpandContext {
