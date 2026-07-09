@@ -8,7 +8,13 @@
 import { EventEmitter } from './events.js';
 
 export interface InterfaceOptions {
-  input?: { on?: (event: string, cb: (...args: unknown[]) => void) => void };
+  input?: {
+    on?: (event: string, cb: (...args: unknown[]) => void) => void;
+    removeListener?: (event: string, cb: (...args: unknown[]) => void) => void;
+    listenerCount?: (event: string) => number;
+    pause?: () => unknown;
+    resume?: () => unknown;
+  };
   output?: { write?: (data: string) => void };
   prompt?: string;
   terminal?: boolean;
@@ -20,6 +26,9 @@ export interface InterfaceOptions {
 export class Interface extends EventEmitter {
   private _prompt: string;
   private _output: { write?: (data: string) => void } | undefined;
+  private _input: InterfaceOptions['input'];
+  private _onData?: (...args: unknown[]) => void;
+  private _onEnd?: (...args: unknown[]) => void;
   private _closed = false;
   private _lines: string[] = [];
   terminal: boolean;
@@ -28,11 +37,12 @@ export class Interface extends EventEmitter {
     super();
     this._prompt = opts.prompt ?? '> ';
     this._output = opts.output;
+    this._input = opts.input;
     this.terminal = opts.terminal ?? false;
 
     // Listen for data on input if provided
     if (opts.input?.on) {
-      opts.input.on('data', (chunk) => {
+      this._onData = (chunk) => {
         if (this._closed) return;
         const lines = String(chunk).split(/\r?\n/);
         for (const line of lines) {
@@ -41,11 +51,13 @@ export class Interface extends EventEmitter {
             this.emit('line', line);
           }
         }
-      });
+      };
+      opts.input.on('data', this._onData);
 
-      opts.input.on('end', () => {
+      this._onEnd = () => {
         if (!this._closed) this.close();
-      });
+      };
+      opts.input.on('end', this._onEnd);
     }
   }
 
@@ -91,15 +103,28 @@ export class Interface extends EventEmitter {
   close(): void {
     if (this._closed) return;
     this._closed = true;
+    // Detach from the input and stop its flow, as Node's readline does.
+    // Leaving the stream flowing kept the interactive stdin "active" forever,
+    // so `npx <cli>` runs never went quiescent after the CLI finished — the
+    // node command's completion-wait saw a live stdin and waited until Ctrl+C.
+    const input = this._input;
+    if (input) {
+      if (this._onData && typeof input.removeListener === 'function') input.removeListener('data', this._onData);
+      if (this._onEnd && typeof input.removeListener === 'function') input.removeListener('end', this._onEnd);
+      const remaining = typeof input.listenerCount === 'function' ? input.listenerCount('data') : 0;
+      if (remaining === 0 && typeof input.pause === 'function') input.pause();
+    }
     this.emit('close');
   }
 
   pause(): this {
+    this._input?.pause?.();
     this.emit('pause');
     return this;
   }
 
   resume(): this {
+    this._input?.resume?.();
     this.emit('resume');
     return this;
   }
