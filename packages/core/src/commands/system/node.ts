@@ -1351,8 +1351,24 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 
 		function executeModule(modSource: string, modFilename: string, cacheAs?: string): unknown {
 			const modDir = dirname(modFilename);
-			const modModule = { exports: {} as Record<string, unknown> };
-			const modExports = modModule.exports;
+			// `exports` free variable / initial exports object. Node keeps this
+			// stable even after `module.exports` is reassigned.
+			const modExports = {} as Record<string, unknown>;
+			let currentExports: unknown = modExports;
+			// Live `module.exports`: reassigning it mid-execution must update the
+			// module cache IMMEDIATELY, so a circular require sees the reassigned
+			// value rather than the pre-cached initial {}. semver's Range and
+			// Comparator are mutually recursive and each does `module.exports =
+			// Class` *before* requiring the other; without this, the second module
+			// captures an empty {} → `new Comparator()` throws → `validRange('^x')`
+			// returns null → downstream tools (npm-package-arg, expo install) break.
+			const modModule = {
+				get exports() { return currentExports; },
+				set exports(v: unknown) {
+					currentExports = v;
+					if (cacheAs) moduleCache.set(cacheAs, v);
+				},
+			};
 
 			// Pre-cache to handle circular dependencies (Node.js behaviour)
 			if (cacheAs) {
