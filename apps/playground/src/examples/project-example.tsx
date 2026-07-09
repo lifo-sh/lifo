@@ -1,5 +1,6 @@
 import { type ReactNode, useState } from 'react';
 import { Sandbox, ServiceWorkerBridge } from '@lifo-sh/core';
+import gitCommand from 'lifo-pkg-git';
 import type { Terminal } from '@lifo-sh/ui';
 import { ExamplePanel } from '@/components/example-panel';
 import { TerminalView } from '@/components/terminal-view';
@@ -29,6 +30,8 @@ export function ProjectExample({ title, subtitle, files, cwd, previewPort, env }
 
   const bootTerminal = async (term: Terminal) => {
     const sandbox = await Sandbox.create({ terminal: term, files, cwd, env });
+    // git in every example shell (create-expo-app scaffolds ask to `git init`).
+    sandbox.commands.register('git', gitCommand);
 
     // No tunnel service here: the service worker below is the browser transport;
     // a relay (ws://localhost:3005) only exists for the CLI, so starting the

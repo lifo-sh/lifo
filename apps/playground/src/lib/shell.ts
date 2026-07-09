@@ -31,7 +31,8 @@ import gitCommand from 'lifo-pkg-git';
 import ffmpegCommand from 'lifo-pkg-ffmpeg';
 
 export interface BootShellOptions {
-  /** Extra installable-package commands to register. */
+  /** Extra installable-package commands to register. git is always
+   *  registered ('git' entries are accepted for back-compat). */
   pkgs?: Array<'git' | 'ffmpeg'>;
   /** Register node/curl/tunnel + the network/systemctl command set. */
   network?: boolean;
@@ -59,7 +60,9 @@ export async function bootShell(
   opts: BootShellOptions = {},
 ): Promise<Shell> {
   const registry = createDefaultRegistry();
-  if (opts.pkgs?.includes('git')) registry.register('git', gitCommand);
+  // git in every shell — it's statically imported anyway, and users expect
+  // `git init`/`git status` to work in all examples.
+  registry.register('git', gitCommand);
   if (opts.pkgs?.includes('ffmpeg')) registry.register('ffmpeg', ffmpegCommand);
   bootLifoPackages(kernel.vfs, registry);
 
