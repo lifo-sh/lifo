@@ -269,7 +269,13 @@ export class ServiceWorkerBridge {
 		try {
 			handler(vReq, vRes);
 			if (vRes._donePromise) {
-				const timeout = new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 25000));
+				// 120s, not 25s: a dev bundler's FIRST bundle (Metro compiling
+				// hundreds of modules — e.g. react-native-web + react-dom for
+				// `expo start --web` — via Babel INSIDE the VM) is much slower than
+				// in native Node and legitimately exceeds 25s, surfacing as a
+				// spurious 504 on GET /index.bundle. Still bounded so a truly stuck
+				// handler eventually fails instead of hanging forever.
+				const timeout = new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 120000));
 				const result = await Promise.race([vRes._donePromise.then(() => 'done' as const), timeout]);
 				if (result === 'timeout') {
 					this.respondText(requestId, 504, { 'content-type': 'text/plain' }, `Gateway timeout: server did not respond for ${url}`);

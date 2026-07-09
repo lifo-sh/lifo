@@ -452,7 +452,7 @@ export class WebSocketTunnel extends BaseTunnel {
 			// Add a 25s safety timeout so we respond before external timeout
 			if (vRes._donePromise) {
 				const timeout = new Promise<'timeout'>((resolve) =>
-					setTimeout(() => resolve('timeout'), 25000)
+					setTimeout(() => resolve('timeout'), 120000)
 				);
 				const result = await Promise.race([vRes._donePromise.then(() => 'done' as const), timeout]);
 				if (result === 'timeout') {
