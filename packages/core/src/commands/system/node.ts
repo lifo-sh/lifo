@@ -16,8 +16,47 @@ import { createModuleClass } from '../../node-compat/module.js';
  * `global.global === global`).
  */
 function makeNodeGlobal(overrides: Record<string, unknown>): Record<string, unknown> {
-	const g = Object.assign(Object.create(globalThis as object), overrides) as Record<string, unknown>;
-	g.global = g;
+	// Proxy, not Object.create(globalThis): assignments like
+	// `global.JIMPBUffer = X` (jimp-compact) must land on the REAL globalThis,
+	// because other modules then reference the bare identifier `JIMPBUffer`,
+	// which resolves through the scope chain to globalThis — a prototype-child
+	// would swallow the write and leave the bare lookup dangling
+	// (ReferenceError). The overlay keys (process/Buffer/console/global) stay
+	// per-module so each run keeps its own Node shims.
+	const own: Record<string, unknown> = { ...overrides };
+	const g = new Proxy(own, {
+		get(t, k) {
+			if (k in t) return t[k as string];
+			return (globalThis as unknown as Record<string | symbol, unknown>)[k];
+		},
+		set(t, k, v) {
+			if (k in t) t[k as string] = v;
+			else (globalThis as unknown as Record<string | symbol, unknown>)[k] = v;
+			return true;
+		},
+		has(t, k) {
+			return k in t || k in (globalThis as object);
+		},
+		getOwnPropertyDescriptor(t, k) {
+			const d = Object.getOwnPropertyDescriptor(t, k) ?? Object.getOwnPropertyDescriptor(globalThis, k);
+			if (d) d.configurable = true; // proxy invariant: target may not own it
+			return d;
+		},
+		ownKeys(t) {
+			return Array.from(new Set([...Reflect.ownKeys(t), ...Reflect.ownKeys(globalThis as object)]));
+		},
+		defineProperty(t, k, desc) {
+			if (k in t) Object.defineProperty(t, k, desc);
+			else Object.defineProperty(globalThis, k, desc);
+			return true;
+		},
+		deleteProperty(t, k) {
+			if (k in t) delete t[k as string];
+			else delete (globalThis as unknown as Record<string | symbol, unknown>)[k];
+			return true;
+		},
+	}) as unknown as Record<string, unknown>;
+	own.global = g;
 	return g;
 }
 

@@ -20,6 +20,9 @@ class IncomingMessage extends EventEmitter {
   statusCode: number;
   statusMessage: string;
   headers: Record<string, string>;
+  /** Node's flat [name, value, name, value, ...] view of the headers.
+   *  expo-server's convertRequest iterates it (crashes on undefined). */
+  rawHeaders: string[];
   method?: string;
   url?: string;
   httpVersion = '1.1';
@@ -27,6 +30,7 @@ class IncomingMessage extends EventEmitter {
   httpVersionMinor = 1;
   complete = false;
   aborted = false;
+  destroyed = false;
   readable = true;
   // Minimal socket stub that Vite/Connect middleware expects
   socket: {
@@ -34,6 +38,8 @@ class IncomingMessage extends EventEmitter {
     remotePort: number;
     encrypted: boolean;
     destroy: () => void;
+    unref: () => void;
+    ref: () => void;
   };
   connection: {
     remoteAddress: string;
@@ -45,11 +51,14 @@ class IncomingMessage extends EventEmitter {
     this.statusCode = statusCode;
     this.statusMessage = statusMessage;
     this.headers = headers;
+    this.rawHeaders = Object.entries(headers).flatMap(([k, v]) => [k, v]);
     const socketStub = {
       remoteAddress: '127.0.0.1',
       remotePort: 0,
       encrypted: false,
       destroy: () => {},
+      unref: () => {},
+      ref: () => {},
     };
     this.socket = socketStub;
     this.connection = socketStub;
@@ -70,6 +79,12 @@ class IncomingMessage extends EventEmitter {
 
   destroy(): this {
     this.aborted = true;
+    this.destroyed = true;
+    return this;
+  }
+
+  /** Socket-idle-timeout stub — fetch-nodeshim calls res.setTimeout(0). */
+  setTimeout(_ms: number, _cb?: () => void): this {
     return this;
   }
 }
@@ -102,6 +117,15 @@ class ClientRequest extends EventEmitter {
 
   abort(): void {
     this.aborted = true;
+  }
+
+  /** Node req.destroy(err) — abort the in-flight request. fetch-nodeshim's
+   *  error/abort path calls it unconditionally. */
+  destroyed = false;
+  destroy(_err?: unknown): this {
+    this.aborted = true;
+    this.destroyed = true;
+    return this;
   }
 
   private async execute(): Promise<void> {
@@ -183,6 +207,7 @@ class ServerResponse extends EventEmitter {
   statusMessage = 'OK';
   headersSent = false;
   finished = false;
+  destroyed = false;
   writableEnded = false;
   writableFinished = false;
   private _headers: Record<string, string | string[]> = {};

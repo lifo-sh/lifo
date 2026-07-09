@@ -232,6 +232,10 @@ export function createProcess(opts: ProcessOptions) {
     // Event-loop introspection (Node 17+). expo's CLI calls this on exit to
     // report lingering handles; there is no real libuv loop here, so report none.
     getActiveResourcesInfo: (): string[] => [],
+    // Source-map toggles (Node 16+). @expo/require-utils flips these around
+    // SSR module evaluation; we don't consume V8 source maps, so no-op.
+    setSourceMapsEnabled: (_enabled: boolean) => {},
+    sourceMapsEnabled: false,
     memoryUsage: () => {
       const m = (performance as unknown as { memory?: { usedJSHeapSize: number; totalJSHeapSize: number; jsHeapSizeLimit: number } }).memory;
       return {

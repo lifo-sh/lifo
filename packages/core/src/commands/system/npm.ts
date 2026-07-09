@@ -106,6 +106,19 @@ function satisfiesRange(version: string, range: string): boolean {
 	const v = parseVersion(version);
 	if (!v) return false;
 
+	// npm semantics: a prerelease version (6.2.0-canary-x, 1.0.0-beta.1) never
+	// satisfies a normal range — only an exact match, or a range that itself
+	// carries a prerelease tag on the SAME [major,minor,patch] tuple. Without
+	// this, `^6.1.2` happily resolved to a canary (hit by @expo/metro-runtime,
+	// whose canary drops the error-overlay entry expo-router imports).
+	if (version.includes('-')) {
+		if (range === version) return true;
+		if (!range.includes('-')) return false;
+		const r = parseVersion(range.replace(/^[\^~>=<\s]+/, ''));
+		if (!r || v[0] !== r[0] || v[1] !== r[1] || v[2] !== r[2]) return false;
+		return true;
+	}
+
 	// Exact
 	if (/^\d+\.\d+\.\d+$/.test(range)) {
 		const r = parseVersion(range);

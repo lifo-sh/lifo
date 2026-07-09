@@ -168,6 +168,13 @@ export class Module {
     return request;
   }
 
+  /** Node's source-map registry lookup — we register none, so always undefined
+   *  (valid per Node's contract). @expo/require-utils' stacktrace annotator
+   *  calls this while formatting errors. A static FIELD (not method) so it's
+   *  enumerable: babel's _interopRequireWildcard copies via for-in and would
+   *  miss a non-enumerable static method. */
+  static findSourceMap = (_filename: string): undefined => undefined;
+
   /**
    * Node's require-extension loader map. Consumers (e.g. @expo/require-utils'
    * resolveFrom) read `Object.keys(Module._extensions)` to get the default
@@ -218,6 +225,12 @@ export function createModuleClass(
   class NodeModule extends Module {}
   const M = NodeModule as typeof Module & Record<string, unknown>;
   M._hooks = hooks;
+  // Re-own inherited statics that consumers reach via babel's
+  // _interopRequireWildcard, which copies own enumerable props only —
+  // subclass inheritance (NodeModule.__proto__ === Module) fails its
+  // hasOwnProperty check.
+  M.findSourceMap = Module.findSourceMap;
+  M.builtinModules = Module.builtinModules;
   Object.assign(M, statics);
   M.Module = M;
   M.default = M;
