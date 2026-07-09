@@ -167,6 +167,18 @@ export class Module {
     return request;
   }
 
+  /**
+   * Node's require-extension loader map. Consumers (e.g. @expo/require-utils'
+   * resolveFrom) read `Object.keys(Module._extensions)` to get the default
+   * candidate extensions when resolving a bare specifier. The loader fns are
+   * unused by our resolver, so they're no-ops — only the keys matter.
+   */
+  static _extensions: Record<string, unknown> = {
+    '.js': () => {},
+    '.json': () => {},
+    '.node': () => {},
+  };
+
   static _cache: Record<string, unknown> = {};
 }
 

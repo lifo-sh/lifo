@@ -188,6 +188,54 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
       return Stream;
     },
     'stream/promises': () => (map.stream() as unknown as { promises: unknown }).promises,
+    // require('stream/consumers') — buffer/text/json/arrayBuffer/blob of a
+    // stream. fetch-nodeshim (pulled in by @expo/cli's fetch wrapper) needs it.
+    // Accepts a Node Readable ('data'/'end'), a WHATWG ReadableStream
+    // (getReader), or any async-iterable.
+    'stream/consumers': () => {
+      const collect = (stream: unknown): Promise<Buffer> => {
+        const s = stream as {
+          getReader?: () => { read(): Promise<{ done: boolean; value?: unknown }> };
+          [Symbol.asyncIterator]?: () => AsyncIterator<unknown>;
+          on?: (ev: string, fn: (...a: unknown[]) => void) => void;
+          destroyed?: boolean; _ended?: boolean;
+        };
+        const toBuf = (c: unknown) => (Buffer.isBuffer(c) ? c : Buffer.from(c as ArrayBuffer | string));
+        if (typeof s.getReader === 'function') {
+          return (async () => {
+            const reader = s.getReader!();
+            const chunks: Buffer[] = [];
+            for (;;) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              if (value !== undefined) chunks.push(toBuf(value));
+            }
+            return Buffer.concat(chunks);
+          })();
+        }
+        if (typeof s[Symbol.asyncIterator] === 'function') {
+          return (async () => {
+            const chunks: Buffer[] = [];
+            for await (const c of s as AsyncIterable<unknown>) chunks.push(toBuf(c));
+            return Buffer.concat(chunks);
+          })();
+        }
+        return new Promise<Buffer>((resolve, reject) => {
+          const chunks: Buffer[] = [];
+          if (!s.on) { resolve(Buffer.alloc(0)); return; }
+          s.on('data', (c: unknown) => chunks.push(toBuf(c)));
+          s.on('end', () => resolve(Buffer.concat(chunks)));
+          s.on('error', (e: unknown) => reject(e as Error));
+        });
+      };
+      return {
+        buffer: collect,
+        arrayBuffer: (s: unknown) => collect(s).then((b) => b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength)),
+        text: (s: unknown) => collect(s).then((b) => b.toString('utf8')),
+        json: (s: unknown) => collect(s).then((b) => JSON.parse(b.toString('utf8'))),
+        blob: (s: unknown) => collect(s).then((b) => new Blob([b])),
+      };
+    },
     url: () => urlModule,
     timers: () => timersModule,
     crypto: () => cryptoModule,

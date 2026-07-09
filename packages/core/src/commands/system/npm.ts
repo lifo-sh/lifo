@@ -1320,6 +1320,7 @@ export async function npmInstallGlobal(
 	packageName: string,
 	ctx: CommandContext,
 	registry: CommandRegistry,
+	kernel?: Kernel,
 ): Promise<number> {
 	const npmRegistry = getRegistry(ctx.env);
 	const startTime = Date.now();

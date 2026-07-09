@@ -125,4 +125,31 @@ export function pathToFileURL(path: string): URL {
   return new URL('file://' + encodeURI(path));
 }
 
-export default { URL, URLSearchParams, parse, format, resolve, fileURLToPath, pathToFileURL };
+/**
+ * Convert a WHATWG URL into the options object `http.request`/`https.request`
+ * accept (Node's `url.urlToHttpOptions`). Our `curl` and other http callers
+ * feed a `new URL(...)` through this before dispatching.
+ */
+export function urlToHttpOptions(url: URL): {
+  protocol?: string; hostname?: string; hash?: string; search?: string;
+  pathname?: string; path?: string; href?: string; port?: string | number; auth?: string;
+} {
+  const options: ReturnType<typeof urlToHttpOptions> = {
+    protocol: url.protocol,
+    hostname: typeof url.hostname === 'string' && url.hostname.startsWith('[')
+      ? url.hostname.slice(1, -1)
+      : url.hostname,
+    hash: url.hash,
+    search: url.search,
+    pathname: url.pathname,
+    path: `${url.pathname || ''}${url.search || ''}`,
+    href: url.href,
+  };
+  if (url.port !== '') options.port = Number(url.port);
+  if (url.username || url.password) {
+    options.auth = `${decodeURIComponent(url.username)}:${decodeURIComponent(url.password)}`;
+  }
+  return options;
+}
+
+export default { URL, URLSearchParams, parse, format, resolve, fileURLToPath, pathToFileURL, urlToHttpOptions };
