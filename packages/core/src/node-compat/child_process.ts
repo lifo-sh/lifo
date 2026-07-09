@@ -2,7 +2,7 @@ import { EventEmitter } from './events.js';
 import { Buffer } from './buffer.js';
 
 type ExecuteCapture = (input: string, opts?: { cwd?: string }) => Promise<string>;
-type ExecuteCaptureResult = (input: string, opts?: { cwd?: string }) => Promise<{ stdout: string; code: number }>;
+type ExecuteCaptureResult = (input: string, opts?: { cwd?: string }) => Promise<{ stdout: string; stderr: string; code: number }>;
 
 /** Quote an argv token for the shell command line executeCapture parses. */
 function quoteArg(a: string): string {
@@ -52,12 +52,13 @@ export function createChildProcess(executeCapture?: ExecuteCapture, executeCaptu
   ): void {
     queueMicrotask(async () => {
       let out = '';
+      let errOut = '';
       let err: Error | null = null;
       let code = 0;
       try {
         if (executeCaptureResult) {
           const r = await executeCaptureResult(cmdLine, cwd ? { cwd } : undefined);
-          out = r.stdout; code = r.code;
+          out = r.stdout; errOut = r.stderr; code = r.code;
         } else if (executeCapture) {
           out = await executeCapture(cmdLine, cwd ? { cwd } : undefined);
         } else {
@@ -88,10 +89,11 @@ export function createChildProcess(executeCapture?: ExecuteCapture, executeCaptu
       // promise never settles and the first bundle hangs (the create-expo-app
       // `expo start --web` 504).
       child.stdout.emit('close');
-      if (err) child.stderr.emit('data', Buffer.from(err.message));
+      if (errOut) child.stderr.emit('data', Buffer.from(errOut));
+      else if (err) child.stderr.emit('data', Buffer.from(err.message));
       child.stderr.emit('end');
       child.stderr.emit('close');
-      if (cb) cb(err, out, err ? err.message : '');
+      if (cb) cb(err, out, errOut || (err ? err.message : ''));
       if (isEnoent) {
         // Node emits 'error' (and no 'exit') when a binary never launches. Only
         // emit it if something is listening — an unhandled 'error' would throw

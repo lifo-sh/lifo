@@ -68,7 +68,7 @@ export interface NodeContext {
   dirname: string;
   signal: AbortSignal;
   executeCapture?: (input: string, opts?: { cwd?: string }) => Promise<string>;
-  executeCaptureResult?: (input: string, opts?: { cwd?: string }) => Promise<{ stdout: string; code: number }>;
+  executeCaptureResult?: (input: string, opts?: { cwd?: string }) => Promise<{ stdout: string; stderr: string; code: number }>;
   portRegistry?: Map<number, VirtualRequestHandler>;
   /**
    * Execute CJS source in the VM's module system and return its module.exports.

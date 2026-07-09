@@ -243,10 +243,11 @@ export class Interpreter {
     pipeStdin?: CommandInputStream,
     pipeStdout?: CommandOutputStream,
     terminalStdin?: TerminalStdin,
+    pipeStderr?: CommandOutputStream,
   ): Promise<number> {
     switch (cmd.type) {
       case 'simple_command':
-        return this.executeSimpleCommand(cmd, pipeStdin, pipeStdout, terminalStdin);
+        return this.executeSimpleCommand(cmd, pipeStdin, pipeStdout, terminalStdin, pipeStderr);
       case 'if':
         return this.executeIf(cmd, pipeStdout);
       case 'for':
@@ -414,6 +415,7 @@ export class Interpreter {
     pipeStdin?: CommandInputStream,
     pipeStdout?: CommandOutputStream,
     terminalStdin?: TerminalStdin,
+    pipeStderr?: CommandOutputStream,
   ): Promise<number> {
     const expandCtx = this.createExpandContext();
 
@@ -457,7 +459,7 @@ export class Interpreter {
     let stdout: CommandOutputStream = pipeStdout ?? this.config.defaultStdout ?? {
       write: (text: string) => this.config.writeToTerminal(text),
     };
-    let stderr: CommandOutputStream = this.config.defaultStderr ?? {
+    let stderr: CommandOutputStream = pipeStderr ?? this.config.defaultStderr ?? {
       write: (text: string) => this.config.writeToTerminal(text),
     };
     let stdin: CommandInputStream | undefined = pipeStdin;
@@ -710,10 +712,19 @@ export class Interpreter {
    * so libraries like fb-watchman detect "watchman not installed" and fall back
    * instead of hanging on a phantom child that never errors.
    */
-  async executeCaptureResult(input: string, opts?: { cwd?: string }): Promise<{ stdout: string; code: number }> {
+  async executeCaptureResult(input: string, opts?: { cwd?: string }): Promise<{ stdout: string; stderr: string; code: number }> {
     let captured = '';
+    let capturedErr = '';
     const stdout: CommandOutputStream = {
       write: (text: string) => { captured += text; },
+    };
+    // Capture stderr per-execution too. Without this it fell through to the
+    // SHARED default (the terminal), so tools spawned inside a running CLI —
+    // Metro's `find`, watchman probes, nested npm installs — sprayed their
+    // stderr into the user's interactive terminal (and in Node semantics,
+    // execFile pipes both streams to the caller, not the tty).
+    const stderr: CommandOutputStream = {
+      write: (text: string) => { capturedErr += text; },
     };
 
     const tokens = lex(input);
@@ -725,11 +736,11 @@ export class Interpreter {
     if (opts?.cwd !== undefined) this.config.setCwd(opts.cwd);
     let code = 0;
     try {
-      // Execute with captured stdout
+      // Execute with captured stdout/stderr
       for (const list of script.lists) {
         for (const entry of list.entries) {
           for (const cmd of entry.pipeline.commands) {
-            code = await this.executeCommand(cmd, undefined, stdout);
+            code = await this.executeCommand(cmd, undefined, stdout, undefined, stderr);
           }
         }
       }
@@ -737,7 +748,7 @@ export class Interpreter {
       if (prevCwd !== undefined) this.config.setCwd(prevCwd);
     }
 
-    return { stdout: captured, code };
+    return { stdout: captured, stderr: capturedErr, code };
   }
 
   private createExpandContext(): ExpandContext {
