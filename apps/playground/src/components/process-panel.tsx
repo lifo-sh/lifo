@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { Sandbox } from '@lifo-sh/core';
 import { RotateCw, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { listProcesses, killProcess, type ProcInfo } from '@/lib/process-inspector';
+import { listProcesses, killProcess, type ProcInfo, type InspectableBox } from '@/lib/process-inspector';
 
 interface ProcessPanelProps {
-  /** The example's sandbox, or null until it has booted. */
-  sandbox: Sandbox | null;
+  /** The box (kernel + env) to inspect, or null until it has booted. */
+  box: InspectableBox | null;
   /** Poll only while the panel is actually visible (the active tab). */
   active: boolean;
   /** Reports the current process count (for a tab badge). */
@@ -34,34 +33,34 @@ const STATUS_COLOR: Record<ProcInfo['status'], string> = {
  * `ps --json` on a dedicated inspector shell) with a kill button per row.
  * Rendered as a terminal tab, so it never overlaps the preview iframe.
  */
-export function ProcessPanel({ sandbox, active, onCount }: ProcessPanelProps) {
+export function ProcessPanel({ box, active, onCount }: ProcessPanelProps) {
   const [procs, setProcs] = useState<ProcInfo[]>([]);
   const busy = useRef(false);
 
   const refresh = useCallback(async () => {
-    if (!sandbox || busy.current) return;
+    if (!box || busy.current) return;
     busy.current = true;
     try {
-      const rows = await listProcesses(sandbox);
+      const rows = await listProcesses(box);
       const visible = rows.filter((p) => !(p.command === 'ps' && p.args.includes('--json')));
       setProcs(visible);
       onCount?.(visible.length);
     } finally {
       busy.current = false;
     }
-  }, [sandbox, onCount]);
+  }, [box, onCount]);
 
   useEffect(() => {
-    if (!sandbox) return;
+    if (!box) return;
     void refresh();
     // Fast poll while visible, slow heartbeat when hidden (keeps the tab badge live).
     const timer = setInterval(() => void refresh(), active ? 1500 : 6000);
     return () => clearInterval(timer);
-  }, [sandbox, active, refresh]);
+  }, [box, active, refresh]);
 
   const onKill = async (pid: number) => {
-    if (!sandbox) return;
-    await killProcess(sandbox, pid);
+    if (!box) return;
+    await killProcess(box, pid);
     void refresh();
   };
 

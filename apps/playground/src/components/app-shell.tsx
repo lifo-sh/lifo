@@ -86,17 +86,18 @@ export function App() {
               collapsedSize={0}
               minSize={22}
               defaultSize={33}
-              className="border-r border-tokyo-border"
             >
               <CodeColumn snippet={snippetFor(activeId)} />
             </ResizablePanel>
           )}
-          {!isMobile && <ResizableHandle key="h2" />}
+          {/* Only render the code/output handle when the code column is open, so
+              a collapsed column doesn't stack two 1px separators into a fat line. */}
+          {!isMobile && codeVisible && <ResizableHandle key="h2" />}
           <ResizablePanel key="output" id="output" order={3} defaultSize={50} minSize={30}>
             <OutputChromeProvider
               value={{ canToggleCode: !isMobile && showCode, codeOpen, toggleCode }}
             >
-              <div className="flex-1 h-full px-2 py-1.5 overflow-hidden flex flex-col min-h-0">
+              <div className="flex-1 h-full overflow-hidden flex flex-col min-h-0">
                 <ExampleHost activeId={activeId} />
               </div>
             </OutputChromeProvider>

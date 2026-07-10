@@ -8,7 +8,7 @@ interface SidebarNavProps {
 
 export function SidebarNav({ activeId, onSelect }: SidebarNavProps) {
   return (
-    <nav className="h-full flex flex-col overflow-y-auto bg-tokyo-bg-dark">
+    <nav className="h-full flex flex-col overflow-y-auto bg-tokyo-bg-darker">
       <div className="p-4 pb-3 border-b border-tokyo-border shrink-0">
         <div className="flex items-center gap-2">
           <img

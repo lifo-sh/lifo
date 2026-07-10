@@ -1,8 +1,25 @@
+import { useRef, useState } from 'react';
 import { Sandbox } from '@lifo-sh/core';
+import type { Terminal } from '@lifo-sh/ui';
 import { ExamplePanel } from '@/components/example-panel';
-import { TerminalView } from '@/components/terminal-view';
+import { TerminalArea } from '@/components/terminal-area';
+import { bootShell } from '@/lib/shell';
+import type { InspectableBox } from '@/lib/process-inspector';
 
 export default function NpmExample() {
+  const sandboxRef = useRef<Sandbox | null>(null);
+  const [box, setBox] = useState<InspectableBox | null>(null);
+
+  const bootTab = async (term: Terminal, ordinal: number) => {
+    if (ordinal === 0) {
+      const sb = await Sandbox.create({ terminal: term });
+      sandboxRef.current = sb;
+      setBox({ kernel: sb.kernel, env: sb.env });
+    } else if (sandboxRef.current) {
+      void bootShell(term, sandboxRef.current.kernel, { network: true, pkgs: ['git'] });
+    }
+  };
+
   return (
     <ExamplePanel
       title="npm"
@@ -13,14 +30,7 @@ export default function NpmExample() {
         </>
       }
     >
-      <div className="w-full rounded-lg overflow-hidden border border-tokyo-border p-2 bg-tokyo-bg flex-1 min-h-0">
-        <TerminalView
-          className="w-full h-full"
-          onReady={(term) => {
-            void Sandbox.create({ terminal: term });
-          }}
-        />
-      </div>
+      <TerminalArea box={box} bootTab={(t, o) => void bootTab(t, o)} />
     </ExamplePanel>
   );
 }

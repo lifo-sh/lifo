@@ -54,8 +54,8 @@ export function PreviewBrowser({ boxId, port, initialPath = '/' }: PreviewBrowse
   };
 
   return (
-    <div className="flex flex-col h-full w-full min-h-0 rounded-lg overflow-hidden border border-tokyo-border bg-tokyo-bg">
-      <div className="flex items-center gap-2 px-2 py-1.5 border-b border-tokyo-border bg-tokyo-bg-dark">
+    <div className="flex flex-col h-full w-full min-h-0 overflow-hidden bg-tokyo-bg">
+      <div className="flex items-center gap-2 px-2 py-1 border-b border-tokyo-border bg-tokyo-bg-dark">
         <button
           onClick={reload}
           title="Reload preview"

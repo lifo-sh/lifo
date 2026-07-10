@@ -9,10 +9,10 @@ interface ExamplePanelProps {
 }
 
 /**
- * Compact output-panel chrome (VS Code-like): a single-line header with an
+ * Compact output-panel chrome (VS Code-like): a full-width navbar with an
  * optional Code-column toggle, the example title, and an info button that
- * expands the description (collapsed by default to maximize room for the
- * terminal + preview).
+ * expands the description (collapsed by default). The example body (terminal
+ * tabs, preview, …) sits flush right under the navbar.
  */
 export function ExamplePanel({ title, subtitle, children }: ExamplePanelProps) {
   const chrome = useOutputChrome();
@@ -20,7 +20,8 @@ export function ExamplePanel({ title, subtitle, children }: ExamplePanelProps) {
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
-      <div className="flex items-center gap-1.5 h-7 shrink-0">
+      {/* Navbar — end to end. */}
+      <div className="flex items-center gap-1.5 h-9 px-2 border-b border-tokyo-border bg-tokyo-bg-dark shrink-0">
         {chrome?.canToggleCode && (
           <button
             onClick={chrome.toggleCode}
@@ -45,11 +46,11 @@ export function ExamplePanel({ title, subtitle, children }: ExamplePanelProps) {
         )}
       </div>
       {subtitle && showDesc && (
-        <div className="text-[11px] text-tokyo-comment leading-relaxed pb-2 mb-1 border-b border-tokyo-border">
+        <div className="text-[11px] text-tokyo-comment leading-relaxed px-3 py-2 border-b border-tokyo-border bg-tokyo-bg-dark shrink-0">
           {subtitle}
         </div>
       )}
-      <div className="flex-1 min-h-0 flex flex-col pt-1.5">{children}</div>
+      <div className="flex-1 min-h-0 flex flex-col">{children}</div>
     </div>
   );
 }

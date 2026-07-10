@@ -17,33 +17,32 @@ interface PreviewTabsProps {
 }
 
 /**
- * Tabbed preview pane (same tab chrome as the terminal tabs): each tab hosts
- * its own PreviewBrowser. All panes stay mounted — switching tabs only toggles
- * visibility, so each preview keeps its state (route, scroll, session).
+ * Tabbed preview pane (flat, VS Code-like — matches the terminal tab strip):
+ * each tab hosts its own PreviewBrowser. All panes stay mounted — switching
+ * tabs only toggles visibility, so each preview keeps its state.
  */
 export function PreviewTabs({ boxId, tabs }: PreviewTabsProps) {
   const [active, setActive] = useState(0);
 
-  // The tab bar is always present (Chrome-like), even with a single preview.
   return (
     <div className="flex flex-col h-full w-full min-h-0">
-      <div className="flex items-center gap-0.5 bg-tokyo-bg-dark border border-tokyo-border border-b-0 rounded-t-lg px-1 min-h-[34px] shrink-0 overflow-x-auto">
+      <div className="flex items-stretch bg-tokyo-bg-dark border-y border-tokyo-border min-h-[30px] shrink-0 overflow-x-auto">
         {tabs.map((tab, i) => (
           <button
             key={`${tab.port}:${tab.path ?? '/'}`}
             onClick={() => setActive(i)}
             className={cn(
-              'px-3 py-[5px] bg-transparent border-none text-sm rounded-[4px] leading-none cursor-pointer',
+              'px-3 flex items-center border-none border-r border-tokyo-border/60 text-xs cursor-pointer whitespace-nowrap transition-colors',
               i === active
-                ? 'text-tokyo-fg-bright bg-tokyo-hover'
-                : 'text-tokyo-comment hover:text-tokyo-muted hover:bg-tokyo-hover',
+                ? 'text-tokyo-fg-bright bg-tokyo-bg shadow-[inset_0_2px_0_var(--color-tokyo-blue)]'
+                : 'text-tokyo-comment bg-transparent hover:text-tokyo-muted hover:bg-tokyo-hover',
             )}
           >
             {tab.label}
           </button>
         ))}
       </div>
-      <div className="flex-1 relative border border-tokyo-border border-t-0 rounded-b-lg overflow-hidden">
+      <div className="flex-1 relative overflow-hidden">
         {tabs.map((tab, i) => (
           <div
             key={`${tab.port}:${tab.path ?? '/'}`}

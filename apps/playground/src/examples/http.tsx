@@ -1,31 +1,33 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { Kernel } from '@lifo-sh/core';
 import type { Terminal } from '@lifo-sh/ui';
 import { ExamplePanel } from '@/components/example-panel';
-import { TerminalTabs, type TabSpec } from '@/components/terminal-tabs';
+import { TerminalArea } from '@/components/terminal-area';
 import { bootShell } from '@/lib/shell';
 import { seedHttp } from '@/examples/http-seed';
 
 const TAB_NAMES = ['Server', 'Client', 'Client2', 'Server 5173', 'New Tab'];
 
 export default function HttpExample() {
+  const [kernel, setKernel] = useState<Kernel | null>(null);
   const kernelPromise = useMemo(async () => {
-    const kernel = new Kernel();
-    await kernel.boot({ persist: false });
+    const k = new Kernel();
+    await k.boot({ persist: false });
     const g = globalThis as unknown as { __setLifoKernel?: (fn: () => Kernel) => void };
-    if (typeof g.__setLifoKernel === 'function') g.__setLifoKernel(() => kernel);
-    seedHttp(kernel);
+    if (typeof g.__setLifoKernel === 'function') g.__setLifoKernel(() => k);
+    seedHttp(k);
     // The tunnel service unit is seeded (users can `systemctl start tunnel` if
     // they run a relay), but not auto-started — no relay exists in the browser,
     // so it would only flood the terminal with reconnect errors.
-    return kernel;
+    setKernel(k);
+    return k;
   }, []);
 
   const bootTab = (term: Terminal) => {
-    void kernelPromise.then((kernel) => bootShell(term, kernel, { network: true }));
+    void kernelPromise.then((k) => bootShell(term, k, { network: true }));
   };
 
-  const initial: TabSpec[] = TAB_NAMES.map((label) => ({ label, onReady: bootTab }));
+  const box = kernel ? { kernel, env: kernel.getDefaultEnv() } : null;
 
   return (
     <ExamplePanel
@@ -37,7 +39,7 @@ export default function HttpExample() {
         </>
       }
     >
-      <TerminalTabs initial={initial} onAdd={(i) => ({ label: `Terminal ${i + 1}`, onReady: bootTab })} />
+      <TerminalArea box={box} bootTab={bootTab} initialLabels={TAB_NAMES} />
     </ExamplePanel>
   );
 }

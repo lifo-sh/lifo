@@ -1,9 +1,28 @@
+import { useRef, useState } from 'react';
 import { Kernel } from '@lifo-sh/core';
+import type { Terminal } from '@lifo-sh/ui';
 import { ExamplePanel } from '@/components/example-panel';
-import { TerminalView } from '@/components/terminal-view';
+import { TerminalArea } from '@/components/terminal-area';
 import { bootShell } from '@/lib/shell';
 
 export default function GitExample() {
+  const kernelRef = useRef<Kernel | null>(null);
+  const [kernel, setKernel] = useState<Kernel | null>(null);
+
+  const bootTab = async (term: Terminal, ordinal: number) => {
+    if (ordinal === 0) {
+      const k = new Kernel();
+      await k.boot({ persist: false });
+      await bootShell(term, k, { pkgs: ['git', 'ffmpeg'] });
+      kernelRef.current = k;
+      setKernel(k);
+    } else if (kernelRef.current) {
+      void bootShell(term, kernelRef.current, { pkgs: ['git', 'ffmpeg'] });
+    }
+  };
+
+  const box = kernel ? { kernel, env: kernel.getDefaultEnv() } : null;
+
   return (
     <ExamplePanel
       title="Git"
@@ -14,16 +33,7 @@ export default function GitExample() {
         </>
       }
     >
-      <div className="w-full rounded-lg overflow-hidden border border-tokyo-border p-2 bg-tokyo-bg flex-1 min-h-0">
-        <TerminalView
-          className="w-full h-full"
-          onReady={async (term) => {
-            const kernel = new Kernel();
-            await kernel.boot({ persist: false });
-            await bootShell(term, kernel, { pkgs: ['git', 'ffmpeg'] });
-          }}
-        />
-      </div>
+      <TerminalArea box={box} bootTab={(t, o) => void bootTab(t, o)} />
     </ExamplePanel>
   );
 }

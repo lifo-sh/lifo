@@ -4,8 +4,9 @@ import gitCommand from 'lifo-pkg-git';
 import type { Terminal } from '@lifo-sh/ui';
 import { ExamplePanel } from '@/components/example-panel';
 import { PreviewTabs, type PreviewTab } from '@/components/preview-tabs';
-import { ProjectTerminals } from '@/components/project-terminals';
+import { TerminalArea } from '@/components/terminal-area';
 import { bootShell } from '@/lib/shell';
+import { downloadSnapshot, pickAndRestoreSnapshot } from '@/lib/box-snapshot';
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable';
 
 export interface ProjectExampleProps {
@@ -96,13 +97,18 @@ export function ProjectExample({ title, subtitle, files, cwd, previewPort, previ
     setBootNonce((n) => n + 1);
   };
 
+  const box = sandbox ? { kernel: sandbox.kernel, env: sandbox.env } : null;
   const terminalArea = (
-    <ProjectTerminals
+    <TerminalArea
       key={bootNonce}
-      sandbox={sandbox}
-      onFirstTerminal={(term) => void bootFirstTerminal(term)}
-      onNewTerminal={bootExtraTerminal}
+      box={box}
+      bootTab={(term, ordinal) => {
+        if (ordinal === 0) void bootFirstTerminal(term);
+        else bootExtraTerminal(term);
+      }}
       onRestart={restart}
+      onSnapshot={sandbox ? () => downloadSnapshot(sandbox) : undefined}
+      onRestore={sandbox ? () => pickAndRestoreSnapshot(sandbox) : undefined}
     />
   );
 
