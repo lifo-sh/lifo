@@ -94,7 +94,7 @@ export function PreviewBrowser({ boxId, port, initialPath = '/' }: PreviewBrowse
         </button>
         <div className="flex-1 min-w-0 flex items-center gap-2 h-7 px-3 mx-1 rounded-full bg-tokyo-bg">
           <Info size={12} className="shrink-0 text-tokyo-comment" />
-          <span className="text-[12px] font-code text-tokyo-fg truncate">{friendlyUrl}</span>
+          <span className="text-[12.5px] text-tokyo-fg truncate">{friendlyUrl}</span>
         </div>
         <a
           href={openHref}
