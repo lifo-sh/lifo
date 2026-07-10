@@ -124,6 +124,20 @@ import type { VirtualRequestHandler, Kernel } from '../../kernel/index.js';
 
 const NODE_VERSION = 'v20.0.0';
 
+// Node 21+ exposes a global `navigator` whose userAgent is "Node.js/<ver>".
+// Executed modules must see THAT, not the browser's — expo-constants'
+// getBrowserName sees a Chrome userAgent and then dereferences `window`
+// (undefined in the node context): "Cannot use 'in' operator ... in undefined",
+// killing expo-router SSR. Injected as a wrapper param so bare `navigator`
+// references shadow the page's real navigator.
+const NODE_NAVIGATOR = Object.freeze({
+	userAgent: `Node.js/${NODE_VERSION.slice(1)}`,
+	platform: 'lifo',
+	language: 'en-US',
+	languages: Object.freeze(['en-US']),
+	hardwareConcurrency: 1,
+});
+
 // ── Rollup / esbuild CJS-ESM interop helpers ──
 // Bundled npm packages (Vite, Rollup, etc.) reference these helpers at the module
 // scope.  When our ESM→CJS transform converts imports, the helpers may lose their
@@ -573,17 +587,24 @@ function rewriteDynamicImports(source: string): string {
  * @babel/generator declares `class Buffer`). The module's own declaration
  * then wins; positional arguments are unaffected.
  */
-const SHADOWABLE_WRAPPER_PARAMS = ['console', 'process', 'Buffer', 'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'global', 'window', 'document', 'self', 'fetch'];
+const SHADOWABLE_WRAPPER_PARAMS = ['console', 'process', 'Buffer', 'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'global', 'window', 'document', 'self', 'navigator', 'fetch'];
 
 function buildWrapperParams(source: string): string {
-	const params = ['exports', 'require', 'module', '__filename', '__dirname', 'console', 'process', 'Buffer', 'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'global', '__importMetaUrl', '__importMeta', '__importMetaResolve', 'window', 'document', 'self', 'fetch'];
+	const params = ['exports', 'require', 'module', '__filename', '__dirname', 'console', 'process', 'Buffer', 'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'global', '__importMetaUrl', '__importMeta', '__importMetaResolve', 'window', 'document', 'self', 'navigator', 'fetch'];
 	return params.map((p) => {
 		if (!SHADOWABLE_WRAPPER_PARAMS.includes(p)) return p;
-		// Direct declaration, e.g. `const Buffer = ...` / `class Buffer {}`
-		const direct = new RegExp(`(?:^|\\n)[ \\t]*(?:class|let|const)\\s+${p}\\b`);
+		// Direct declaration, e.g. `const Buffer = ...` / `class Buffer {}`.
+		// COLUMN 0 only: indented declarations are function-scoped (legal next to
+		// a like-named param) — a Metro SSR bundle contains an indented
+		// `const navigator` inside one of its thousands of modules, and renaming
+		// the wrapper param un-shadowed `navigator` for the WHOLE bundle (bare
+		// references then hit the browser's real navigator → expo-constants'
+		// getBrowserName saw a Chrome UA and crashed on `'chrome' in window`).
+		// Only a TOP-LEVEL redeclaration is a SyntaxError worth renaming for.
+		const direct = new RegExp(`(?:^|\\n)(?:class|let|const)\\s+${p}\\b`);
 		// Destructuring declaration, e.g. `const { Buffer } = require('node:buffer')` (undici).
 		// A const/let re-binding a wrapper param name is a SyntaxError, so rename the param.
-		const destructured = new RegExp(`(?:^|\\n)[ \\t]*(?:let|const)\\s*\\{[^{}]*\\b${p}\\b[^{}]*\\}`);
+		const destructured = new RegExp(`(?:^|\\n)(?:let|const)\\s*\\{[^{}]*\\b${p}\\b[^{}]*\\}`);
 		return direct.test(source) || destructured.test(source) ? `__lifo_shadowed_${p}` : p;
 	}).join(', ');
 }
@@ -1710,7 +1731,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 					// window/document/self undefined: node-executed code must see a Node
 					// environment (no DOM), matching real Node — e.g. so Emscripten
 					// (pglite) doesn't mis-detect the browser and mis-resolve data files.
-					undefined, undefined, undefined,
+					undefined, undefined, undefined, NODE_NAVIGATOR,
 					nodeFetch, // fetch (CORS-proxied for known hosts)
 				);
 			} catch (e) {
@@ -1814,7 +1835,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 				nodeTimers.clearTimeout as unknown as typeof clearTimeout, nodeTimers.clearInterval as unknown as typeof clearInterval,
 				global,
 				mainImportMetaUrl, mainImportMeta, mainImportMetaResolve,
-				undefined, undefined, undefined,
+				undefined, undefined, undefined, NODE_NAVIGATOR,
 				nodeFetch, // fetch (CORS-proxied for known hosts)
 			);
 

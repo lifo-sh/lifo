@@ -182,7 +182,14 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
       S.promises = {
         finished: finishedP,
         pipeline: (...args: unknown[]) => {
-          const streams = (args as AnyStream[]).flat().filter((a) => typeof a !== 'function') as AnyStream[];
+          // Drop trailing callback AND a trailing options object ({ signal })
+          // — expo-server calls pipeline(body, res, { signal }); treating the
+          // options as a stream made us call `.pipe` on it ("streams[i].pipe
+          // is not a function") and the response never flushed.
+          const flat = (args as unknown[]).flat();
+          const streams = flat.filter(
+            (a) => typeof a !== 'function' && !!a && typeof (a as AnyStream).on === 'function',
+          ) as AnyStream[];
           for (let i = 0; i < streams.length - 1; i++) streams[i].pipe!(streams[i + 1]);
           return finishedP(streams[streams.length - 1]);
         },
