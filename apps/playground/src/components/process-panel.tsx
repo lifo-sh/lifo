@@ -44,7 +44,9 @@ export function ProcessPanel({ box, active, onCount }: ProcessPanelProps) {
       const rows = await listProcesses(box);
       const visible = rows.filter((p) => !(p.command === 'ps' && p.args.includes('--json')));
       setProcs(visible);
-      onCount?.(visible.length);
+      // Badge counts USER processes — the shells (the terminals themselves)
+      // aren't "running" work, so excluding them keeps the count meaningful.
+      onCount?.(visible.filter((p) => p.command !== 'shell').length);
     } finally {
       busy.current = false;
     }

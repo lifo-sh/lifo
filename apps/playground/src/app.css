@@ -69,7 +69,7 @@
 
   --tk-bg: #1a1b26;
   --tk-bg-dark: #16161e;
-  --tk-bg-darker: #0e0e13;
+  --tk-bg-darker: #121218;
   --tk-fg: #a9b1d6;
   --tk-fg-bright: #c0caf5;
   --tk-border: #2f3146;
@@ -116,12 +116,12 @@
 /* ── Light: Tokyo Night Day ── */
 .light {
   --tk-bg: #e1e2e7;
-  --tk-bg-dark: #d4d6de;
-  --tk-bg-darker: #c4c8d6;
+  --tk-bg-dark: #d8dae2;
+  --tk-bg-darker: #cccfda;
   --tk-fg: #3760bf;
   --tk-fg-bright: #343b58;
-  --tk-border: #a8aecb;
-  --tk-comment: #848cb5;
+  --tk-border: #b3b7cd;
+  --tk-comment: #7a82a8;
   --tk-blue: #2e7de9;
   --tk-blue-bright: #2e7de9;
   --tk-purple: #9854f1;
@@ -147,8 +147,8 @@
   --accent: #b7bcce;
   --accent-foreground: #343b58;
   --destructive: #f52a65;
-  --border: #a8aecb;
-  --input: #a8aecb;
+  --border: #b3b7cd;
+  --input: #b3b7cd;
   --ring: #2e7de9;
   --sidebar: #d4d6de;
   --sidebar-foreground: #343b58;
@@ -156,7 +156,7 @@
   --sidebar-primary-foreground: #e1e2e7;
   --sidebar-accent: #b7bcce;
   --sidebar-accent-foreground: #343b58;
-  --sidebar-border: #a8aecb;
+  --sidebar-border: #b3b7cd;
   --sidebar-ring: #2e7de9;
   color-scheme: light;
 }

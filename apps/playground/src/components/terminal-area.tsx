@@ -4,6 +4,7 @@ import { MoreVertical, Plus, Activity, Square, RotateCcw, Download, Upload, X } 
 import { cn } from '@/lib/utils';
 import { TerminalView } from '@/components/terminal-view';
 import { ProcessPanel } from '@/components/process-panel';
+import { useReportProcesses } from '@/components/output-chrome';
 import { listProcesses, killProcess, type InspectableBox } from '@/lib/process-inspector';
 
 interface TerminalAreaProps {
@@ -48,6 +49,7 @@ export function TerminalArea({ bootTab, box, initialLabels, canAdd = true, onRes
   const termCounter = useRef(labels.length);
   const nextId = useRef(labels.length + 1);
   const menuRef = useRef<HTMLDivElement>(null);
+  const reportProcesses = useReportProcesses();
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -57,6 +59,11 @@ export function TerminalArea({ bootTab, box, initialLabels, canAdd = true, onRes
     document.addEventListener('mousedown', onDoc);
     return () => document.removeEventListener('mousedown', onDoc);
   }, [menuOpen]);
+
+  // Feed the example's status bar (null until the box is up).
+  useEffect(() => {
+    reportProcesses?.(box ? procCount : null);
+  }, [procCount, box, reportProcesses]);
 
   const focusTab = (i: number) => {
     setActive(i);
@@ -132,6 +139,20 @@ export function TerminalArea({ bootTab, box, initialLabels, canAdd = true, onRes
     }
   };
 
+  // VS Code-style shortcuts, scoped to this area (fires only when focus is
+  // inside — hidden keep-alive'd areas never receive the event).
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (!(e.metaKey || e.ctrlKey) || e.altKey) return;
+    const k = e.key.toLowerCase();
+    if (k === 't') {
+      e.preventDefault();
+      addTerminal();
+    } else if (k === 'w') {
+      e.preventDefault();
+      if (tabs.length) closeTab(active);
+    }
+  };
+
   const menuItems = [
     { label: 'Process manager', icon: Activity, onClick: openProcesses },
     { label: 'Stop all', icon: Square, onClick: () => void stopAll() },
@@ -141,14 +162,17 @@ export function TerminalArea({ bootTab, box, initialLabels, canAdd = true, onRes
   ];
 
   return (
-    <div className="flex flex-col h-full w-full min-h-0">
+    <div className="flex flex-col h-full w-full min-h-0" onKeyDown={onKeyDown}>
       {/* Tab strip — flat, VS Code-like. */}
       <div className="flex items-stretch bg-tokyo-bg-dark border-b border-tokyo-border min-h-[36px] shrink-0">
         <div className="flex items-stretch flex-1 overflow-x-auto">
-          {tabs.map((t, i) => (
+          {tabs.map((t, i) => {
+            const running = t.kind === 'process' && procCount > 0;
+            return (
             <div
               key={t.id}
               onClick={() => focusTab(i)}
+              onAuxClick={(e) => { if (e.button === 1) closeTab(i, e); }}
               className={cn(
                 'group relative flex items-center gap-2 pl-3.5 pr-2 border-r border-tokyo-border/60 text-xs cursor-pointer whitespace-nowrap select-none transition-colors',
                 i === active
@@ -156,10 +180,10 @@ export function TerminalArea({ bootTab, box, initialLabels, canAdd = true, onRes
                   : 'bg-transparent text-tokyo-comment hover:bg-tokyo-hover hover:text-tokyo-muted',
               )}
             >
-              {t.kind === 'process' && <Activity size={12} className="shrink-0" />}
+              {t.kind === 'process' && <Activity size={12} className={cn('shrink-0', running && 'text-tokyo-green')} />}
               <span>{t.label}</span>
-              {t.kind === 'process' && procCount > 0 && (
-                <span className="text-[10px] tabular-nums opacity-70">({procCount})</span>
+              {running && (
+                <span className="text-[10px] tabular-nums text-tokyo-green">({procCount})</span>
               )}
               <button
                 onClick={(e) => closeTab(i, e)}
@@ -172,7 +196,8 @@ export function TerminalArea({ bootTab, box, initialLabels, canAdd = true, onRes
                 <X size={12} />
               </button>
             </div>
-          ))}
+            );
+          })}
           {canAdd && (
             <button
               onClick={addTerminal}

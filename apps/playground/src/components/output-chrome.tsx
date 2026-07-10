@@ -21,3 +21,17 @@ export const OutputChromeProvider = OutputChromeContext.Provider;
 export function useOutputChrome(): OutputChrome | null {
   return useContext(OutputChromeContext);
 }
+
+/**
+ * Lets the terminal area report its box's user-process count up to the example's
+ * status bar (rendered by ExamplePanel). `null` means "no box" (a non-terminal
+ * example), which the bar renders as a bare status line. Each ExamplePanel
+ * provides its own, so keep-alive'd inactive examples don't clobber each other.
+ */
+const ReportProcessesContext = createContext<((n: number | null) => void) | null>(null);
+
+export const ReportProcessesProvider = ReportProcessesContext.Provider;
+
+export function useReportProcesses(): ((n: number | null) => void) | null {
+  return useContext(ReportProcessesContext);
+}

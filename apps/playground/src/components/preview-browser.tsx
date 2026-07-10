@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { ArrowLeft, ArrowRight, RotateCw, Info, ExternalLink } from 'lucide-react';
 
 interface PreviewBrowserProps {
   /** The box (kernel/sandbox) id — routes /_sw/<boxId>/<port>/ to the right VM. */
@@ -10,9 +11,11 @@ interface PreviewBrowserProps {
 }
 
 /**
- * Minimal browser chrome (address bar, reload, open-in-new-tab) wrapping an
- * iframe pointed at /_sw/<port>/. The iframe is a SW-controlled client, so its
- * requests route into the VM; HMR flows through the WebSocket shim.
+ * Chrome-like browser chrome (back / forward / reload + a pill address bar and
+ * open-in-new-tab) wrapping an iframe pointed at /_sw/<boxId>/<port>/. The
+ * address bar shows a friendly `localhost:<port>/<path>` — the /_sw/<boxId>
+ * service-worker plumbing is hidden. The iframe is a SW-controlled client, so
+ * its requests route into the VM; HMR flows through the WebSocket shim.
  */
 export function PreviewBrowser({ boxId, port, initialPath = '/' }: PreviewBrowserProps) {
   const path = `/_sw/${boxId}/${port}${initialPath.startsWith('/') ? initialPath : '/' + initialPath}`;
@@ -35,15 +38,37 @@ export function PreviewBrowser({ boxId, port, initialPath = '/' }: PreviewBrowse
     return () => clearInterval(timer);
   }, []);
 
-  const displayUrl = currentUrl.replace(/[?&]_t=\d+/, '');
+  // Friendly URL: strip the /_sw/<boxId>/ prefix so it reads like a normal
+  // localhost address; keep the real path for open-in-new-tab.
+  let friendlyUrl = `localhost:${port}`;
   let openHref = path;
   try {
     const u = new URL(currentUrl);
-    openHref = u.pathname + u.search.replace(/[?&]_t=\d+/, '');
+    const m = u.pathname.match(/^\/_sw\/[^/]+\/(\d+)(\/.*)?$/);
+    const search = u.search.replace(/[?&]_t=\d+/, '').replace(/^\?$/, '');
+    if (m) {
+      const p = m[2] && m[2] !== '/' ? m[2] : '';
+      friendlyUrl = `localhost:${m[1]}${p}${search}`;
+    }
+    openHref = u.pathname + search;
   } catch {
-    // keep the root path
+    // keep defaults
   }
 
+  const back = () => {
+    try {
+      iframeRef.current?.contentWindow?.history.back();
+    } catch {
+      /* not ready */
+    }
+  };
+  const forward = () => {
+    try {
+      iframeRef.current?.contentWindow?.history.forward();
+    } catch {
+      /* not ready */
+    }
+  };
   const reload = () => {
     try {
       // Reload in place so the current route survives (deep links keep working).
@@ -53,27 +78,32 @@ export function PreviewBrowser({ boxId, port, initialPath = '/' }: PreviewBrowse
     }
   };
 
+  const navBtn = 'shrink-0 w-7 h-7 grid place-items-center rounded-full bg-transparent border-none text-tokyo-comment hover:text-tokyo-fg-bright hover:bg-tokyo-hover cursor-pointer';
+
   return (
     <div className="flex flex-col h-full w-full min-h-0 overflow-hidden bg-tokyo-bg">
-      <div className="flex items-center gap-2 px-2 py-1 border-b border-tokyo-border bg-tokyo-bg-dark">
-        <button
-          onClick={reload}
-          title="Reload preview"
-          className="shrink-0 w-6 h-6 rounded bg-tokyo-hover text-tokyo-muted hover:text-tokyo-fg-bright border-none cursor-pointer"
-        >
-          ↻
+      <div className="flex items-center gap-1 px-2 py-1.5 border-b border-tokyo-border bg-tokyo-bg-dark">
+        <button onClick={back} title="Back" className={navBtn}>
+          <ArrowLeft size={16} />
         </button>
-        <div className="flex-1 px-2.5 py-1 rounded bg-tokyo-bg text-[11px] font-code text-tokyo-comment truncate">
-          {displayUrl}
+        <button onClick={forward} title="Forward" className={navBtn}>
+          <ArrowRight size={16} />
+        </button>
+        <button onClick={reload} title="Reload" className={navBtn}>
+          <RotateCw size={14} />
+        </button>
+        <div className="flex-1 min-w-0 flex items-center gap-2 h-7 px-3 mx-1 rounded-full bg-tokyo-bg border border-tokyo-border">
+          <Info size={12} className="shrink-0 text-tokyo-comment" />
+          <span className="text-[12px] font-code text-tokyo-fg truncate">{friendlyUrl}</span>
         </div>
         <a
           href={openHref}
           target="_blank"
           rel="noopener"
           title="Open in new tab"
-          className="shrink-0 w-6 h-6 grid place-items-center rounded bg-tokyo-hover text-tokyo-muted hover:text-tokyo-fg-bright no-underline"
+          className={navBtn + ' no-underline'}
         >
-          ⧉
+          <ExternalLink size={14} />
         </a>
       </div>
       <iframe
