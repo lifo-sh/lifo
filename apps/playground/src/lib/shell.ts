@@ -38,6 +38,11 @@ export interface BootShellOptions {
   network?: boolean;
   /** Boot enabled systemd services after sourcing profile (e.g. tunnel). */
   services?: boolean;
+  /** Extra env merged over the kernel default (e.g. LIFO_CORS_PROXY for a
+   *  second terminal in a project example). */
+  env?: Record<string, string>;
+  /** Initial working directory for this shell. */
+  cwd?: string;
 }
 
 interface ShellExecCtx {
@@ -66,7 +71,8 @@ export async function bootShell(
   if (opts.pkgs?.includes('ffmpeg')) registry.register('ffmpeg', ffmpegCommand);
   bootLifoPackages(kernel.vfs, registry);
 
-  const env = kernel.getDefaultEnv();
+  const env = { ...kernel.getDefaultEnv(), ...opts.env };
+  if (opts.cwd) env.PWD = opts.cwd;
   const shell = new Shell(terminal, kernel.vfs, registry, env, kernel.processRegistry);
   const processRegistry = shell.getProcessRegistry();
 
@@ -108,6 +114,7 @@ export async function bootShell(
 
   await shell.sourceFile('/etc/profile');
   await shell.sourceFile(env.HOME + '/.bashrc');
+  if (opts.cwd) shell.setCwd(opts.cwd);
   if (opts.services) await kernel.bootServices();
   shell.start();
 

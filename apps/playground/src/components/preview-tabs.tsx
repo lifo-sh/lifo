@@ -24,10 +24,7 @@ interface PreviewTabsProps {
 export function PreviewTabs({ boxId, tabs }: PreviewTabsProps) {
   const [active, setActive] = useState(0);
 
-  if (tabs.length === 1) {
-    return <PreviewBrowser boxId={boxId} port={tabs[0].port} initialPath={tabs[0].path} />;
-  }
-
+  // The tab bar is always present (Chrome-like), even with a single preview.
   return (
     <div className="flex flex-col h-full w-full min-h-0">
       <div className="flex items-center gap-0.5 bg-tokyo-bg-dark border border-tokyo-border border-b-0 rounded-t-lg px-1 min-h-[34px] shrink-0 overflow-x-auto">

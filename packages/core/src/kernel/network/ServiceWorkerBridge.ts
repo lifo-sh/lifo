@@ -247,6 +247,18 @@ export class ServiceWorkerBridge {
 		}
 	}
 
+	/**
+	 * Tear down this bridge: drop its WS connections, detach the port, and
+	 * remove it from the active-bridges registry so the SW stops routing to it
+	 * and it no longer reconnects on controllerchange. Used when a box reboots.
+	 */
+	destroy(): void {
+		for (const conn of this.wsConns.values()) conn.socket.destroy();
+		this.wsConns.clear();
+		this.detach();
+		activeBridges.delete(this.boxId);
+	}
+
 	private respondText(requestId: string, statusCode: number, headers: Record<string, string>, text: string): void {
 		this.respond(requestId, statusCode, headers, textEncoder.encode(text));
 	}
