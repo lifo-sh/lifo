@@ -13,21 +13,28 @@ const realConsole: Console | undefined =
 export function createConsole(stdout: CommandOutputStream, stderr: CommandOutputStream) {
   const timers = new Map<string, number>();
 
+  // `console.log()` with NO arguments prints an empty line, like Node — NOT
+  // "undefined". Passing `args[0]` (undefined) into format() would render the
+  // literal string "undefined", so short-circuit the zero-arg case. An explicit
+  // `console.log(undefined)` still prints "undefined" (matches Node).
+  const line = (args: unknown[]): string =>
+    (args.length === 0 ? '' : format(args[0] as string, ...args.slice(1))) + '\n';
+
   const overrides: Record<string, unknown> = {
     log: (...args: unknown[]) => {
-      stdout.write(format(args[0] as string, ...args.slice(1)) + '\n');
+      stdout.write(line(args));
     },
     info: (...args: unknown[]) => {
-      stdout.write(format(args[0] as string, ...args.slice(1)) + '\n');
+      stdout.write(line(args));
     },
     warn: (...args: unknown[]) => {
-      stderr.write(format(args[0] as string, ...args.slice(1)) + '\n');
+      stderr.write(line(args));
     },
     error: (...args: unknown[]) => {
-      stderr.write(format(args[0] as string, ...args.slice(1)) + '\n');
+      stderr.write(line(args));
     },
     debug: (...args: unknown[]) => {
-      stdout.write(format(args[0] as string, ...args.slice(1)) + '\n');
+      stdout.write(line(args));
     },
     dir: (obj: unknown) => {
       stdout.write(format('%o', obj) + '\n');

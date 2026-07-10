@@ -287,12 +287,20 @@ export function emitKeypressEvents(stream: unknown): void {
   // Adding a 'data' listener puts our interactive stdin into flowing mode; each
   // keypress becomes 'keypress' events that prompt libraries (prompts/inquirer)
   // listen on. Arrow keys arrive as escape sequences and parse to up/down/etc.
-  s.on('data', (chunk: unknown) => {
+  //
+  // This listener is a translator, not a consumer: prompt libs listen on
+  // 'keypress' and remove those listeners when they close, but nobody removes
+  // THIS 'data' listener. Flag it so stdin.isActive() doesn't count it as an
+  // active reader — otherwise the run never quiesces after an interactive
+  // prompt (create-expo-app hung this way until Ctrl+C).
+  const keypressSource = (chunk: unknown) => {
     const str = typeof chunk === 'string' ? chunk : String(chunk);
     for (const [seq, key] of parseKeypress(str)) {
       s.emit!('keypress', seq, key);
     }
-  });
+  };
+  (keypressSource as { __lifoKeypressSource?: boolean }).__lifoKeypressSource = true;
+  s.on('data', keypressSource);
 }
 
 // readline/promises API
