@@ -24,10 +24,11 @@ export function ExamplePanel({ title, subtitle, children }: ExamplePanelProps) {
         {chrome?.canToggleCode && (
           <button
             onClick={chrome.toggleCode}
-            title={chrome.codeOpen ? 'Hide code panel' : 'Show code panel'}
-            className="w-6 h-6 grid place-items-center rounded bg-transparent border-none text-tokyo-comment hover:text-tokyo-fg-bright hover:bg-tokyo-hover cursor-pointer shrink-0"
+            title={chrome.codeOpen ? 'Hide the commands to run' : 'Show the commands to run'}
+            className="flex items-center gap-1.5 h-6 px-2 rounded border border-tokyo-border bg-transparent text-[11px] font-medium text-tokyo-comment hover:text-tokyo-fg-bright hover:bg-tokyo-hover cursor-pointer shrink-0"
           >
-            {chrome.codeOpen ? <PanelLeftClose size={14} /> : <PanelLeftOpen size={14} />}
+            {chrome.codeOpen ? <PanelLeftClose size={13} /> : <PanelLeftOpen size={13} />}
+            {chrome.codeOpen ? 'Hide commands' : 'Show commands'}
           </button>
         )}
         <span className="text-[13px] font-semibold text-tokyo-fg-bright truncate">{title}</span>
