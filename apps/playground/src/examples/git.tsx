@@ -9,16 +9,16 @@ export default function GitExample() {
   const kernelRef = useRef<Kernel | null>(null);
   const [kernel, setKernel] = useState<Kernel | null>(null);
 
-  const bootTab = async (term: Terminal, ordinal: number) => {
-    if (ordinal === 0) {
-      const k = new Kernel();
-      await k.boot({ persist: false });
-      await bootShell(term, k, { pkgs: ['git', 'ffmpeg'] });
-      kernelRef.current = k;
-      setKernel(k);
-    } else if (kernelRef.current) {
+  const bootTab = async (term: Terminal) => {
+    if (kernelRef.current) {
       void bootShell(term, kernelRef.current, { pkgs: ['git', 'ffmpeg'] });
+      return;
     }
+    const k = new Kernel();
+    await k.boot({ persist: false });
+    await bootShell(term, k, { pkgs: ['git', 'ffmpeg'] });
+    kernelRef.current = k;
+    setKernel(k);
   };
 
   const box = kernel ? { kernel, env: kernel.getDefaultEnv() } : null;
@@ -33,7 +33,7 @@ export default function GitExample() {
         </>
       }
     >
-      <TerminalArea box={box} bootTab={(t, o) => void bootTab(t, o)} />
+      <TerminalArea box={box} bootTab={(t) => void bootTab(t)} />
     </ExamplePanel>
   );
 }

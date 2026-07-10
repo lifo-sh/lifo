@@ -37,31 +37,53 @@
   --radius-xl: calc(var(--radius) + 4px);
 }
 
-/* ── Tokyo Night design tokens (playground palette, used by bg-tokyo-* utilities) ── */
-@theme {
-  --color-tokyo-bg: #1a1b26;
-  --color-tokyo-bg-dark: #16161e;
-  --color-tokyo-bg-darker: #0e0e13;
-  --color-tokyo-fg: #a9b1d6;
-  --color-tokyo-fg-bright: #c0caf5;
-  --color-tokyo-border: #2f3146;
-  --color-tokyo-comment: #565f89;
-  --color-tokyo-blue: #7aa2f7;
-  --color-tokyo-blue-bright: #89b4fa;
-  --color-tokyo-purple: #bb9af7;
-  --color-tokyo-green: #9ece6a;
-  --color-tokyo-orange: #ff9e64;
-  --color-tokyo-cyan: #89ddff;
-  --color-tokyo-hover: #1e2030;
-  --color-tokyo-active: #292e42;
-  --color-tokyo-muted: #9aa5ce;
+/* ── Tokyo Night design tokens (playground palette, used by bg-tokyo-* utilities).
+   The utilities resolve to CSS vars (--tk-*) so a light/dark toggle can swap the
+   whole palette at runtime — see :root (dark) and .light below. ── */
+@theme inline {
+  --color-tokyo-bg: var(--tk-bg);
+  --color-tokyo-bg-dark: var(--tk-bg-dark);
+  --color-tokyo-bg-darker: var(--tk-bg-darker);
+  --color-tokyo-fg: var(--tk-fg);
+  --color-tokyo-fg-bright: var(--tk-fg-bright);
+  --color-tokyo-border: var(--tk-border);
+  --color-tokyo-comment: var(--tk-comment);
+  --color-tokyo-blue: var(--tk-blue);
+  --color-tokyo-blue-bright: var(--tk-blue-bright);
+  --color-tokyo-purple: var(--tk-purple);
+  --color-tokyo-green: var(--tk-green);
+  --color-tokyo-orange: var(--tk-orange);
+  --color-tokyo-cyan: var(--tk-cyan);
+  --color-tokyo-hover: var(--tk-hover);
+  --color-tokyo-active: var(--tk-active);
+  --color-tokyo-muted: var(--tk-muted);
+}
 
+@theme {
   --font-code: "Cascadia Code", "Fira Code", "JetBrains Mono", Menlo, monospace;
 }
 
-/* ── shadcn semantic values — Tokyo Night, always dark ── */
+/* ── Dark (default): Tokyo Night ── */
 :root {
   --radius: 0.625rem;
+
+  --tk-bg: #1a1b26;
+  --tk-bg-dark: #16161e;
+  --tk-bg-darker: #0e0e13;
+  --tk-fg: #a9b1d6;
+  --tk-fg-bright: #c0caf5;
+  --tk-border: #2f3146;
+  --tk-comment: #565f89;
+  --tk-blue: #7aa2f7;
+  --tk-blue-bright: #89b4fa;
+  --tk-purple: #bb9af7;
+  --tk-green: #9ece6a;
+  --tk-orange: #ff9e64;
+  --tk-cyan: #89ddff;
+  --tk-hover: #1e2030;
+  --tk-active: #292e42;
+  --tk-muted: #9aa5ce;
+
   --background: #1a1b26;
   --foreground: #a9b1d6;
   --card: #1e1f2e;
@@ -89,6 +111,54 @@
   --sidebar-border: #292e42;
   --sidebar-ring: #7aa2f7;
   color-scheme: dark;
+}
+
+/* ── Light: Tokyo Night Day ── */
+.light {
+  --tk-bg: #e1e2e7;
+  --tk-bg-dark: #d4d6de;
+  --tk-bg-darker: #c4c8d6;
+  --tk-fg: #3760bf;
+  --tk-fg-bright: #343b58;
+  --tk-border: #a8aecb;
+  --tk-comment: #848cb5;
+  --tk-blue: #2e7de9;
+  --tk-blue-bright: #2e7de9;
+  --tk-purple: #9854f1;
+  --tk-green: #587539;
+  --tk-orange: #b15c00;
+  --tk-cyan: #007197;
+  --tk-hover: #cfd2dc;
+  --tk-active: #b7bcce;
+  --tk-muted: #6172b0;
+
+  --background: #e1e2e7;
+  --foreground: #343b58;
+  --card: #d4d6de;
+  --card-foreground: #343b58;
+  --popover: #d4d6de;
+  --popover-foreground: #343b58;
+  --primary: #2e7de9;
+  --primary-foreground: #e1e2e7;
+  --secondary: #c4c8d6;
+  --secondary-foreground: #343b58;
+  --muted: #c4c8d6;
+  --muted-foreground: #6172b0;
+  --accent: #b7bcce;
+  --accent-foreground: #343b58;
+  --destructive: #f52a65;
+  --border: #a8aecb;
+  --input: #a8aecb;
+  --ring: #2e7de9;
+  --sidebar: #d4d6de;
+  --sidebar-foreground: #343b58;
+  --sidebar-primary: #2e7de9;
+  --sidebar-primary-foreground: #e1e2e7;
+  --sidebar-accent: #b7bcce;
+  --sidebar-accent-foreground: #343b58;
+  --sidebar-border: #a8aecb;
+  --sidebar-ring: #2e7de9;
+  color-scheme: light;
 }
 
 /* ── Base reset & body ── */

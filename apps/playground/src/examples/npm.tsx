@@ -10,14 +10,14 @@ export default function NpmExample() {
   const sandboxRef = useRef<Sandbox | null>(null);
   const [box, setBox] = useState<InspectableBox | null>(null);
 
-  const bootTab = async (term: Terminal, ordinal: number) => {
-    if (ordinal === 0) {
-      const sb = await Sandbox.create({ terminal: term });
-      sandboxRef.current = sb;
-      setBox({ kernel: sb.kernel, env: sb.env });
-    } else if (sandboxRef.current) {
+  const bootTab = async (term: Terminal) => {
+    if (sandboxRef.current) {
       void bootShell(term, sandboxRef.current.kernel, { network: true, pkgs: ['git'] });
+      return;
     }
+    const sb = await Sandbox.create({ terminal: term });
+    sandboxRef.current = sb;
+    setBox({ kernel: sb.kernel, env: sb.env });
   };
 
   return (
@@ -30,7 +30,7 @@ export default function NpmExample() {
         </>
       }
     >
-      <TerminalArea box={box} bootTab={(t, o) => void bootTab(t, o)} />
+      <TerminalArea box={box} bootTab={(t) => void bootTab(t)} />
     </ExamplePanel>
   );
 }

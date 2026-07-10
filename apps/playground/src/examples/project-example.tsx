@@ -102,9 +102,11 @@ export function ProjectExample({ title, subtitle, files, cwd, previewPort, previ
     <TerminalArea
       key={bootNonce}
       box={box}
-      bootTab={(term, ordinal) => {
-        if (ordinal === 0) void bootFirstTerminal(term);
-        else bootExtraTerminal(term);
+      bootTab={(term) => {
+        // The "+" is gated on `box`, so the first terminal always boots alone
+        // and creates the sandbox; later terminals attach to its kernel.
+        if (sandboxRef.current) bootExtraTerminal(term);
+        else void bootFirstTerminal(term);
       }}
       onRestart={restart}
       onSnapshot={sandbox ? () => downloadSnapshot(sandbox) : undefined}

@@ -1,5 +1,7 @@
+import { Moon, Sun } from 'lucide-react';
 import { examples, exampleGroups } from '@/examples/registry';
 import { cn } from '@/lib/utils';
+import { useTheme } from '@/lib/theme';
 
 interface SidebarNavProps {
   activeId: string;
@@ -7,6 +9,7 @@ interface SidebarNavProps {
 }
 
 export function SidebarNav({ activeId, onSelect }: SidebarNavProps) {
+  const { mode, toggle } = useTheme();
   return (
     <nav className="h-full flex flex-col overflow-y-auto bg-tokyo-bg-darker">
       <div className="p-4 pb-3 border-b border-tokyo-border shrink-0">
@@ -19,6 +22,13 @@ export function SidebarNav({ activeId, onSelect }: SidebarNavProps) {
             className="rounded-[5px] shrink-0"
           />
           <h1 className="text-lg font-bold text-tokyo-fg-bright tracking-tight">Lifo</h1>
+          <button
+            onClick={toggle}
+            title={mode === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+            className="ml-auto w-7 h-7 grid place-items-center rounded-md bg-transparent border-none text-tokyo-comment hover:text-tokyo-fg-bright hover:bg-tokyo-hover cursor-pointer"
+          >
+            {mode === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
+          </button>
         </div>
         <p className="text-[11px] text-tokyo-comment mt-1">Sandbox Examples</p>
       </div>

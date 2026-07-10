@@ -25,6 +25,16 @@
 				}
 			} catch (e) { /* sessionStorage unavailable — boot normally */ }
 		})();
+		// Apply the saved light/dark theme before first paint (no flash).
+		(function () {
+			try {
+				var m = localStorage.getItem('lifo-theme');
+				if (m === 'light') {
+					document.documentElement.classList.remove('dark');
+					document.documentElement.classList.add('light');
+				}
+			} catch (e) { /* localStorage unavailable — default dark */ }
+		})();
 	</script>
 </head>
 

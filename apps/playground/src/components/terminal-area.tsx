@@ -1,16 +1,17 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Terminal } from '@lifo-sh/ui';
-import { MoreVertical, Plus, Activity, Square, RotateCcw, Download, Upload } from 'lucide-react';
+import { MoreVertical, Plus, Activity, Square, RotateCcw, Download, Upload, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { TerminalView } from '@/components/terminal-view';
 import { ProcessPanel } from '@/components/process-panel';
 import { listProcesses, killProcess, type InspectableBox } from '@/lib/process-inspector';
 
 interface TerminalAreaProps {
-  /** Boot a shell for a terminal tab on the shared kernel/sandbox. `ordinal` is
-   *  the terminal's position (0 = first) — project examples create the sandbox
-   *  on ordinal 0 and attach extra shells for the rest. */
-  bootTab: (term: Terminal, ordinal: number) => void;
+  /** Boot a shell for a newly-opened terminal tab. The example decides whether
+   *  this is the first terminal (create the box) or an extra one (attach to the
+   *  shared kernel) from its own state — the "+" is disabled until the box
+   *  exists, so the first boot always runs alone. */
+  bootTab: (term: Terminal) => void;
   /** The box backing the Processes tab + Stop all; null until it's ready. */
   box: InspectableBox | null;
   /** Labels for the initial terminal tabs (default: one "Terminal 1"). */
@@ -24,18 +25,19 @@ interface TerminalAreaProps {
 }
 
 type Tab =
-  | { id: number; kind: 'terminal'; label: string; ordinal: number }
+  | { id: number; kind: 'terminal'; label: string }
   | { id: number; kind: 'process'; label: string };
 
 /**
  * Shared terminal chrome (VS Code-like): flat tabbed terminals over one kernel,
  * a persistent "Processes" tab (the process manager), and a box menu (stop,
  * restart, snapshot, restore — the latter three only when handlers are given).
+ * Every tab is closable; the box menu reopens Processes if it was closed.
  */
 export function TerminalArea({ bootTab, box, initialLabels, canAdd = true, onRestart, onSnapshot, onRestore }: TerminalAreaProps) {
   const labels = initialLabels?.length ? initialLabels : ['Terminal 1'];
   const [tabs, setTabs] = useState<Tab[]>(() => [
-    ...labels.map((label, i) => ({ id: i, kind: 'terminal' as const, label, ordinal: i })),
+    ...labels.map((label, i) => ({ id: i, kind: 'terminal' as const, label })),
     { id: labels.length, kind: 'process' as const, label: 'Processes' },
   ]);
   const [active, setActive] = useState(0);
@@ -43,6 +45,7 @@ export function TerminalArea({ bootTab, box, initialLabels, canAdd = true, onRes
   const [procCount, setProcCount] = useState(0);
   const [busy, setBusy] = useState<string | null>(null);
   const termsRef = useRef<Map<number, Terminal>>(new Map());
+  const termCounter = useRef(labels.length);
   const nextId = useRef(labels.length + 1);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -68,21 +71,40 @@ export function TerminalArea({ bootTab, box, initialLabels, canAdd = true, onRes
   const addTerminal = () => {
     if (!box) return;
     const id = nextId.current++;
-    const ordinal = tabs.filter((t) => t.kind === 'terminal').length;
-    const procIdx = tabs.findIndex((x) => x.kind === 'process');
+    const label = `Terminal ${++termCounter.current}`;
     setTabs((t) => {
+      const at = t.findIndex((x) => x.kind === 'process');
       const next = [...t];
-      const at = next.findIndex((x) => x.kind === 'process');
-      next.splice(at, 0, { id, kind: 'terminal', label: `Terminal ${ordinal + 1}`, ordinal });
+      if (at >= 0) next.splice(at, 0, { id, kind: 'terminal', label });
+      else next.push({ id, kind: 'terminal', label });
+      setActive(at >= 0 ? at : next.length - 1);
       return next;
     });
-    setActive(procIdx); // the new terminal takes the slot Processes used to be at
+  };
+
+  const closeTab = (i: number, e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    const closing = tabs[i];
+    if (closing?.kind === 'terminal') termsRef.current.delete(closing.id);
+    setTabs((t) => t.filter((_, idx) => idx !== i));
+    setActive((a) => {
+      const newLen = tabs.length - 1;
+      if (i < a) return a - 1;
+      if (i === a) return Math.max(0, Math.min(a, newLen - 1));
+      return a;
+    });
   };
 
   const openProcesses = () => {
     setMenuOpen(false);
     const i = tabs.findIndex((t) => t.kind === 'process');
-    if (i >= 0) focusTab(i);
+    if (i >= 0) {
+      focusTab(i);
+    } else {
+      const id = nextId.current++;
+      setTabs((t) => [...t, { id, kind: 'process', label: 'Processes' }]);
+      setActive(tabs.length);
+    }
   };
 
   const stopAll = async () => {
@@ -120,35 +142,45 @@ export function TerminalArea({ bootTab, box, initialLabels, canAdd = true, onRes
 
   return (
     <div className="flex flex-col h-full w-full min-h-0">
-      {/* Tab strip — flat, flush, VS Code-like. */}
-      <div className="flex items-stretch bg-tokyo-bg-dark border-b border-tokyo-border min-h-[30px] shrink-0">
+      {/* Tab strip — flat, VS Code-like. */}
+      <div className="flex items-stretch bg-tokyo-bg-dark border-b border-tokyo-border min-h-[36px] shrink-0">
         <div className="flex items-stretch flex-1 overflow-x-auto">
           {tabs.map((t, i) => (
-            <button
+            <div
               key={t.id}
               onClick={() => focusTab(i)}
               className={cn(
-                'px-3 flex items-center gap-1.5 border-none border-r border-tokyo-border/60 text-xs cursor-pointer whitespace-nowrap transition-colors',
+                'group relative flex items-center gap-2 pl-3.5 pr-2 border-r border-tokyo-border/60 text-xs cursor-pointer whitespace-nowrap select-none transition-colors',
                 i === active
-                  ? 'bg-tokyo-bg text-tokyo-fg-bright shadow-[inset_0_2px_0_var(--color-tokyo-blue)]'
+                  ? 'bg-tokyo-bg text-tokyo-fg-bright shadow-[inset_0_1px_0_var(--color-tokyo-blue)]'
                   : 'bg-transparent text-tokyo-comment hover:bg-tokyo-hover hover:text-tokyo-muted',
               )}
             >
-              {t.kind === 'process' && <Activity size={12} />}
-              {t.label}
+              {t.kind === 'process' && <Activity size={12} className="shrink-0" />}
+              <span>{t.label}</span>
               {t.kind === 'process' && procCount > 0 && (
                 <span className="text-[10px] tabular-nums opacity-70">({procCount})</span>
               )}
-            </button>
+              <button
+                onClick={(e) => closeTab(i, e)}
+                title="Close tab"
+                className={cn(
+                  'grid place-items-center w-4 h-4 rounded-sm hover:bg-tokyo-active hover:text-tokyo-fg-bright shrink-0 transition-opacity',
+                  i === active ? 'opacity-70 hover:opacity-100' : 'opacity-0 group-hover:opacity-70',
+                )}
+              >
+                <X size={12} />
+              </button>
+            </div>
           ))}
           {canAdd && (
             <button
               onClick={addTerminal}
               disabled={!box}
               title="New terminal"
-              className="px-2 grid place-items-center bg-transparent border-none text-tokyo-comment hover:text-tokyo-fg-bright hover:bg-tokyo-hover cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+              className="px-2.5 grid place-items-center bg-transparent border-none text-tokyo-comment hover:text-tokyo-fg-bright hover:bg-tokyo-hover cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              <Plus size={14} />
+              <Plus size={15} />
             </button>
           )}
         </div>
@@ -158,9 +190,9 @@ export function TerminalArea({ bootTab, box, initialLabels, canAdd = true, onRes
             onClick={() => setMenuOpen((v) => !v)}
             disabled={!box}
             title="Box menu"
-            className="px-2 grid place-items-center bg-transparent border-none text-tokyo-comment hover:text-tokyo-fg-bright hover:bg-tokyo-hover cursor-pointer disabled:opacity-40"
+            className="px-2.5 grid place-items-center bg-transparent border-none text-tokyo-comment hover:text-tokyo-fg-bright hover:bg-tokyo-hover cursor-pointer disabled:opacity-40"
           >
-            <MoreVertical size={15} />
+            <MoreVertical size={16} />
           </button>
           {menuOpen && (
             <div className="absolute right-0 top-full z-30 w-52 py-1 bg-tokyo-bg-dark border border-tokyo-border shadow-2xl">
@@ -180,29 +212,41 @@ export function TerminalArea({ bootTab, box, initialLabels, canAdd = true, onRes
       </div>
 
       <div className="flex-1 relative overflow-hidden bg-tokyo-bg">
-        {tabs.map((t, i) => (
-          <div
-            key={t.id}
-            className="absolute inset-0 flex flex-col min-h-0"
-            style={{ display: i === active ? 'flex' : 'none' }}
-          >
-            {t.kind === 'terminal' ? (
-              <div className="flex-1 min-h-0 p-1.5">
-                <TerminalView
-                  className="w-full h-full"
-                  onReady={(term) => {
-                    termsRef.current.set(t.id, term);
-                    bootTab(term, t.ordinal);
-                  }}
-                />
-              </div>
-            ) : (
-              <div className="flex-1 min-h-0 flex flex-col">
-                <ProcessPanel box={box} active={i === active} onCount={setProcCount} />
-              </div>
-            )}
+        {tabs.length === 0 ? (
+          <div className="absolute inset-0 grid place-items-center text-[12px] text-tokyo-comment">
+            <button
+              onClick={addTerminal}
+              disabled={!box}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded border border-tokyo-border text-tokyo-muted hover:text-tokyo-fg-bright hover:bg-tokyo-hover disabled:opacity-40"
+            >
+              <Plus size={14} /> New terminal
+            </button>
           </div>
-        ))}
+        ) : (
+          tabs.map((t, i) => (
+            <div
+              key={t.id}
+              className="absolute inset-0 flex flex-col min-h-0"
+              style={{ display: i === active ? 'flex' : 'none' }}
+            >
+              {t.kind === 'terminal' ? (
+                <div className="flex-1 min-h-0 p-1.5">
+                  <TerminalView
+                    className="w-full h-full"
+                    onReady={(term) => {
+                      termsRef.current.set(t.id, term);
+                      bootTab(term);
+                    }}
+                  />
+                </div>
+              ) : (
+                <div className="flex-1 min-h-0 flex flex-col">
+                  <ProcessPanel box={box} active={i === active} onCount={setProcCount} />
+                </div>
+              )}
+            </div>
+          ))
+        )}
       </div>
     </div>
   );
