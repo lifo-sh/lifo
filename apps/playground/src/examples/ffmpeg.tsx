@@ -57,7 +57,7 @@ export default function FfmpegExample() {
               />
             </div>
           </ResizablePanel>
-          <ResizableHandle className="my-1.5" />
+          <ResizableHandle className="my-0.5" />
           <ResizablePanel defaultSize={38} minSize={15}>
             <div className="w-full h-full rounded-lg overflow-hidden border border-tokyo-border bg-tokyo-bg p-2">
               <TerminalView

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ImperativePanelHandle } from 'react-resizable-panels';
 import { Menu, SquareChevronRight } from 'lucide-react';
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
@@ -6,16 +6,9 @@ import { Sheet, SheetContent, SheetTitle, SheetTrigger } from '@/components/ui/s
 import { SidebarNav } from '@/components/sidebar-nav';
 import { CodeColumn } from '@/components/code-column';
 import { ExampleHost } from '@/components/example-host';
+import { OutputChromeProvider } from '@/components/output-chrome';
 import { findExample, snippetFor } from '@/examples/registry';
 import { useIsMobile } from '@/hooks/use-is-mobile';
-
-function OutputHeader() {
-  return (
-    <div className="px-4 py-2.5 border-b border-tokyo-border shrink-0 hidden lg:block">
-      <div className="text-[10px] font-semibold uppercase tracking-widest text-tokyo-comment">Output</div>
-    </div>
-  );
-}
 
 /**
  * Single layout tree for both breakpoints. The `ResizablePanelGroup` and the
@@ -32,15 +25,20 @@ export function App() {
   const showCode = !active.hideCode;
 
   const codePanelRef = useRef<ImperativePanelHandle>(null);
+  // User's Code-column preference (desktop). Examples with no code force it shut.
+  const [codeOpen, setCodeOpen] = useState(true);
+  const codeVisible = showCode && codeOpen;
   useEffect(() => {
     const p = codePanelRef.current;
     if (!p) return; // no code panel on mobile
-    if (showCode && p.isCollapsed()) p.expand();
-    else if (!showCode && !p.isCollapsed()) p.collapse();
-  }, [showCode, activeId, isMobile]);
+    if (codeVisible && p.isCollapsed()) p.expand();
+    else if (!codeVisible && !p.isCollapsed()) p.collapse();
+  }, [codeVisible, activeId, isMobile]);
+
+  const toggleCode = useCallback(() => setCodeOpen((v) => !v), []);
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [codeOpen, setCodeOpen] = useState(false);
+  const [mobileCodeOpen, setMobileCodeOpen] = useState(false);
   const select = (id: string) => {
     setActiveId(id);
     setSidebarOpen(false);
@@ -62,7 +60,7 @@ export function App() {
         </Sheet>
         {showCode ? (
           <button
-            onClick={() => setCodeOpen((v) => !v)}
+            onClick={() => setMobileCodeOpen((v) => !v)}
             className="flex items-center gap-1.5 text-tokyo-muted text-xs px-2.5 py-1 rounded-md border border-tokyo-border hover:text-tokyo-fg-bright"
           >
             <SquareChevronRight className="size-3.5" /> Code
@@ -95,18 +93,19 @@ export function App() {
           )}
           {!isMobile && <ResizableHandle key="h2" />}
           <ResizablePanel key="output" id="output" order={3} defaultSize={50} minSize={30}>
-            <div className="flex flex-col h-full min-h-0">
-              <OutputHeader />
-              <div className="flex-1 p-4 overflow-hidden flex flex-col min-h-0">
+            <OutputChromeProvider
+              value={{ canToggleCode: !isMobile && showCode, codeOpen, toggleCode }}
+            >
+              <div className="flex-1 h-full px-2 py-1.5 overflow-hidden flex flex-col min-h-0">
                 <ExampleHost activeId={activeId} />
               </div>
-            </div>
+            </OutputChromeProvider>
           </ResizablePanel>
         </ResizablePanelGroup>
 
         {/* Mobile code overlay (desktop uses the code panel above) */}
-        {showCode && codeOpen ? (
-          <div className="absolute inset-0 z-20 bg-tokyo-bg p-4 lg:hidden">
+        {showCode && mobileCodeOpen ? (
+          <div className="absolute inset-0 z-20 bg-tokyo-bg-dark lg:hidden">
             <CodeColumn snippet={snippetFor(activeId)} />
           </div>
         ) : null}

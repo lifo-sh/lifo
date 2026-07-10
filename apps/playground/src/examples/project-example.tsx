@@ -117,7 +117,7 @@ export function ProjectExample({ title, subtitle, files, cwd, previewPort, previ
           <ResizablePanel defaultSize={45} minSize={20}>
             {terminalArea}
           </ResizablePanel>
-          <ResizableHandle className="my-1.5" />
+          <ResizableHandle className="my-0.5" />
           <ResizablePanel defaultSize={55} minSize={20}>
             {swReady === null ? (
               <div className="flex-1 h-full grid place-items-center text-[12px] text-tokyo-comment">
