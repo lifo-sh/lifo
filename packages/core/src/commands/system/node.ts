@@ -16,36 +16,103 @@ import { createModuleClass } from '../../node-compat/module.js';
  * `global.global === global`).
  */
 function makeNodeGlobal(overrides: Record<string, unknown>): Record<string, unknown> {
-	const g = Object.assign(Object.create(globalThis as object), overrides) as Record<string, unknown>;
-	g.global = g;
+	// Proxy, not Object.create(globalThis): assignments like
+	// `global.JIMPBUffer = X` (jimp-compact) must land on the REAL globalThis,
+	// because other modules then reference the bare identifier `JIMPBUffer`,
+	// which resolves through the scope chain to globalThis — a prototype-child
+	// would swallow the write and leave the bare lookup dangling
+	// (ReferenceError). The overlay keys (process/Buffer/console/global) stay
+	// per-module so each run keeps its own Node shims.
+	const own: Record<string, unknown> = { ...overrides };
+	const g = new Proxy(own, {
+		get(t, k) {
+			if (k in t) return t[k as string];
+			return (globalThis as unknown as Record<string | symbol, unknown>)[k];
+		},
+		set(t, k, v) {
+			if (k in t) t[k as string] = v;
+			else (globalThis as unknown as Record<string | symbol, unknown>)[k] = v;
+			return true;
+		},
+		has(t, k) {
+			return k in t || k in (globalThis as object);
+		},
+		getOwnPropertyDescriptor(t, k) {
+			const d = Object.getOwnPropertyDescriptor(t, k) ?? Object.getOwnPropertyDescriptor(globalThis, k);
+			if (d) d.configurable = true; // proxy invariant: target may not own it
+			return d;
+		},
+		ownKeys(t) {
+			return Array.from(new Set([...Reflect.ownKeys(t), ...Reflect.ownKeys(globalThis as object)]));
+		},
+		defineProperty(t, k, desc) {
+			if (k in t) Object.defineProperty(t, k, desc);
+			else Object.defineProperty(globalThis, k, desc);
+			return true;
+		},
+		deleteProperty(t, k) {
+			if (k in t) delete t[k as string];
+			else delete (globalThis as unknown as Record<string | symbol, unknown>)[k];
+			return true;
+		},
+	}) as unknown as Record<string, unknown>;
+	own.global = g;
 	return g;
 }
 
+import { makeProxyingFetch } from '../../node-compat/proxy-fetch.js';
+import * as nodeTimers from '../../node-compat/timers.js';
+
 /**
- * Wrap `fetch` so requests to known non-CORS hosts are routed through a CORS
- * proxy the browser CAN reach; every other request passes straight through.
+ * Native-backed stand-in for the `fetch-nodeshim` package. minifetch ships its
+ * own http/https-based fetch for old Node; in the VM the NATIVE fetch stack is
+ * strictly better (real web streams and Response objects), and our
+ * CORS-proxying fetch handles the hosts a browser can't reach directly.
+ * Serving this instead of letting minifetch run over our http shims removes a
+ * whole class of impedance bugs (setHeader, stream duck-typing, gzip).
  *
- * The browser VM can't fetch hosts that don't send CORS headers — e.g.
- * api.expo.dev, which create-expo-app calls for SDK versions. The proxy base
- * defaults to the local tunnel-server's /_cors endpoint (the stand-in for a
- * hosted Lifo proxy); override with LIFO_CORS_PROXY, and the host allow-list
- * with LIFO_CORS_PROXY_HOSTS (comma-separated).
+ * One critical adaptation: expo's response cache constructs
+ * `new Response(fs.createReadStream(...))` — a NODE stream, which the native
+ * Response coerces to the literal string "[object Object]" (surfacing as
+ * SyntaxError: "[object Object]" is not valid JSON, killing `expo start`).
+ * The Response subclass converts node-style streams to web streams first.
  */
-function makeProxyingFetch(realFetch: typeof fetch, env: Record<string, string>): typeof fetch {
-	const base = env.LIFO_CORS_PROXY || 'http://localhost:3005/_cors?url=';
-	const hosts = new Set(
-		(env.LIFO_CORS_PROXY_HOSTS || 'api.expo.dev,exp.host,u.expo.dev')
-			.split(',').map((h) => h.trim()).filter(Boolean),
-	);
-	return ((input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
-		try {
-			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : (input as Request).url;
-			if (url && hosts.has(new URL(url).hostname)) {
-				return realFetch(base + encodeURIComponent(url), init);
+function makeFetchNodeshim(fetchImpl: typeof fetch): Record<string, unknown> {
+	const g = globalThis as unknown as Record<string, unknown>;
+	type NodeishStream = { on: (ev: string, fn: (...a: unknown[]) => void) => unknown; getReader?: unknown };
+	const nodeStreamToWeb = (s: NodeishStream): ReadableStream =>
+		new ReadableStream({
+			start(controller) {
+				s.on('data', (chunk: unknown) => {
+					try {
+						controller.enqueue(typeof chunk === 'string' ? new TextEncoder().encode(chunk) : (chunk as Uint8Array));
+					} catch { /* closed */ }
+				});
+				s.on('end', () => { try { controller.close(); } catch { /* closed */ } });
+				s.on('error', (e: unknown) => { try { controller.error(e); } catch { /* closed */ } });
+			},
+		});
+	const NativeResponse = g.Response as typeof Response;
+	class ShimResponse extends NativeResponse {
+		constructor(body?: unknown, init?: ResponseInit) {
+			const b = body as NodeishStream | null | undefined;
+			if (b && typeof b === 'object' && typeof b.on === 'function' && !(b instanceof Uint8Array) && typeof b.getReader !== 'function') {
+				body = nodeStreamToWeb(b);
 			}
-		} catch { /* not a proxyable URL — fall through */ }
-		return realFetch(input, init);
-	}) as typeof fetch;
+			super(body as BodyInit | null, init);
+		}
+	}
+	return {
+		fetch: fetchImpl,
+		default: fetchImpl,
+		Response: ShimResponse,
+		Request: g.Request,
+		Headers: g.Headers,
+		FormData: g.FormData,
+		Blob: g.Blob,
+		URL: g.URL,
+		URLSearchParams: g.URLSearchParams,
+	};
 }
 import { createConsole } from '../../node-compat/console.js';
 import { Buffer } from '../../node-compat/buffer.js';
@@ -56,6 +123,20 @@ import { ACTIVE_SERVERS } from '../../node-compat/http.js';
 import type { VirtualRequestHandler, Kernel } from '../../kernel/index.js';
 
 const NODE_VERSION = 'v20.0.0';
+
+// Node 21+ exposes a global `navigator` whose userAgent is "Node.js/<ver>".
+// Executed modules must see THAT, not the browser's — expo-constants'
+// getBrowserName sees a Chrome userAgent and then dereferences `window`
+// (undefined in the node context): "Cannot use 'in' operator ... in undefined",
+// killing expo-router SSR. Injected as a wrapper param so bare `navigator`
+// references shadow the page's real navigator.
+const NODE_NAVIGATOR = Object.freeze({
+	userAgent: `Node.js/${NODE_VERSION.slice(1)}`,
+	platform: 'lifo',
+	language: 'en-US',
+	languages: Object.freeze(['en-US']),
+	hardwareConcurrency: 1,
+});
 
 // ── Rollup / esbuild CJS-ESM interop helpers ──
 // Bundled npm packages (Vite, Rollup, etc.) reference these helpers at the module
@@ -488,7 +569,13 @@ function rewriteDynamicImports(source: string): string {
 	// Stable require alias captured at wrapper scope before any module-level
 	// `var require` shadow can hoist over it.
 	if (result.includes('__lifoRequire(')) {
-		result = 'var __lifoRequire = require;\n' + result;
+		// Node's dynamic import() of a CJS module exposes module.exports as the
+		// namespace `.default`. Our import() maps to require(), so add that interop
+		// (e.g. @expo/metro-config does `(await import('browserslist')).default(...)`
+		// — browserslist is `module.exports = fn`, so without a `.default` it throws
+		// "browserslist.default is not a function"). Non-enumerable + only when
+		// absent, so it's invisible to spreads and leaves ESM modules untouched.
+		result = 'var __lifoRequire = function (id) { var m = require(id); if (m != null && !m.__esModule && (typeof m === "object" || typeof m === "function") && !("default" in m)) { try { Object.defineProperty(m, "default", { value: m, configurable: true }); } catch (e) {} } return m; };\n' + result;
 	}
 	return result;
 }
@@ -500,17 +587,24 @@ function rewriteDynamicImports(source: string): string {
  * @babel/generator declares `class Buffer`). The module's own declaration
  * then wins; positional arguments are unaffected.
  */
-const SHADOWABLE_WRAPPER_PARAMS = ['console', 'process', 'Buffer', 'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'global', 'window', 'document', 'self', 'fetch'];
+const SHADOWABLE_WRAPPER_PARAMS = ['console', 'process', 'Buffer', 'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'global', 'window', 'document', 'self', 'navigator', 'fetch'];
 
 function buildWrapperParams(source: string): string {
-	const params = ['exports', 'require', 'module', '__filename', '__dirname', 'console', 'process', 'Buffer', 'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'global', '__importMetaUrl', '__importMeta', '__importMetaResolve', 'window', 'document', 'self', 'fetch'];
+	const params = ['exports', 'require', 'module', '__filename', '__dirname', 'console', 'process', 'Buffer', 'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'global', '__importMetaUrl', '__importMeta', '__importMetaResolve', 'window', 'document', 'self', 'navigator', 'fetch'];
 	return params.map((p) => {
 		if (!SHADOWABLE_WRAPPER_PARAMS.includes(p)) return p;
-		// Direct declaration, e.g. `const Buffer = ...` / `class Buffer {}`
-		const direct = new RegExp(`(?:^|\\n)[ \\t]*(?:class|let|const)\\s+${p}\\b`);
+		// Direct declaration, e.g. `const Buffer = ...` / `class Buffer {}`.
+		// COLUMN 0 only: indented declarations are function-scoped (legal next to
+		// a like-named param) — a Metro SSR bundle contains an indented
+		// `const navigator` inside one of its thousands of modules, and renaming
+		// the wrapper param un-shadowed `navigator` for the WHOLE bundle (bare
+		// references then hit the browser's real navigator → expo-constants'
+		// getBrowserName saw a Chrome UA and crashed on `'chrome' in window`).
+		// Only a TOP-LEVEL redeclaration is a SyntaxError worth renaming for.
+		const direct = new RegExp(`(?:^|\\n)(?:class|let|const)\\s+${p}\\b`);
 		// Destructuring declaration, e.g. `const { Buffer } = require('node:buffer')` (undici).
 		// A const/let re-binding a wrapper param name is a SyntaxError, so rename the param.
-		const destructured = new RegExp(`(?:^|\\n)[ \\t]*(?:let|const)\\s*\\{[^{}]*\\b${p}\\b[^{}]*\\}`);
+		const destructured = new RegExp(`(?:^|\\n)(?:let|const)\\s*\\{[^{}]*\\b${p}\\b[^{}]*\\}`);
 		return direct.test(source) || destructured.test(source) ? `__lifo_shadowed_${p}` : p;
 	}).join(', ');
 }
@@ -768,7 +862,13 @@ export function transformEsmToCjs(source: string): string {
 	// Stable require alias for the dynamic-import transforms above — captured
 	// at wrapper scope before any module-level `var require` shadow can hoist.
 	if (result.includes('__lifoRequire(')) {
-		result = 'var __lifoRequire = require;\n' + result;
+		// Node's dynamic import() of a CJS module exposes module.exports as the
+		// namespace `.default`. Our import() maps to require(), so add that interop
+		// (e.g. @expo/metro-config does `(await import('browserslist')).default(...)`
+		// — browserslist is `module.exports = fn`, so without a `.default` it throws
+		// "browserslist.default is not a function"). Non-enumerable + only when
+		// absent, so it's invisible to spreads and leaves ESM modules untouched.
+		result = 'var __lifoRequire = function (id) { var m = require(id); if (m != null && !m.__esModule && (typeof m === "object" || typeof m === "function") && !("default" in m)) { try { Object.defineProperty(m, "default", { value: m, configurable: true }); } catch (e) {} } return m; };\n' + result;
 	}
 
 	return result;
@@ -853,6 +953,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			// Lets child_process (exec/spawn) shell out to other VM commands —
 			// e.g. create-expo-app running `npm pack` / `npm install`.
 			executeCapture: ctx.executeCapture,
+			executeCaptureResult: ctx.executeCaptureResult,
 		};
 
 		// Back require('module')'s Module#_compile with the real module executor
@@ -890,6 +991,10 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 					return Promise.resolve(p).finally(() => { pendingAsync--; });
 				})
 			: proxying) as typeof fetch;
+
+		// Serve require('fetch-nodeshim') from the native fetch stack — see
+		// makeFetchNodeshim. Built per-run so it uses this run's proxying fetch.
+		const fetchNodeshim = typeof nodeFetch === 'function' ? makeFetchNodeshim(nodeFetch) : undefined;
 
 		// process.exit() handling. While the main script is still executing
 		// synchronously, exit() must throw (to abort it). Once we're purely
@@ -940,6 +1045,31 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			},
 		};
 
+		// Stub for `lightningcss` — a native (Rust NAPI) CSS transformer that
+		// can't load in the browser (`Cannot find module '../lightningcss.*.node'`).
+		// SDK 57's @expo/metro-config uses it to transform/minify web CSS
+		// (transformCssModuleWeb → require('lightningcss')), which otherwise
+		// crashes `expo start --web` bundling. Pass CSS through unchanged — dev
+		// bundles don't need minification, and react-native-web injects its own
+		// styles at runtime rather than via these CSS files.
+		const toBuf = (v: unknown) => (Buffer.isBuffer(v) ? v : Buffer.from((v as string | Uint8Array) ?? ''));
+		const lightningcssStub = {
+			transform: (opts: { code?: unknown; cssModules?: unknown }) => ({
+				code: toBuf(opts?.code),
+				map: undefined,
+				exports: opts?.cssModules ? {} : undefined,
+				references: {},
+				dependencies: [],
+				warnings: [],
+			}),
+			transformStyleAttribute: (opts: { code?: unknown }) => ({ code: toBuf(opts?.code), warnings: [] }),
+			bundle: () => ({ code: Buffer.from(''), map: undefined, exports: undefined, warnings: [] }),
+			bundleAsync: () => Promise.resolve({ code: Buffer.from(''), map: undefined, exports: undefined, warnings: [] }),
+			browserslistToTargets: () => ({}),
+			composeVisitors: () => ({}),
+			Features: new Proxy({}, { get: () => 0 }),
+		};
+
 		// Build require function (declared first, module shim overrides below)
 		function nodeRequire(name: string): unknown {
 			// Strip node: prefix
@@ -955,6 +1085,14 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 
 			// rollup/parseAst is a native NAPI binding — serve the acorn-backed shim
 			if (name === 'rollup/parseAst' || name === 'rollup/parseAst.js') return rollupParseShim;
+
+			// lightningcss (native CSS transformer) — intercept before node_modules
+			// resolution, since it IS installed (its index.js would load a missing
+			// .node binary). See lightningcssStub.
+			if (name === 'lightningcss') return lightningcssStub;
+			// fetch-nodeshim: serve the native fetch stack (see makeFetchNodeshim) —
+			// intercept BEFORE node_modules resolution since the package IS installed.
+			if (name === 'fetch-nodeshim' && fetchNodeshim) return fetchNodeshim;
 
 			// @babel/core: answer the async API with sync execution (see babel-sync.ts)
 			if (name === '@babel/core') {
@@ -1351,8 +1489,24 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 
 		function executeModule(modSource: string, modFilename: string, cacheAs?: string): unknown {
 			const modDir = dirname(modFilename);
-			const modModule = { exports: {} as Record<string, unknown> };
-			const modExports = modModule.exports;
+			// `exports` free variable / initial exports object. Node keeps this
+			// stable even after `module.exports` is reassigned.
+			const modExports = {} as Record<string, unknown>;
+			let currentExports: unknown = modExports;
+			// Live `module.exports`: reassigning it mid-execution must update the
+			// module cache IMMEDIATELY, so a circular require sees the reassigned
+			// value rather than the pre-cached initial {}. semver's Range and
+			// Comparator are mutually recursive and each does `module.exports =
+			// Class` *before* requiring the other; without this, the second module
+			// captures an empty {} → `new Comparator()` throws → `validRange('^x')`
+			// returns null → downstream tools (npm-package-arg, expo install) break.
+			const modModule = {
+				get exports() { return currentExports; },
+				set exports(v: unknown) {
+					currentExports = v;
+					if (cacheAs) moduleCache.set(cacheAs, v);
+				},
+			};
 
 			// Pre-cache to handle circular dependencies (Node.js behaviour)
 			if (cacheAs) {
@@ -1388,6 +1542,14 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 
 				// rollup/parseAst is a native NAPI binding — serve the acorn-backed shim
 				if (name === 'rollup/parseAst' || name === 'rollup/parseAst.js') return rollupParseShim;
+
+			// lightningcss (native CSS transformer) — intercept before node_modules
+			// resolution, since it IS installed (its index.js would load a missing
+			// .node binary). See lightningcssStub.
+			if (name === 'lightningcss') return lightningcssStub;
+			// fetch-nodeshim: serve the native fetch stack (see makeFetchNodeshim) —
+			// intercept BEFORE node_modules resolution since the package IS installed.
+			if (name === 'fetch-nodeshim' && fetchNodeshim) return fetchNodeshim;
 
 				// @babel/core: answer the async API with sync execution (see babel-sync.ts)
 				if (name === '@babel/core') {
@@ -1558,14 +1720,18 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 				fn(
 					modExports, modRequire, modModule, modFilename, modDir,
 					modConsole, modProcess, Buffer,
-					globalThis.setTimeout, globalThis.setInterval,
-					globalThis.clearTimeout, globalThis.clearInterval,
+					// Node-like timers: browser setTimeout returns a NUMBER, but Node
+					// returns a Timeout object with unref/ref — packages test
+					// `'unref' in timer` (dnssd-advertise) or call `.unref()` directly,
+					// which throws on a number. The shim's Timer coerces back to the id.
+					nodeTimers.setTimeout as unknown as typeof setTimeout, nodeTimers.setInterval as unknown as typeof setInterval,
+					nodeTimers.clearTimeout as unknown as typeof clearTimeout, nodeTimers.clearInterval as unknown as typeof clearInterval,
 					global,
 					importMetaUrl, importMeta, importMetaResolve,
 					// window/document/self undefined: node-executed code must see a Node
 					// environment (no DOM), matching real Node — e.g. so Emscripten
 					// (pglite) doesn't mis-detect the browser and mis-resolve data files.
-					undefined, undefined, undefined,
+					undefined, undefined, undefined, NODE_NAVIGATOR,
 					nodeFetch, // fetch (CORS-proxied for known hosts)
 				);
 			} catch (e) {
@@ -1664,11 +1830,12 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			const result = fn(
 				exports, nodeRequire, module, filename, dir,
 				nodeConsole, process, Buffer,
-				globalThis.setTimeout, globalThis.setInterval,
-				globalThis.clearTimeout, globalThis.clearInterval,
+				// Node-like timers (Timeout objects with unref/ref) — see executeModule.
+				nodeTimers.setTimeout as unknown as typeof setTimeout, nodeTimers.setInterval as unknown as typeof setInterval,
+				nodeTimers.clearTimeout as unknown as typeof clearTimeout, nodeTimers.clearInterval as unknown as typeof clearInterval,
 				global,
 				mainImportMetaUrl, mainImportMeta, mainImportMetaResolve,
-				undefined, undefined, undefined,
+				undefined, undefined, undefined, NODE_NAVIGATOR,
 				nodeFetch, // fetch (CORS-proxied for known hosts)
 			);
 

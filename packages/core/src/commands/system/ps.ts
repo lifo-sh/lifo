@@ -3,6 +3,25 @@ import type { ProcessRegistry } from '../../shell/ProcessRegistry.js';
 
 export function createPsCommand(processRegistry: ProcessRegistry): Command {
   return async (ctx) => {
+    // Machine-readable form for tooling (the playground's process manager runs
+    // `ps --json`). Emits the full registry so a UI has pid/command/args/cwd/
+    // status/uptime without scraping the human table.
+    if (ctx.args.includes('--json')) {
+      const now = Date.now();
+      const rows = processRegistry.getAll().map((p) => ({
+        pid: p.pid,
+        ppid: p.ppid,
+        command: p.command,
+        args: p.args,
+        cwd: p.cwd,
+        status: p.status,
+        foreground: p.isForeground,
+        uptimeMs: Math.max(0, now - p.startTime),
+      }));
+      ctx.stdout.write(JSON.stringify(rows) + '\n');
+      return 0;
+    }
+
     ctx.stdout.write('  PID TTY          TIME CMD\n');
 
     // Get all processes from registry

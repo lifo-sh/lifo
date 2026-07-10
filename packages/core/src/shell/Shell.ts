@@ -190,19 +190,11 @@ export class Shell {
       },
     };
 
-    // Save current state
-    const prevDefaultStdout = this.interpreterConfig.defaultStdout;
-    const prevDefaultStderr = this.interpreterConfig.defaultStderr;
-    const prevWriteToTerminal = this.interpreterConfig.writeToTerminal;
+    // Per-execution stream routing (NOT shared-config mutation): concurrent
+    // execute() calls — e.g. a long-running `expo start` plus a `curl` probe —
+    // previously swapped/restored the SAME interpreterConfig streams and
+    // silently swallowed each other's output.
     const prevCwd = options?.cwd ? this.cwd : undefined;
-
-    // Redirect output
-    this.interpreterConfig.defaultStdout = stdoutStream;
-    this.interpreterConfig.defaultStderr = stderrStream;
-    this.interpreterConfig.writeToTerminal = (text: string) => {
-      stderrBuf += text;
-      options?.onStderr?.(text);
-    };
 
     // Apply per-call overrides
     if (options?.cwd) {
@@ -221,7 +213,10 @@ export class Shell {
     }
 
     try {
-      const exitCode = await this.interpreter.executeLine(cmd, terminalStdin);
+      const exitCode = await this.interpreter.executeLine(cmd, terminalStdin, {
+        stdout: stdoutStream,
+        stderr: stderrStream,
+      });
       return { stdout: stdoutBuf, stderr: stderrBuf, exitCode };
     } catch (e) {
       const msg = e instanceof Error ? (e.stack || e.message) : String(e);
@@ -230,10 +225,6 @@ export class Shell {
       return { stdout: stdoutBuf, stderr: stderrBuf, exitCode: 1 };
     } finally {
       this._executeDepth--;
-      // Restore state
-      this.interpreterConfig.defaultStdout = prevDefaultStdout;
-      this.interpreterConfig.defaultStderr = prevDefaultStderr;
-      this.interpreterConfig.writeToTerminal = prevWriteToTerminal;
       if (prevCwd !== undefined) {
         this.cwd = prevCwd;
       }

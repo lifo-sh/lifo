@@ -101,14 +101,16 @@ function createCurlImpl(kernel?: Kernel): Command {
 
           handler(vReq, vRes);
 
-          // Wait for async middleware to complete (e.g., Vite, Express)
+          // Wait for async middleware to complete (e.g., Vite, Express).
+          // 120s, matching the service-worker proxy: a dev bundler's FIRST
+          // bundle (Metro compiling in-VM) legitimately exceeds 30s.
           if (vRes._donePromise) {
             const timeout = new Promise<'timeout'>((resolve) =>
-              setTimeout(() => resolve('timeout'), 30000)
+              setTimeout(() => resolve('timeout'), 120000)
             );
             const result = await Promise.race([vRes._donePromise.then(() => 'done' as const), timeout]);
             if (result === 'timeout') {
-              ctx.stderr.write('curl: request timeout after 30s\n');
+              ctx.stderr.write('curl: request timeout after 120s\n');
               return 7;
             }
           }

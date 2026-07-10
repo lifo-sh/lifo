@@ -6,6 +6,36 @@
 	<meta name="viewport" content="width=device-width, initial-scale=1.0" />
 	<link rel="icon" type="image/png" href="./logo.png" />
 	<title>Lifo - Examples</title>
+	<script>
+		// Preview reload persistence: the service worker strips /_sw/<port> from
+		// preview URLs (client-side routers must see "/"), so reloading a
+		// top-level preview tab lands here at "/". The preview page saves its
+		// restore target in per-tab sessionStorage on pagehide (see sw.js
+		// PATH_SHIM) — bounce back before the playground boots.
+		(function () {
+			try {
+				var raw = sessionStorage.getItem('lifo-preview-restore');
+				if (raw) {
+					sessionStorage.removeItem('lifo-preview-restore');
+					var r = JSON.parse(raw);
+					// 30s TTL: catch reloads/back, not a deliberate return later.
+					if (r && /^\/_sw\/[A-Za-z0-9_-]+\/\d+\//.test(r.url) && Date.now() - r.t < 30000) {
+						location.replace(r.url);
+					}
+				}
+			} catch (e) { /* sessionStorage unavailable — boot normally */ }
+		})();
+		// Apply the saved light/dark theme before first paint (no flash).
+		(function () {
+			try {
+				var m = localStorage.getItem('lifo-theme');
+				if (m === 'light') {
+					document.documentElement.classList.remove('dark');
+					document.documentElement.classList.add('light');
+				}
+			} catch (e) { /* localStorage unavailable — default dark */ }
+		})();
+	</script>
 </head>
 
 <body>

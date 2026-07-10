@@ -5,13 +5,35 @@ import { getMimeType, isBinaryMime } from '../../utils/mime.js';
 
 const command: Command = async (ctx) => {
   let count = 10;
+  let fromStart = false; // -n +N: from line N to end
+  let bytes: number | null = null; // -c: byte count mode
   const files: string[] = [];
+
+  const parseN = (s: string, what: string): number => {
+    if (s.startsWith('+')) { fromStart = true; s = s.slice(1); }
+    const n = parseInt(s, 10);
+    if (isNaN(n)) ctx.stderr.write(`tail: invalid number of ${what}\n`);
+    return n;
+  };
 
   for (let i = 0; i < ctx.args.length; i++) {
     const arg = ctx.args[i];
-    if (arg === '-n' && i + 1 < ctx.args.length) {
-      count = parseInt(ctx.args[++i], 10);
-      if (isNaN(count)) { ctx.stderr.write('tail: invalid number of lines\n'); return 1; }
+    if ((arg === '-n' || arg === '--lines') && i + 1 < ctx.args.length) {
+      count = parseN(ctx.args[++i], 'lines');
+      if (isNaN(count)) return 1;
+    } else if (arg.startsWith('-n') && arg.length > 2) {
+      count = parseN(arg.slice(2), 'lines');
+      if (isNaN(count)) return 1;
+    } else if ((arg === '-c' || arg === '--bytes') && i + 1 < ctx.args.length) {
+      bytes = parseN(ctx.args[++i], 'bytes');
+      if (isNaN(bytes)) return 1;
+    } else if (arg.startsWith('-c') && arg.length > 2) {
+      bytes = parseN(arg.slice(2), 'bytes');
+      if (isNaN(bytes)) return 1;
+    } else if (arg === '-f' || arg === '--follow') {
+      // Follow mode: we read a static snapshot (no blocking watch); accepted
+      // so `tail -f log` shows current contents instead of erroring.
+      continue;
     } else if (/^-\d+$/.test(arg)) {
       count = parseInt(arg.slice(1), 10);
     } else {
@@ -20,8 +42,12 @@ const command: Command = async (ctx) => {
   }
 
   async function tailText(text: string): Promise<void> {
+    if (bytes !== null) {
+      ctx.stdout.write(fromStart ? text.slice(bytes - 1) : text.slice(-bytes));
+      return;
+    }
     const lines = text.replace(/\n$/, '').split('\n');
-    const selected = lines.slice(-count);
+    const selected = fromStart ? lines.slice(count - 1) : lines.slice(-count);
     ctx.stdout.write(selected.join('\n') + '\n');
   }
 

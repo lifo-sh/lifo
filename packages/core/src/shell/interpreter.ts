@@ -50,6 +50,26 @@ export type BuiltinFn = (
   stdin?: CommandInputStream,
 ) => Promise<number>;
 
+/**
+ * Per-execution fallback streams. Threaded through the execute chain so a
+ * captured run (shell.execute with onStdout, executeCaptureResult) routes its
+ * commands' output WITHOUT mutating the shared config — concurrent executions
+ * (a running dev server + a probe command) previously clobbered each other's
+ * defaultStdout, silently swallowing output.
+ */
+export interface StreamDefaults {
+  stdout?: CommandOutputStream;
+  stderr?: CommandOutputStream;
+  /**
+   * Abort signal for the commands run under these defaults. Threaded explicitly
+   * (rather than via the mutable `config.getAbortSignal`) so a background job's
+   * signal reaches its inner command even though `getAbortSignal` is restored
+   * synchronously before the job's async body runs — without it, `kill <pid>`
+   * on a background job never propagates to the process it spawned.
+   */
+  abortSignal?: AbortSignal;
+}
+
 export interface InterpreterConfig {
   env: Record<string, string>;
   getCwd: () => string;
@@ -84,33 +104,34 @@ export class Interpreter {
     return this.lastExitCode;
   }
 
-  async executeScript(script: ScriptNode, terminalStdin?: TerminalStdin): Promise<number> {
+  async executeScript(script: ScriptNode, terminalStdin?: TerminalStdin, defaults?: StreamDefaults): Promise<number> {
     let exitCode = 0;
     for (const list of script.lists) {
-      exitCode = await this.executeList(list, terminalStdin);
+      exitCode = await this.executeList(list, terminalStdin, defaults);
     }
     this.lastExitCode = exitCode;
     return exitCode;
   }
 
-  async executeLine(input: string, terminalStdin?: TerminalStdin): Promise<number> {
+  async executeLine(input: string, terminalStdin?: TerminalStdin, defaults?: StreamDefaults): Promise<number> {
     try {
       const tokens = lex(input);
       const script = parse(tokens);
-      return await this.executeScript(script, terminalStdin);
+      return await this.executeScript(script, terminalStdin, defaults);
     } catch (e) {
       if (e instanceof BreakSignal || e instanceof ContinueSignal || e instanceof ReturnSignal) {
         throw e;
       }
       if (e instanceof Error) {
-        this.config.writeToTerminal(`${e.message}\n`);
+        if (defaults?.stderr) defaults.stderr.write(`${e.message}\n`);
+        else this.config.writeToTerminal(`${e.message}\n`);
       }
       this.lastExitCode = 2;
       return 2;
     }
   }
 
-  private async executeList(list: ListNode, terminalStdin?: TerminalStdin): Promise<number> {
+  private async executeList(list: ListNode, terminalStdin?: TerminalStdin, defaults?: StreamDefaults): Promise<number> {
     if (list.background) {
       const abortController = new AbortController();
       const commandText = this.getListCommandText(list);
@@ -121,8 +142,14 @@ export class Interpreter {
       this.config.isBackgroundContext = true;
       this.config.getAbortSignal = () => abortController.signal;
 
-      // Background jobs don't get terminal stdin
-      const promise = this.executeListEntries(list.entries);
+      // Background jobs don't get terminal stdin. Thread the job's abort signal
+      // through `defaults` so the inner command observes THIS controller (the
+      // one `kill <pid>` aborts), not the parent signal that getAbortSignal is
+      // restored to below before this async body reads it.
+      const promise = this.executeListEntries(list.entries, undefined, {
+        ...defaults,
+        abortSignal: abortController.signal,
+      });
 
       // Restore config
       this.config.isBackgroundContext = wasBackgroundContext;
@@ -149,7 +176,7 @@ export class Interpreter {
       return 0;
     }
 
-    return this.executeListEntries(list.entries, terminalStdin);
+    return this.executeListEntries(list.entries, terminalStdin, defaults);
   }
 
   private getListCommandText(list: ListNode): string {
@@ -163,12 +190,12 @@ export class Interpreter {
     ).join(' ');
   }
 
-  private async executeListEntries(entries: ListNode['entries'], terminalStdin?: TerminalStdin): Promise<number> {
+  private async executeListEntries(entries: ListNode['entries'], terminalStdin?: TerminalStdin, defaults?: StreamDefaults): Promise<number> {
     let exitCode = 0;
 
     for (let i = 0; i < entries.length; i++) {
       const entry = entries[i];
-      exitCode = await this.executePipeline(entry.pipeline, terminalStdin);
+      exitCode = await this.executePipeline(entry.pipeline, terminalStdin, defaults);
 
       // Check the connector on current entry to decide whether to continue
       if (entry.connector === '&&' && exitCode !== 0) {
@@ -185,17 +212,17 @@ export class Interpreter {
     return exitCode;
   }
 
-  private async executePipeline(pipeline: PipelineNode, terminalStdin?: TerminalStdin): Promise<number> {
+  private async executePipeline(pipeline: PipelineNode, terminalStdin?: TerminalStdin, defaults?: StreamDefaults): Promise<number> {
     const commands = pipeline.commands;
 
     let exitCode: number;
 
     if (commands.length === 1) {
       // Single command -- no piping needed
-      exitCode = await this.executeCommand(commands[0], undefined, undefined, terminalStdin);
+      exitCode = await this.executeCommand(commands[0], undefined, undefined, terminalStdin, undefined, defaults);
     } else {
       // Multi-command pipeline -- only first command gets terminalStdin
-      exitCode = await this.executePipelineCommands(commands, terminalStdin);
+      exitCode = await this.executePipelineCommands(commands, terminalStdin, defaults);
     }
 
     if (pipeline.negated) {
@@ -205,7 +232,7 @@ export class Interpreter {
     return exitCode;
   }
 
-  private async executePipelineCommands(commands: CompoundCommandNode[], terminalStdin?: TerminalStdin): Promise<number> {
+  private async executePipelineCommands(commands: CompoundCommandNode[], terminalStdin?: TerminalStdin, defaults?: StreamDefaults): Promise<number> {
     const pipes: PipeChannel[] = [];
     const promises: Promise<number>[] = [];
 
@@ -222,7 +249,7 @@ export class Interpreter {
       const cmd = commands[i];
       // Only the first command in a pipeline gets terminal stdin
       const tStdin = i === 0 ? terminalStdin : undefined;
-      const cmdPromise = this.executeCommand(cmd, stdin, stdout, tStdin)
+      const cmdPromise = this.executeCommand(cmd, stdin, stdout, tStdin, undefined, defaults)
         .then((code) => {
           // Close the pipe writer when command finishes
           if (i < commands.length - 1) {
@@ -243,22 +270,29 @@ export class Interpreter {
     pipeStdin?: CommandInputStream,
     pipeStdout?: CommandOutputStream,
     terminalStdin?: TerminalStdin,
+    pipeStderr?: CommandOutputStream,
+    defaults?: StreamDefaults,
   ): Promise<number> {
+    // Compound bodies forward a pipeStdout to their inner commands; giving
+    // them the per-execution default keeps captured runs (shell.execute /
+    // executeCaptureResult) collecting compound output without touching the
+    // SHARED interpreter config (which concurrent executions would clobber).
+    const compoundOut = pipeStdout ?? defaults?.stdout;
     switch (cmd.type) {
       case 'simple_command':
-        return this.executeSimpleCommand(cmd, pipeStdin, pipeStdout, terminalStdin);
+        return this.executeSimpleCommand(cmd, pipeStdin, pipeStdout, terminalStdin, pipeStderr, defaults);
       case 'if':
-        return this.executeIf(cmd, pipeStdout);
+        return this.executeIf(cmd, compoundOut);
       case 'for':
-        return this.executeFor(cmd, pipeStdout);
+        return this.executeFor(cmd, compoundOut);
       case 'while':
-        return this.executeWhile(cmd, pipeStdout);
+        return this.executeWhile(cmd, compoundOut);
       case 'until':
-        return this.executeUntil(cmd, pipeStdout);
+        return this.executeUntil(cmd, compoundOut);
       case 'case':
-        return this.executeCase(cmd, pipeStdout);
+        return this.executeCase(cmd, compoundOut);
       case 'group':
-        return this.executeGroup(cmd, pipeStdout);
+        return this.executeGroup(cmd, compoundOut);
       case 'function_def':
         return this.executeFunctionDef(cmd);
     }
@@ -414,6 +448,8 @@ export class Interpreter {
     pipeStdin?: CommandInputStream,
     pipeStdout?: CommandOutputStream,
     terminalStdin?: TerminalStdin,
+    pipeStderr?: CommandOutputStream,
+    defaults?: StreamDefaults,
   ): Promise<number> {
     const expandCtx = this.createExpandContext();
 
@@ -453,17 +489,24 @@ export class Interpreter {
       this.config.env[assign.name] = value;
     }
 
-    // Set up stdout/stderr (default to config overrides, then terminal)
-    let stdout: CommandOutputStream = pipeStdout ?? this.config.defaultStdout ?? {
+    // Set up stdout/stderr: pipeline pipe > per-execution defaults > shared
+    // config override > terminal. Per-execution defaults exist so concurrent
+    // shell.execute() calls don't fight over the shared config streams.
+    let stdout: CommandOutputStream = pipeStdout ?? defaults?.stdout ?? this.config.defaultStdout ?? {
       write: (text: string) => this.config.writeToTerminal(text),
     };
-    let stderr: CommandOutputStream = this.config.defaultStderr ?? {
+    let stderr: CommandOutputStream = pipeStderr ?? defaults?.stderr ?? this.config.defaultStderr ?? {
       write: (text: string) => this.config.writeToTerminal(text),
     };
     let stdin: CommandInputStream | undefined = pipeStdin;
 
     // Apply redirections
     for (const redir of cmd.redirections) {
+      // Stream duplication — no file target; applied left-to-right like bash,
+      // so `> f 2>&1` sends stderr into f, while `2>&1 > f` doesn't.
+      if (redir.operator === '2>&1') { stderr = stdout; continue; }
+      if (redir.operator === '>&2') { stdout = stderr; continue; }
+      if (redir.operator === '>&1') { continue; } // self-dup, no-op
       const target = await expandWord(redir.target, expandCtx);
       const targetPath = resolve(this.config.getCwd(), target);
 
@@ -534,7 +577,9 @@ export class Interpreter {
           // Check registry
           const command = await this.config.registry.resolve(name);
           if (!command) {
-            this.config.writeToTerminal(`${name}: command not found\n`);
+            // To stderr (not the terminal directly) so `2>&1` / `2>/dev/null`
+            // apply to it, as in bash.
+            stderr.write(`${name}: command not found\n`);
             exitCode = 127;
           } else {
             // Only register if NOT part of a background job (which has its own registration)
@@ -542,8 +587,11 @@ export class Interpreter {
             let pid: number | undefined;
             let abortController: AbortController;
 
-            // Get shell signal (may be from background job's abortController)
-            const shellSignal = this.config.getAbortSignal?.() ?? new AbortController().signal;
+            // Get shell signal (may be from background job's abortController).
+            // An explicitly-threaded `defaults.abortSignal` wins: it's how a
+            // background job hands its own signal down without racing the
+            // synchronous restore of config.getAbortSignal.
+            const shellSignal = defaults?.abortSignal ?? this.config.getAbortSignal?.() ?? new AbortController().signal;
 
             if (shouldRegister) {
               // Register process so it's visible in ps from other shells
@@ -572,6 +620,7 @@ export class Interpreter {
                 ? (v: boolean) => { terminalStdin.rawMode = v; }
                 : undefined,
               executeCapture: (captureInput, captureOpts) => this.executeCapture(captureInput, captureOpts),
+              executeCaptureResult: (captureInput, captureOpts) => this.executeCaptureResult(captureInput, captureOpts),
             };
 
             // Register process BEFORE executing so ps can see itself
@@ -692,9 +741,29 @@ export class Interpreter {
   }
 
   async executeCapture(input: string, opts?: { cwd?: string }): Promise<string> {
+    return (await this.executeCaptureResult(input, opts)).stdout;
+  }
+
+  /**
+   * Like executeCapture but also reports the final exit code, so callers that
+   * need to distinguish success from failure can. child_process relies on this
+   * to emit an ENOENT `error` for a missing command (exit 127) — matching Node,
+   * so libraries like fb-watchman detect "watchman not installed" and fall back
+   * instead of hanging on a phantom child that never errors.
+   */
+  async executeCaptureResult(input: string, opts?: { cwd?: string }): Promise<{ stdout: string; stderr: string; code: number }> {
     let captured = '';
+    let capturedErr = '';
     const stdout: CommandOutputStream = {
       write: (text: string) => { captured += text; },
+    };
+    // Capture stderr per-execution too. Without this it fell through to the
+    // SHARED default (the terminal), so tools spawned inside a running CLI —
+    // Metro's `find`, watchman probes, nested npm installs — sprayed their
+    // stderr into the user's interactive terminal (and in Node semantics,
+    // execFile pipes both streams to the caller, not the tty).
+    const stderr: CommandOutputStream = {
+      write: (text: string) => { capturedErr += text; },
     };
 
     const tokens = lex(input);
@@ -704,20 +773,16 @@ export class Interpreter {
     // restoring afterward so the caller's cwd is unaffected.
     const prevCwd = opts?.cwd !== undefined ? this.config.getCwd() : undefined;
     if (opts?.cwd !== undefined) this.config.setCwd(opts.cwd);
+    let code = 0;
     try {
-      // Execute with captured stdout
-      for (const list of script.lists) {
-        for (const entry of list.entries) {
-          for (const cmd of entry.pipeline.commands) {
-            await this.executeCommand(cmd, undefined, stdout);
-          }
-        }
-      }
+      // Execute with captured stdout/stderr via per-execution defaults —
+      // pipes, && / ||, and compound commands all route into the capture.
+      code = await this.executeScript(script, undefined, { stdout, stderr });
     } finally {
       if (prevCwd !== undefined) this.config.setCwd(prevCwd);
     }
 
-    return captured;
+    return { stdout: captured, stderr: capturedErr, code };
   }
 
   private createExpandContext(): ExpandContext {
@@ -731,9 +796,12 @@ export class Interpreter {
   }
 
   private createFileWriter(path: string): CommandOutputStream {
+    // Append per write — the redirect setup already truncated the file once.
+    // Truncating on EVERY write kept only a command's final chunk (and lost
+    // stdout entirely under `> f 2>&1`, where both streams share this writer).
     return {
       write: (text: string) => {
-        this.config.vfs.writeFile(path, text);
+        this.config.vfs.appendFile(path, text);
       },
     };
   }

@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { Terminal } from '@lifo-sh/ui';
+import { useTheme, xtermTheme } from '@/lib/theme';
 
 interface TerminalViewProps {
   className?: string;
@@ -18,6 +19,7 @@ export function TerminalView({ className, onReady }: TerminalViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const booted = useRef(false);
   const termRef = useRef<Terminal | null>(null);
+  const { mode } = useTheme();
 
   useEffect(() => {
     if (booted.current || !containerRef.current) return;
@@ -28,11 +30,17 @@ export function TerminalView({ className, onReady }: TerminalViewProps) {
     const term = new Terminal(containerRef.current, {
       fontSize: isMobile ? 11 : 14,
       webgl: !isMobile,
+      theme: xtermTheme(mode),
     });
     termRef.current = term;
     void onReady?.(term);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Follow the app's light/dark toggle.
+  useEffect(() => {
+    termRef.current?.setTheme(xtermTheme(mode));
+  }, [mode]);
 
   // Re-adapt font size + renderer (and refit) when the viewport crosses the
   // phone breakpoint, since the terminal instance is preserved across it.

@@ -1,5 +1,7 @@
 import { EventEmitter } from './events.js';
+import { Buffer } from './buffer.js';
 import type { VirtualRequestHandler, VirtualResponse } from '../kernel/index.js';
+import { makeProxyingFetch } from './proxy-fetch.js';
 
 /** Extended VirtualResponse with a done promise for async middleware */
 export interface VirtualResponseWithDone extends VirtualResponse {
@@ -20,6 +22,9 @@ class IncomingMessage extends EventEmitter {
   statusCode: number;
   statusMessage: string;
   headers: Record<string, string>;
+  /** Node's flat [name, value, name, value, ...] view of the headers.
+   *  expo-server's convertRequest iterates it (crashes on undefined). */
+  rawHeaders: string[];
   method?: string;
   url?: string;
   httpVersion = '1.1';
@@ -27,6 +32,7 @@ class IncomingMessage extends EventEmitter {
   httpVersionMinor = 1;
   complete = false;
   aborted = false;
+  destroyed = false;
   readable = true;
   // Minimal socket stub that Vite/Connect middleware expects
   socket: {
@@ -34,6 +40,8 @@ class IncomingMessage extends EventEmitter {
     remotePort: number;
     encrypted: boolean;
     destroy: () => void;
+    unref: () => void;
+    ref: () => void;
   };
   connection: {
     remoteAddress: string;
@@ -45,11 +53,14 @@ class IncomingMessage extends EventEmitter {
     this.statusCode = statusCode;
     this.statusMessage = statusMessage;
     this.headers = headers;
+    this.rawHeaders = Object.entries(headers).flatMap(([k, v]) => [k, v]);
     const socketStub = {
       remoteAddress: '127.0.0.1',
       remotePort: 0,
       encrypted: false,
       destroy: () => {},
+      unref: () => {},
+      ref: () => {},
     };
     this.socket = socketStub;
     this.connection = socketStub;
@@ -70,6 +81,12 @@ class IncomingMessage extends EventEmitter {
 
   destroy(): this {
     this.aborted = true;
+    this.destroyed = true;
+    return this;
+  }
+
+  /** Socket-idle-timeout stub — fetch-nodeshim calls res.setTimeout(0). */
+  setTimeout(_ms: number, _cb?: () => void): this {
     return this;
   }
 }
@@ -80,28 +97,91 @@ class ClientRequest extends EventEmitter {
   private aborted = false;
   private portRegistry?: Map<number, VirtualRequestHandler>;
   private protocol: 'http:' | 'https:';
+  private fetchImpl?: typeof fetch;
 
-  constructor(options: RequestOptions, cb?: (res: IncomingMessage) => void, portRegistry?: Map<number, VirtualRequestHandler>, protocol: 'http:' | 'https:' = 'http:') {
+  constructor(options: RequestOptions, cb?: (res: IncomingMessage) => void, portRegistry?: Map<number, VirtualRequestHandler>, protocol: 'http:' | 'https:' = 'http:', fetchImpl?: typeof fetch) {
     super();
     this.options = options;
     this.portRegistry = portRegistry;
     this.protocol = protocol;
+    this.fetchImpl = fetchImpl;
     if (cb) this.on('response', cb as (...args: unknown[]) => void);
 
     // Defer the actual fetch
     queueMicrotask(() => this.execute());
   }
 
-  write(data: string): void {
-    this.body += data;
+  write(data: string | Uint8Array): boolean {
+    this._chunks.push(data);
+    return true;
   }
 
-  end(data?: string): void {
-    if (data) this.body += data;
+  end(data?: string | Uint8Array): void {
+    if (data != null) this._chunks.push(data);
+    this.emit('finish');
   }
+
+  private _chunks: Array<string | Uint8Array> = [];
+
+  /** Assemble the request body binary-safely (fetch-nodeshim pipes
+   *  Uint8Array chunks; string-concatenating them would corrupt binaries). */
+  private buildBody(): string | Uint8Array | undefined {
+    if (this._chunks.length === 0) return this.body || undefined;
+    if (this._chunks.every((c) => typeof c === 'string')) {
+      return this.body + (this._chunks as string[]).join('');
+    }
+    const enc = new TextEncoder();
+    const parts: Uint8Array[] = [];
+    if (this.body) parts.push(enc.encode(this.body));
+    for (const c of this._chunks) parts.push(typeof c === 'string' ? enc.encode(c) : c);
+    let total = 0;
+    for (const p of parts) total += p.length;
+    const out = new Uint8Array(total);
+    let off = 0;
+    for (const p of parts) { out.set(p, off); off += p.length; }
+    return out;
+  }
+
+  // Node request-header API. fetch-nodeshim (minifetch) sets its headers via
+  // req.setHeader/hasHeader AFTER https.request() returns — without these it
+  // threw "e.setHeader is not a function" and every @expo/cli API call died.
+  setHeader(name: string, value: string | string[] | number): this {
+    if (!this.options.headers) this.options.headers = {};
+    (this.options.headers as Record<string, string>)[name] = Array.isArray(value) ? value.join(', ') : String(value);
+    return this;
+  }
+
+  getHeader(name: string): string | undefined {
+    const h = (this.options.headers ?? {}) as Record<string, string>;
+    const k = Object.keys(h).find((k) => k.toLowerCase() === name.toLowerCase());
+    return k !== undefined ? h[k] : undefined;
+  }
+
+  hasHeader(name: string): boolean {
+    return this.getHeader(name) !== undefined;
+  }
+
+  removeHeader(name: string): void {
+    const h = this.options.headers as Record<string, string> | undefined;
+    if (!h) return;
+    for (const k of Object.keys(h)) {
+      if (k.toLowerCase() === name.toLowerCase()) delete h[k];
+    }
+  }
+
+  flushHeaders(): void {}
 
   abort(): void {
     this.aborted = true;
+  }
+
+  /** Node req.destroy(err) — abort the in-flight request. fetch-nodeshim's
+   *  error/abort path calls it unconditionally. */
+  destroyed = false;
+  destroy(_err?: unknown): this {
+    this.aborted = true;
+    this.destroyed = true;
+    return this;
   }
 
   private async execute(): Promise<void> {
@@ -115,11 +195,12 @@ class ClientRequest extends EventEmitter {
     if (this.portRegistry && port && (host === 'localhost' || host === '127.0.0.1')) {
       const handler = this.portRegistry.get(port);
       if (handler) {
+        const built = this.buildBody();
         const vReq = {
           method: this.options.method || 'GET',
           url: path,
           headers: this.options.headers || {},
-          body: this.body,
+          body: typeof built === 'string' ? built : built ? new TextDecoder().decode(built) : '',
         };
         const vRes = {
           statusCode: 200,
@@ -150,23 +231,39 @@ class ClientRequest extends EventEmitter {
     const url = `${proto}://${host}${portStr}${path}`;
 
     try {
-      const resp = await fetch(url, {
-        method: this.options.method || 'GET',
+      // Use the CORS-proxying fetch when provided (routes api.expo.dev etc.
+      // through the relay in the browser); otherwise the plain global fetch.
+      const doFetch = this.fetchImpl ?? fetch;
+      const method = this.options.method || 'GET';
+      const outBody = this.buildBody();
+      const resp = await doFetch(url, {
+        method,
         headers: this.options.headers,
-        body: this.options.method !== 'GET' && this.body ? this.body : undefined,
+        body: method !== 'GET' && method !== 'HEAD' && outBody ? (outBody as BodyInit) : undefined,
       });
 
       const headers: Record<string, string> = {};
       resp.headers.forEach((v, k) => { headers[k] = v; });
+      // Browser fetch already decompressed the body but keeps the original
+      // content-encoding/length headers — consumers (fetch-nodeshim) would
+      // try to gunzip AGAIN through zlib streams. Drop them.
+      delete headers['content-encoding'];
+      delete headers['content-length'];
 
       const msg = new IncomingMessage(resp.status, resp.statusText, headers);
       this.emit('response', msg);
 
-      const text = await resp.text();
-      msg.emit('data', text);
+      // Deliver bytes (Buffer), not text — binary downloads (tarballs, wasm)
+      // are corrupted by a UTF-8 round-trip.
+      const buf = Buffer.from(new Uint8Array(await resp.arrayBuffer()));
+      msg.emit('data', buf);
       msg.emit('end');
     } catch (e) {
-      this.emit('error', e);
+      // Defer on a MACROTASK (like Node's async error delivery). Emitting
+      // synchronously let callers that retry-on-error chain the next attempt
+      // in the same microtask turn — a failing endpoint then spun the
+      // browser's main thread forever (frozen tab on `expo start`).
+      setTimeout(() => this.emit('error', e), 0);
     }
   }
 
@@ -183,6 +280,7 @@ class ServerResponse extends EventEmitter {
   statusMessage = 'OK';
   headersSent = false;
   finished = false;
+  destroyed = false;
   writableEnded = false;
   writableFinished = false;
   private _headers: Record<string, string | string[]> = {};
@@ -520,9 +618,24 @@ class Agent extends EventEmitter {
   destroy(): void {}
 }
 
-export function createHttp(portRegistry?: Map<number, VirtualRequestHandler>, protocol: 'http:' | 'https:' = 'http:') {
+export function createHttp(
+  portRegistry?: Map<number, VirtualRequestHandler>,
+  protocol: 'http:' | 'https:' = 'http:',
+  env?: Record<string, string>,
+) {
   // Track active servers created by this http module instance
   const activeServers: Server[] = [];
+
+  // Outbound requests to known non-CORS hosts (api.expo.dev etc.) must route
+  // through the CORS proxy in the browser — @expo/cli reaches the network via
+  // require('https').request (fetch-nodeshim), not the injected global fetch,
+  // so this module needs the same proxying the node command's fetch gets.
+  // Without it `expo start` froze the tab: the native-modules request to
+  // api.expo.dev died on CORS and the CLI's retry path spun the main thread.
+  const realFetch = (globalThis as { fetch?: typeof fetch }).fetch;
+  const proxiedFetch = env && typeof realFetch === 'function'
+    ? makeProxyingFetch(realFetch.bind(globalThis), env)
+    : undefined;
 
   function httpRequest(
     urlOrOptions: string | RequestOptions,
@@ -551,7 +664,7 @@ export function createHttp(portRegistry?: Map<number, VirtualRequestHandler>, pr
       callback = optionsOrCb as ((res: IncomingMessage) => void) | undefined;
     }
 
-    return new ClientRequest(options, callback, portRegistry, protocol);
+    return new ClientRequest(options, callback, portRegistry, protocol, proxiedFetch);
   }
 
   function httpGet(

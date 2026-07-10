@@ -138,11 +138,28 @@ function base64ToBytes(b64: string): Uint8Array {
 	return out;
 }
 
-/** The bridge that answers the SW's reconnection requests (last connect wins). */
-let activeBridge: ServiceWorkerBridge | null = null;
+/**
+ * Every live bridge, keyed by its box id. Each example/sandbox in the page
+ * owns its OWN kernel + bridge, so the SW must route /_sw/<boxId>/<port>/ to
+ * the RIGHT box — a single "last connect wins" host would break every other
+ * example's preview the moment a new one connected. When the SW restarts (idle
+ * eviction / update) it loses all ports, so every bridge re-announces.
+ */
+const activeBridges = new Map<string, ServiceWorkerBridge>();
 let swListenerInstalled = false;
 
+function makeBoxId(): string {
+	const rnd = (typeof crypto !== 'undefined' && crypto.randomUUID)
+		? crypto.randomUUID()
+		: Math.random().toString(36).slice(2);
+	// Alphanumeric only: the SW's `box_<id>` prefix must be distinguishable from
+	// a bare `/_sw/<port>/` (all-digits) path, so no dashes.
+	return 'box_' + rnd.replace(/[^a-z0-9]/gi, '').slice(0, 10);
+}
+
 export class ServiceWorkerBridge {
+	/** Stable id for this box; the SW routes /_sw/<boxId>/<port>/ here. */
+	readonly boxId: string = makeBoxId();
 	private port: MessagePort | null = null;
 	private wsConns = new Map<string, WsConnection>();
 	private registration: ServiceWorkerRegistration | null = null;
@@ -173,18 +190,16 @@ export class ServiceWorkerBridge {
 		try {
 			this.registration = await navigator.serviceWorker.register(swUrl, { scope });
 			await navigator.serviceWorker.ready;
-			activeBridge = this;
+			activeBridges.set(this.boxId, this);
 
 			if (!swListenerInstalled) {
 				swListenerInstalled = true;
+				// SW woke without state / was replaced → every box re-announces.
+				const reconnectAll = () => { for (const b of activeBridges.values()) void b.reconnect(); };
 				navigator.serviceWorker.addEventListener('message', (event: MessageEvent) => {
-					if ((event.data as { type?: string })?.type === 'lifo-need-host') {
-						void activeBridge?.reconnect();
-					}
+					if ((event.data as { type?: string })?.type === 'lifo-need-host') reconnectAll();
 				});
-				navigator.serviceWorker.addEventListener('controllerchange', () => {
-					void activeBridge?.reconnect();
-				});
+				navigator.serviceWorker.addEventListener('controllerchange', reconnectAll);
 			}
 
 			return this.reconnect();
@@ -200,7 +215,7 @@ export class ServiceWorkerBridge {
 		if (!controller) return false;
 		const channel = new MessageChannel();
 		this.attach(channel.port1);
-		controller.postMessage({ type: 'lifo-connect' }, [channel.port2]);
+		controller.postMessage({ type: 'lifo-connect', boxId: this.boxId }, [channel.port2]);
 		return true;
 	}
 
@@ -232,6 +247,18 @@ export class ServiceWorkerBridge {
 		}
 	}
 
+	/**
+	 * Tear down this bridge: drop its WS connections, detach the port, and
+	 * remove it from the active-bridges registry so the SW stops routing to it
+	 * and it no longer reconnects on controllerchange. Used when a box reboots.
+	 */
+	destroy(): void {
+		for (const conn of this.wsConns.values()) conn.socket.destroy();
+		this.wsConns.clear();
+		this.detach();
+		activeBridges.delete(this.boxId);
+	}
+
 	private respondText(requestId: string, statusCode: number, headers: Record<string, string>, text: string): void {
 		this.respond(requestId, statusCode, headers, textEncoder.encode(text));
 	}
@@ -250,7 +277,10 @@ export class ServiceWorkerBridge {
 
 		const handler = this.portRegistry.get(port);
 		if (!handler) {
-			this.respondText(requestId, 404, { 'content-type': 'text/plain' }, `No server listening on port ${port}`);
+			// x-lifo marks this as "port not bound" (vs an app's own 404) so the
+			// service worker can render a friendly auto-reloading page for
+			// document requests while curl/tunnel keep the terse text.
+			this.respondText(requestId, 404, { 'content-type': 'text/plain', 'x-lifo': 'no-server' }, `No server listening on port ${port}`);
 			return;
 		}
 
@@ -269,7 +299,13 @@ export class ServiceWorkerBridge {
 		try {
 			handler(vReq, vRes);
 			if (vRes._donePromise) {
-				const timeout = new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 25000));
+				// 120s, not 25s: a dev bundler's FIRST bundle (Metro compiling
+				// hundreds of modules — e.g. react-native-web + react-dom for
+				// `expo start --web` — via Babel INSIDE the VM) is much slower than
+				// in native Node and legitimately exceeds 25s, surfacing as a
+				// spurious 504 on GET /index.bundle. Still bounded so a truly stuck
+				// handler eventually fails instead of hanging forever.
+				const timeout = new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 120000));
 				const result = await Promise.race([vRes._donePromise.then(() => 'done' as const), timeout]);
 				if (result === 'timeout') {
 					this.respondText(requestId, 504, { 'content-type': 'text/plain' }, `Gateway timeout: server did not respond for ${url}`);

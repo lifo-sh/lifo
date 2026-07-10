@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Kernel, type VFS } from '@lifo-sh/core';
 import { ExamplePanel } from '@/components/example-panel';
-import { TerminalView } from '@/components/terminal-view';
+import { TerminalArea } from '@/components/terminal-area';
 import { FileExplorerView } from '@/components/file-explorer-view';
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable';
-import { createMonacoProvider } from '@/lib/monaco';
+import { createMonacoProvider, setMonacoTheme } from '@/lib/monaco';
 import { bootShell } from '@/lib/shell';
+import { useTheme } from '@/lib/theme';
 
 function seedExplorerFiles(vfs: VFS) {
   vfs.mkdir('/home/user/projects', { recursive: true });
@@ -22,6 +23,12 @@ function seedExplorerFiles(vfs: VFS) {
 export default function ExplorerExample() {
   const editorProvider = useMemo(() => createMonacoProvider(), []);
   const [kernel, setKernel] = useState<Kernel | null>(null);
+  const { mode } = useTheme();
+
+  // Keep Monaco in sync with the app's light/dark toggle.
+  useEffect(() => {
+    setMonacoTheme(mode);
+  }, [mode]);
 
   useEffect(() => {
     let cancelled = false;
@@ -36,6 +43,8 @@ export default function ExplorerExample() {
     };
   }, []);
 
+  const box = kernel ? { kernel, env: kernel.getDefaultEnv() } : null;
+
   return (
     <ExamplePanel
       title="File Explorer"
@@ -44,7 +53,7 @@ export default function ExplorerExample() {
       {kernel ? (
         <ResizablePanelGroup direction="vertical" autoSaveId="pg-explorer-split" className="flex-1 min-h-0">
           <ResizablePanel defaultSize={62} minSize={30}>
-            <div className="w-full h-full rounded-lg overflow-hidden border border-tokyo-border bg-tokyo-bg">
+            <div className="w-full h-full overflow-hidden">
               <FileExplorerView
                 vfs={kernel.vfs}
                 cwd="/home/user"
@@ -53,14 +62,9 @@ export default function ExplorerExample() {
               />
             </div>
           </ResizablePanel>
-          <ResizableHandle className="my-1.5" />
+          <ResizableHandle className="my-0.5" />
           <ResizablePanel defaultSize={38} minSize={15}>
-            <div className="w-full h-full rounded-lg overflow-hidden border border-tokyo-border bg-tokyo-bg p-2">
-              <TerminalView
-                className="w-full h-full"
-                onReady={(term) => void bootShell(term, kernel, { pkgs: ['git'] })}
-              />
-            </div>
+            <TerminalArea box={box} bootTab={(term) => void bootShell(term, kernel, { pkgs: ['git'] })} />
           </ResizablePanel>
         </ResizablePanelGroup>
       ) : null}

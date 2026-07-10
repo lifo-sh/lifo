@@ -1,4 +1,4 @@
-import { Terminal as XTerminal } from '@xterm/xterm';
+import { Terminal as XTerminal, type ITheme } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import type { ITerminal } from '@lifo-sh/core';
@@ -35,10 +35,10 @@ export class Terminal implements ITerminal {
   private fitRaf = 0;
   private webglAddon: WebglAddon | null = null;
 
-  constructor(container: HTMLElement, options?: { fontSize?: number; webgl?: boolean }) {
+  constructor(container: HTMLElement, options?: { fontSize?: number; webgl?: boolean; theme?: ITheme }) {
     this.container = container;
     this.xterm = new XTerminal({
-      theme: THEME,
+      theme: options?.theme ?? THEME,
       fontFamily: '"Cascadia Code", "Fira Code", "JetBrains Mono", Menlo, monospace',
       fontSize: options?.fontSize ?? 14,
       lineHeight: 1.2,
@@ -97,6 +97,11 @@ export class Terminal implements ITerminal {
     if (this.xterm.options.fontSize === px) return;
     this.xterm.options.fontSize = px;
     this.scheduleFit();
+  }
+
+  /** Swap the color theme live (e.g. when the app toggles light/dark). */
+  setTheme(theme: ITheme): void {
+    this.xterm.options.theme = theme;
   }
 
   /**

@@ -70,9 +70,31 @@ export function createInteractiveStdin(
     listenerCount: (event: string) => listeners[event]?.length ?? 0,
     pipe: () => stdin,
     destroy() { ended = true; flowing = false; return stdin; },
-    /** True while something is actively reading stdin (an interactive prompt is
-     * waiting). The node command uses this to keep the run alive. */
-    isActive: () => (stdin.isRaw || flowing) && !ended,
+    /**
+     * True while something is actively reading stdin (an interactive prompt is
+     * waiting). The node command uses this to keep the run alive.
+     *
+     * Requires an actual consumer, not just `flowing`: prompt libraries (e.g.
+     * `prompts`, used by create-expo-app) reset raw mode and remove their
+     * keypress/data listeners on close but DON'T call `pause()`, so `flowing`
+     * stays true forever. Like Node — which lets a process exit once stdin has
+     * no ref'd consumer — we treat stdin as inactive when nothing is listening
+     * for input, so the run can quiesce and return instead of hanging.
+     */
+    isActive: () => {
+      if (ended || !(stdin.isRaw || flowing)) return false;
+      // A 'data' listener installed by readline.emitKeypressEvents is a
+      // byte->keypress translator, not a real reader — it's flagged and must
+      // not, on its own, keep the run alive (prompt libs consume 'keypress').
+      const dataConsumers = (listeners['data'] ?? []).filter(
+        (fn) => !(fn as { __lifoKeypressSource?: boolean }).__lifoKeypressSource,
+      ).length;
+      return (
+        dataConsumers > 0 ||
+        (listeners['readable']?.length ?? 0) > 0 ||
+        (listeners['keypress']?.length ?? 0) > 0
+      );
+    },
   };
   return stdin;
 }
@@ -232,6 +254,10 @@ export function createProcess(opts: ProcessOptions) {
     // Event-loop introspection (Node 17+). expo's CLI calls this on exit to
     // report lingering handles; there is no real libuv loop here, so report none.
     getActiveResourcesInfo: (): string[] => [],
+    // Source-map toggles (Node 16+). @expo/require-utils flips these around
+    // SSR module evaluation; we don't consume V8 source maps, so no-op.
+    setSourceMapsEnabled: (_enabled: boolean) => {},
+    sourceMapsEnabled: false,
     memoryUsage: () => {
       const m = (performance as unknown as { memory?: { usedJSHeapSize: number; totalJSHeapSize: number; jsHeapSizeLimit: number } }).memory;
       return {

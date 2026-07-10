@@ -164,13 +164,21 @@ export class Buffer extends Uint8Array {
   }
 
   slice(start?: number, end?: number): Buffer {
-    const sliced = super.slice(start, end);
-    return Buffer.from(sliced);
+    // Node's Buffer#slice SHARES memory (it's an alias of subarray), unlike
+    // Uint8Array#slice which copies.
+    return this.subarray(start, end);
   }
 
   subarray(start?: number, end?: number): Buffer {
-    const sub = super.subarray(start, end);
-    return Buffer.from(sub);
+    // MUST return a shared view (Node semantics) — the species constructor
+    // already produces a Buffer over the same memory. The old Buffer.from()
+    // wrapper COPIED, which silently broke every consumer that writes through
+    // the view: msgpackr encodes strings via
+    // textEncoder.encodeInto(str, target.subarray(pos)), so Metro's binary
+    // transform cache (@expo/metro-config BinaryFileStore .mp files) was
+    // written with all strings missing — the second `expo start` run then
+    // decoded garbage and crashed with "dependencies is not iterable".
+    return super.subarray(start, end) as Buffer;
   }
 
   // ─── Integer read methods (big-endian) ───

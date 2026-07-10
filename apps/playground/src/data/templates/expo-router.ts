@@ -159,7 +159,10 @@ if (isLifo) {
   process.env.EXPO_OFFLINE = '1';
   process.env.BROWSER = 'none';    // the preview iframe IS the browser
   process.env.EXPO_NO_DEPENDENCY_VALIDATION = '1'; // skip the version doctor check
-  process.env.LIFO_BASE_URL = '/_sw/8082'; // web preview is served under this sub-path (see app.config.js)
+  // NOTE: no baseUrl handling needed — the preview's service worker strips the
+  // /_sw/<port>/ entry prefix from the visible URL (history.replaceState) and
+  // routes the client's requests by clientId, so the app runs at "/" exactly
+  // like on a real dev server.
 
   // Metro's efficient recursive watcher (fs.watch(root, { recursive: true })) is
   // gated to macOS; the VM reports platform 'lifo', so Metro would fall back to
@@ -171,26 +174,6 @@ if (isLifo) {
     const NativeWatcher = nw.default ?? nw;
     NativeWatcher.isSupported = () => true;
   } catch (e) { console.warn('[lifo] NativeWatcher patch failed (no Fast Refresh):', e && e.message); }
-
-  // expo-router hard-disables baseUrl handling in development (stripBaseUrl /
-  // appendBaseUrl are gated on NODE_ENV !== 'development'), assuming the dev
-  // server is always at the domain root. Under Lifo the app legitimately serves
-  // at /_sw/8082 (experiments.baseUrl, see app.config.js), so remove the gate —
-  // otherwise the router sees pathname /_sw/8082/ and shows "Unmatched Route".
-  // Patched at the source so Metro bundles the corrected code.
-  try {
-    const fs = await import('fs');
-    const gate = "= process.env.EXPO_BASE_URL) {\\n    if (process.env.NODE_ENV !== 'development') {";
-    const opened = "= process.env.EXPO_BASE_URL) {\\n    if (true) { // lifo: baseUrl applies in dev too (served under /_sw/<port>)";
-    for (const f of [
-      'node_modules/expo-router/build/fork/getStateFromPath-forks.js',
-      'node_modules/expo-router/build/fork/getPathFromState-forks.js',
-      'node_modules/expo-router/build/fork/getPathFromState.js',
-    ]) {
-      const src = fs.readFileSync(f, 'utf8');
-      if (src.includes(gate)) fs.writeFileSync(f, src.replace(gate, opened));
-    }
-  } catch (e) { console.warn('[lifo] expo-router baseUrl patch failed:', e && e.message); }
 }
 
 const { expoStart } = await import('@expo/cli/build/src/start/index.js');

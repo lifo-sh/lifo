@@ -81,9 +81,11 @@ function parsePackageSpec(spec: string): { name: string; version: string | null 
 // ─── Semver helpers ───
 
 function parseVersion(v: string): [number, number, number] | null {
-	const m = v.match(/^(\d+)\.(\d+)\.(\d+)/);
+	// Tolerate partial versions: "7" → 7.0.0, "7.2" → 7.2.0. Needed so caret/tilde
+	// ranges like "^7" or "~7.2" (and bare "2") resolve instead of returning null.
+	const m = v.match(/^(\d+)(?:\.(\d+))?(?:\.(\d+))?/);
 	if (!m) return null;
-	return [parseInt(m[1]), parseInt(m[2]), parseInt(m[3])];
+	return [parseInt(m[1]), parseInt(m[2] ?? '0'), parseInt(m[3] ?? '0')];
 }
 
 function compareVersions(a: [number, number, number], b: [number, number, number]): number {
@@ -93,12 +95,29 @@ function compareVersions(a: [number, number, number], b: [number, number, number
 }
 
 function isVersionRange(version: string): boolean {
-	return /[\^~>=<|*x]/.test(version);
+	// Range operators, wildcards, ||, or spaces (hyphen/compound ranges).
+	if (/[\^~><=|*x\s]/i.test(version)) return true;
+	// A bare major ("2") or major.minor ("2.0") is a range (2.x), not a dist-tag —
+	// treating "inherits@2" as a tag was fetching registry/inherits/2 → 404.
+	return /^\d+(\.\d+)?$/.test(version);
 }
 
 function satisfiesRange(version: string, range: string): boolean {
 	const v = parseVersion(version);
 	if (!v) return false;
+
+	// npm semantics: a prerelease version (6.2.0-canary-x, 1.0.0-beta.1) never
+	// satisfies a normal range — only an exact match, or a range that itself
+	// carries a prerelease tag on the SAME [major,minor,patch] tuple. Without
+	// this, `^6.1.2` happily resolved to a canary (hit by @expo/metro-runtime,
+	// whose canary drops the error-overlay entry expo-router imports).
+	if (version.includes('-')) {
+		if (range === version) return true;
+		if (!range.includes('-')) return false;
+		const r = parseVersion(range.replace(/^[\^~>=<\s]+/, ''));
+		if (!r || v[0] !== r[0] || v[1] !== r[1] || v[2] !== r[2]) return false;
+		return true;
+	}
 
 	// Exact
 	if (/^\d+\.\d+\.\d+$/.test(range)) {
@@ -131,6 +150,11 @@ function satisfiesRange(version: string, range: string): boolean {
 
 	// * or latest
 	if (range === '*' || range === 'latest' || range === '') return true;
+
+	// Bare partial / x-range: "2", "2.x", "2.0", "2.0.x"
+	const bare = range.replace(/\.[x*]/gi, '');
+	if (/^\d+$/.test(bare)) return v[0] === parseInt(bare);
+	if (/^\d+\.\d+$/.test(bare)) { const [a, b] = bare.split('.').map(Number); return v[0] === a && v[1] === b; }
 
 	return true; // unrecognised range - accept anything
 }
@@ -400,9 +424,24 @@ function findResolution(
 }
 
 /** Fetch + extract a package into `targetDir` (removing a stale copy first), returning its metadata. */
+/**
+ * Resolve an npm alias spec: "npm:<realName>@<realRange>" → the real package to
+ * fetch (e.g. Metro's "@babel/traverse--for-generate-function-map":
+ * "npm:@babel/traverse@^7"). Returns the original name/range for non-aliases.
+ * The install DIRECTORY still uses the alias name; only the fetch is redirected.
+ */
+function resolveFetchSpec(name: string, range: string): { name: string; range: string } {
+	if (!range.startsWith('npm:')) return { name, range };
+	const spec = range.slice(4);
+	const at = spec.lastIndexOf('@');
+	if (at > 0) return { name: spec.slice(0, at), range: spec.slice(at + 1) };
+	return { name: spec, range: 'latest' };
+}
+
 async function fetchExtract(state: InstallState, name: string, range: string, targetDir: string): Promise<RegistryVersionInfo> {
 	return state.limit(async () => {
-		const meta = await fetchPackageInfo(state.npmRegistry, name, range, state.signal);
+		const f = resolveFetchSpec(name, range);
+		const meta = await fetchPackageInfo(state.npmRegistry, f.name, f.range, state.signal);
 		// If a different version already occupies this dir, remove it fully so we
 		// don't mix files from two versions into one directory.
 		if (state.vfs.exists(join(targetDir, 'package.json'))) {
@@ -475,7 +514,8 @@ async function ensureTop(state: InstallState, name: string, range: string): Prom
 	let resolveCount = 0;
 	const p = (async () => {
 		try {
-			const meta = await fetchPackageInfo(state.npmRegistry, name, range, state.signal);
+			const f = resolveFetchSpec(name, range);
+			const meta = await fetchPackageInfo(state.npmRegistry, f.name, f.range, state.signal);
 			resolveCount = await installInto(state, name, range, join(state.topBase, name));
 			state.topVersions.set(name, meta.version);
 			return meta.version;
@@ -1293,6 +1333,7 @@ export async function npmInstallGlobal(
 	packageName: string,
 	ctx: CommandContext,
 	registry: CommandRegistry,
+	kernel?: Kernel,
 ): Promise<number> {
 	const npmRegistry = getRegistry(ctx.env);
 	const startTime = Date.now();

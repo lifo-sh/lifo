@@ -1,0 +1,296 @@
+/** Static anon JWT for the in-VM tinbase (Supabase-style) backend. */
+const TINBASE_ANON_KEY =
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRpbmJhc2UiLCJyb2xlIjoiYW5vbiIsImlhdCI6MTc4MzI3MzU0OSwiZXhwIjoyMDk4NjMzNTQ5fQ.yaaSYTyy2tRkx1myq06zU1ieZiWeJyq_hAZk2qCZEmk';
+
+export function expoSupabaseAppFiles(root: string): Record<string, string> {
+	const files: Record<string, string> = {};
+
+	files[`${root}/package.json`] = JSON.stringify({
+		name: 'expo-supabase-todo',
+		version: '1.0.0',
+		main: 'index.js',
+		scripts: {
+			backend: 'node server.mjs',
+			start: 'node start.mjs',
+		},
+		dependencies: {
+			expo: '~54.0.0',
+			react: '19.1.0',
+			'react-dom': '19.1.0',
+			'react-native': '0.81.5',
+			'react-native-web': '~0.21.0',
+			'@expo/metro-runtime': '~6.1.2',
+			'expo-router': '~6.0.24',
+			'expo-linking': '~8.0.12',
+			'expo-constants': '~18.0.13',
+			'expo-status-bar': '~3.0.9',
+			'react-native-safe-area-context': '~5.6.0',
+			'react-native-screens': '~4.16.0',
+			'@supabase/supabase-js': '^2.110.0',
+			tinbase: '^0.8.1',
+			// JS-based Postgres engine (@tinbase/pg-mem fork: PL/pgSQL, triggers,
+			// RLS). tinbase's createPgmemEngine imports it as `pg-mem`.
+			'pg-mem': 'npm:@tinbase/pg-mem@^3.2.0',
+		},
+	}, null, 2);
+
+	files[`${root}/app.json`] = JSON.stringify({
+		expo: {
+			name: 'expo-supabase-todo',
+			slug: 'expo-supabase-todo',
+			scheme: 'lifoexposupabase',
+			platforms: ['ios', 'android', 'web'],
+			web: { bundler: 'metro', output: 'single' },
+			plugins: ['expo-router'],
+		},
+	}, null, 2);
+
+	// Fast Refresh requires the react-refresh runtime to load before any
+	// component module — it must be the entry's first import.
+	files[`${root}/index.js`] = `import '@expo/metro-runtime';
+import 'expo-router/entry';
+`;
+
+	files[`${root}/babel.config.js`] = `module.exports = function (api) {
+  api.cache(true);
+  return { presets: ['babel-preset-expo'] };
+};
+`;
+
+	files[`${root}/metro.config.js`] = `const { getDefaultConfig } = require('expo/metro-config');
+const config = getDefaultConfig(__dirname);
+
+if (require('os').platform() === 'lifo') {
+  // In-band Metro (no worker forks), no Watchman binary.
+  config.maxWorkers = 1;
+  config.resolver.useWatchman = false;
+}
+
+module.exports = config;
+`;
+
+	// The backend: tinbase's fetch handler wrapped in a node http server, run
+	// inside the VM on port 54321. The database is @tinbase/pg-mem — a pure-JS
+	// Postgres engine — so boot is instant; only JSON crosses the service worker.
+	files[`${root}/server.mjs`] = `import { createBackend, createPgmemEngine } from 'tinbase'
+import http from 'node:http'
+
+const backend = await createBackend({
+  // pg-mem engine: pure-JS Postgres (no wasm) — instant boot. Drop this line
+  // to use the default PGlite (Postgres/wasm) engine instead.
+  engine: await createPgmemEngine(),
+  migrations: [{
+    name: '20240101000000_todos',
+    sql: \`create table if not exists todos (
+      id bigint generated always as identity primary key,
+      title text not null,
+      done boolean not null default false,
+      created_at timestamptz not null default now()
+    );\`,
+  }],
+})
+
+// tinbase is a (Request) => Response handler; expose it over HTTP.
+const server = http.createServer((req, res) => {
+  let body = ''
+  req.on('data', (c) => { body += c })
+  req.on('end', async () => {
+    try {
+      const url = 'http://localhost:54321' + req.url
+      const hasBody = req.method !== 'GET' && req.method !== 'HEAD' && body.length > 0
+      const request = new Request(url, { method: req.method, headers: req.headers, body: hasBody ? body : undefined })
+      const response = await backend.fetch(request)
+      const buf = new Uint8Array(await response.arrayBuffer())
+      const headers = {}
+      response.headers.forEach((v, k) => { headers[k] = v })
+      res.writeHead(response.status, headers)
+      res.end(buf)
+    } catch (e) {
+      res.writeHead(500, { 'content-type': 'text/plain' })
+      res.end('server error: ' + (e && e.message))
+    }
+  })
+})
+
+server.listen(54321, () => {
+  // Print the connection details like \`supabase start\` does — Studio's login
+  // asks for the service_role key.
+  console.log('tinbase running on port 54321 (like supabase start)')
+  console.log('')
+  console.log('         API URL: http://localhost:54321')
+  console.log('      Studio URL: http://localhost:54321/_/  (the Studio preview tab)')
+  console.log('        anon key: ' + backend.anonKey)
+  console.log('service_role key: ' + backend.serviceRoleKey)
+  console.log('')
+  console.log('data persists while this server is running')
+})
+`;
+
+	// Standard Supabase config lives in .env, exactly like a real Expo project —
+	// EXPO_PUBLIC_* vars are inlined by Metro. The only Lifo-specific bit is the
+	// URL path (/_sw/54321), which the service worker routes to the in-VM server.
+	files[`${root}/.env`] = `EXPO_PUBLIC_SUPABASE_URL=/_sw/54321\nEXPO_PUBLIC_SUPABASE_ANON_KEY=${TINBASE_ANON_KEY}\n`;
+
+	files[`${root}/lib/supabase.js`] = `import { createClient } from '@supabase/supabase-js'
+
+// Standard supabase-js against the tinbase server running in the Lifo VM.
+// The URL + anon key come from .env, exactly like a real Supabase project;
+// the URL is resolved to an absolute one so the service worker can route it.
+// (During static rendering there is no \`location\` — any absolute base works,
+// the client only fetches in effects, which don't run server-side.)
+const base = typeof location !== 'undefined' ? location.origin : 'http://localhost:54321'
+const url = new URL(process.env.EXPO_PUBLIC_SUPABASE_URL, base).href
+export const supabase = createClient(url, process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY, {
+  auth: { persistSession: false, autoRefreshToken: false },
+})
+`;
+
+	files[`${root}/app/_layout.js`] = `import { Stack } from 'expo-router';
+
+export default function Layout() {
+  return (
+    <Stack
+      screenOptions={{
+        headerStyle: { backgroundColor: '#1a1b26' },
+        headerTintColor: '#c0caf5',
+        contentStyle: { backgroundColor: '#16161e' },
+      }}
+    />
+  );
+}
+`;
+
+	files[`${root}/app/index.js`] = `import { useEffect, useState } from 'react';
+import {
+  FlatList, Pressable, StyleSheet, Text, TextInput, View,
+} from 'react-native';
+import { supabase } from '../lib/supabase';
+
+export default function Todos() {
+  const [todos, setTodos] = useState([]);
+  const [title, setTitle] = useState('');
+  const [status, setStatus] = useState('connecting…');
+
+  async function refresh() {
+    const { data, error } = await supabase.from('todos').select('*').order('id');
+    if (error) {
+      setStatus('Cannot reach backend: ' + error.message + ' — did you run "npm run backend &"?');
+      return;
+    }
+    setTodos(data ?? []);
+    setStatus((data?.length ?? 0) + ' todo(s) · tinbase (Postgres) in the Lifo VM');
+  }
+
+  useEffect(() => { refresh(); }, []);
+
+  async function add() {
+    const t = title.trim();
+    if (!t) return;
+    setTitle('');
+    await supabase.from('todos').insert({ title: t });
+    refresh();
+  }
+
+  async function toggle(todo) {
+    await supabase.from('todos').update({ done: !todo.done }).eq('id', todo.id);
+    refresh();
+  }
+
+  async function remove(todo) {
+    await supabase.from('todos').delete().eq('id', todo.id);
+    refresh();
+  }
+
+  return (
+    <View style={styles.container}>
+      <Text style={styles.title}>📝 Todos</Text>
+      <Text style={styles.status}>{status}</Text>
+      <View style={styles.row}>
+        <TextInput
+          style={styles.input}
+          value={title}
+          onChangeText={setTitle}
+          placeholder="What needs doing?"
+          placeholderTextColor="#565f89"
+          onSubmitEditing={add}
+        />
+        <Pressable style={styles.addBtn} onPress={add}>
+          <Text style={styles.addBtnText}>Add</Text>
+        </Pressable>
+      </View>
+      <FlatList
+        data={todos}
+        keyExtractor={(t) => String(t.id)}
+        renderItem={({ item }) => (
+          <View style={styles.item}>
+            <Pressable style={styles.itemBody} onPress={() => toggle(item)}>
+              <Text style={styles.check}>{item.done ? '☑' : '☐'}</Text>
+              <Text style={[styles.itemText, item.done && styles.itemDone]}>{item.title}</Text>
+            </Pressable>
+            <Pressable onPress={() => remove(item)} hitSlop={8}>
+              <Text style={styles.del}>✕</Text>
+            </Pressable>
+          </View>
+        )}
+      />
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, padding: 20, maxWidth: 560, width: '100%', alignSelf: 'center' },
+  title: { fontSize: 24, fontWeight: '700', color: '#c0caf5', marginBottom: 4 },
+  status: { fontSize: 12, color: '#565f89', marginBottom: 16 },
+  row: { flexDirection: 'row', gap: 8, marginBottom: 16 },
+  input: {
+    flex: 1, borderWidth: 1, borderColor: '#292e42', borderRadius: 8,
+    paddingHorizontal: 12, paddingVertical: 10, color: '#c0caf5', fontSize: 15,
+  },
+  addBtn: {
+    backgroundColor: '#3ecf8e', borderRadius: 8, paddingHorizontal: 16,
+    justifyContent: 'center',
+  },
+  addBtnText: { color: '#05291b', fontWeight: '700' },
+  item: {
+    flexDirection: 'row', alignItems: 'center', paddingVertical: 10,
+    borderBottomWidth: 1, borderBottomColor: '#292e42',
+  },
+  itemBody: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10 },
+  check: { fontSize: 16, color: '#7aa2f7' },
+  itemText: { color: '#c0caf5', fontSize: 15, flex: 1 },
+  itemDone: { textDecorationLine: 'line-through', color: '#565f89' },
+  del: { color: '#f7768e', fontSize: 14, fontWeight: '700', paddingHorizontal: 6 },
+});
+`;
+
+	// Boot the Expo web dev server (Metro) with Fast Refresh. Portable: on a real
+	// machine this is equivalent to \`expo start --web\`; the Lifo-specific
+	// adaptations only apply when os.platform() === 'lifo'.
+	files[`${root}/start.mjs`] = `import os from 'os';
+const isLifo = os.platform() === 'lifo';
+
+process.env.NODE_ENV = 'development';
+process.env.EXPO_NO_TELEMETRY = '1';
+
+if (isLifo) {
+  process.env.EXPO_OFFLINE = '1';
+  process.env.BROWSER = 'none';    // the preview iframe IS the browser
+  process.env.EXPO_NO_DEPENDENCY_VALIDATION = '1'; // skip the version doctor check
+
+  // Metro's efficient recursive watcher is gated to macOS; Lifo's fs.watch
+  // supports { recursive: true }, so force the native watcher (Fast Refresh).
+  try {
+    const nw = await import('metro-file-map/src/watchers/NativeWatcher.js');
+    const NativeWatcher = nw.default ?? nw;
+    NativeWatcher.isSupported = () => true;
+  } catch (e) { console.warn('[lifo] NativeWatcher patch failed (no Fast Refresh):', e && e.message); }
+}
+
+const { expoStart } = await import('@expo/cli/build/src/start/index.js');
+await expoStart([process.cwd(), '--web', '--port', '8083']);
+console.log('\\nMetro dev server on http://localhost:8083 — open the App preview tab.');
+await new Promise(() => {}); // keep the dev server alive
+`;
+
+	return files;
+}

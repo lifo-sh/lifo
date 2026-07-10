@@ -470,6 +470,47 @@ const CODE_EXPO_ROUTER = `\
 <span class="code-comment"># Fast Refresh: edit app/index.js and save — updates in</span>
 <span class="code-comment"># place (HMR rides the same service-worker shim as Vite).</span>`;
 
+const CODE_CREATE_EXPO_APP = `\
+<span class="code-comment"># Prove it's the real Expo: scaffold an untouched app</span>
+<span class="code-comment"># with create-expo-app and run it 1:1 — stock metro</span>
+<span class="code-comment"># config, stock router, zero Lifo-specific changes.</span>
+
+<span class="code-fn">npx</span> create-expo-app@latest my-app --template blank
+<span class="code-comment">#   ↳ pick an SDK at the prompt (Enter = latest)</span>
+<span class="code-fn">cd</span> my-app
+<span class="code-fn">npx</span> expo install react-dom react-native-web
+<span class="code-fn">npx</span> expo start --web     <span class="code-comment"># Metro dev server :8081</span>
+
+<span class="code-comment"># preview pane → the app, served from inside your browser.</span>
+<span class="code-comment"># the default template works too (drop --template blank):</span>
+<span class="code-comment"># Expo Router tabs + static rendering (SSR), unmodified.</span>
+
+<span class="code-comment"># note: create-expo-app + expo start call api.expo.dev,</span>
+<span class="code-comment"># which needs the relay as a CORS proxy:</span>
+<span class="code-comment">#   node apps/tunnel-server/server.js   (on your machine)</span>`;
+
+const CODE_EXPO_SUPABASE = `\
+<span class="code-comment"># Expo Router + Supabase, both entirely in the VM: a React</span>
+<span class="code-comment"># Native web app (Metro + Fast Refresh) talking supabase-js</span>
+<span class="code-comment"># to a tinbase backend (pure-JS Postgres via pg-mem).</span>
+
+<span class="code-fn">cd</span> expo-supabase
+<span class="code-fn">npm</span> install
+<span class="code-fn">npm</span> run backend &   <span class="code-comment"># tinbase :54321 — prints anon +</span>
+                    <span class="code-comment"># service_role keys (like supabase start)</span>
+<span class="code-fn">npm</span> start           <span class="code-comment"># Metro dev server :8083</span>
+
+<span class="code-comment"># App tab: the todo app. Studio tab: tinbase's dashboard</span>
+<span class="code-comment"># at /_/ — paste the service_role key from the terminal</span>
+<span class="code-comment"># to browse tables, run SQL and watch logs.</span>
+
+<span class="code-comment"># .env — like a real Expo project (inlined by Metro):</span>
+<span class="code-comment">#   EXPO_PUBLIC_SUPABASE_URL=/_sw/54321</span>
+<span class="code-comment">#   EXPO_PUBLIC_SUPABASE_ANON_KEY=eyJhbGci...</span>
+
+<span class="code-keyword">const</span> supabase = <span class="code-fn">createClient</span>(url, anonKey)
+<span class="code-keyword">await</span> supabase.<span class="code-fn">from</span>(<span class="code-string">'todos'</span>).<span class="code-fn">insert</span>({ title })`;
+
 export const codeSnippets: Record<string, string> = {
 	interactive: CODE_INTERACTIVE,
 	headless: CODE_HEADLESS,
@@ -489,4 +530,6 @@ export const codeSnippets: Record<string, string> = {
 	pglite: CODE_PGLITE,
 	expo: CODE_EXPO,
 	'expo-router': CODE_EXPO_ROUTER,
+	'create-expo-app': CODE_CREATE_EXPO_APP,
+	'expo-supabase': CODE_EXPO_SUPABASE,
 };

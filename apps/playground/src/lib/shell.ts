@@ -31,12 +31,18 @@ import gitCommand from 'lifo-pkg-git';
 import ffmpegCommand from 'lifo-pkg-ffmpeg';
 
 export interface BootShellOptions {
-  /** Extra installable-package commands to register. */
+  /** Extra installable-package commands to register. git is always
+   *  registered ('git' entries are accepted for back-compat). */
   pkgs?: Array<'git' | 'ffmpeg'>;
   /** Register node/curl/tunnel + the network/systemctl command set. */
   network?: boolean;
   /** Boot enabled systemd services after sourcing profile (e.g. tunnel). */
   services?: boolean;
+  /** Extra env merged over the kernel default (e.g. LIFO_CORS_PROXY for a
+   *  second terminal in a project example). */
+  env?: Record<string, string>;
+  /** Initial working directory for this shell. */
+  cwd?: string;
 }
 
 interface ShellExecCtx {
@@ -59,11 +65,14 @@ export async function bootShell(
   opts: BootShellOptions = {},
 ): Promise<Shell> {
   const registry = createDefaultRegistry();
-  if (opts.pkgs?.includes('git')) registry.register('git', gitCommand);
+  // git in every shell — it's statically imported anyway, and users expect
+  // `git init`/`git status` to work in all examples.
+  registry.register('git', gitCommand);
   if (opts.pkgs?.includes('ffmpeg')) registry.register('ffmpeg', ffmpegCommand);
   bootLifoPackages(kernel.vfs, registry);
 
-  const env = kernel.getDefaultEnv();
+  const env = { ...kernel.getDefaultEnv(), ...opts.env };
+  if (opts.cwd) env.PWD = opts.cwd;
   const shell = new Shell(terminal, kernel.vfs, registry, env, kernel.processRegistry);
   const processRegistry = shell.getProcessRegistry();
 
@@ -105,6 +114,7 @@ export async function bootShell(
 
   await shell.sourceFile('/etc/profile');
   await shell.sourceFile(env.HOME + '/.bashrc');
+  if (opts.cwd) shell.setCwd(opts.cwd);
   if (opts.services) await kernel.bootServices();
   shell.start();
 

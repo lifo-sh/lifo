@@ -18,6 +18,7 @@ import * as zlibModule from './zlib.js';
 import * as stringDecoderModule from './string_decoder.js';
 import * as ttyModule from './tty.js';
 import * as dnsModule from './dns.js';
+import * as dgramModule from './dgram.js';
 import { createModuleShim } from './module.js';
 import * as readlineModule from './readline.js';
 import * as diagnosticsChannelModule from './diagnostics_channel.js';
@@ -67,6 +68,7 @@ export interface NodeContext {
   dirname: string;
   signal: AbortSignal;
   executeCapture?: (input: string, opts?: { cwd?: string }) => Promise<string>;
+  executeCaptureResult?: (input: string, opts?: { cwd?: string }) => Promise<{ stdout: string; stderr: string; code: number }>;
   portRegistry?: Map<number, VirtualRequestHandler>;
   /**
    * Execute CJS source in the VM's module system and return its module.exports.
@@ -113,9 +115,9 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
       };
     },
     util: () => utilModule,
-    http: () => createHttp(ctx.portRegistry, 'http:'),
-    https: () => createHttp(ctx.portRegistry, 'https:'),
-    child_process: () => createChildProcess(ctx.executeCapture),
+    http: () => createHttp(ctx.portRegistry, 'http:', ctx.env),
+    https: () => createHttp(ctx.portRegistry, 'https:', ctx.env),
+    child_process: () => createChildProcess(ctx.executeCapture, ctx.executeCaptureResult),
     stream: () => {
       // Node.js CJS: require('stream') returns the Stream base class with
       // .Readable, .Writable, .Duplex, .PassThrough, .Stream attached
@@ -166,7 +168,82 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
         return tail;
       };
       S.addAbortSignal = (_signal: unknown, stream: AnyStream) => stream;
+      // Promise-based API (require('stream').promises / 'stream/promises').
+      // @expo/cli's FileSystemResponseCache does `stream.promises.finished(ws)`;
+      // a missing .promises threw "reading 'finished' of undefined".
+      const finishedP = (s: AnyStream): Promise<void> => new Promise((resolve, reject) => {
+        const st = s as AnyStream & { destroyed?: boolean; _ended?: boolean; _writableState?: { finished?: boolean } };
+        if (st.destroyed || st._ended || st._writableState?.finished) { resolve(); return; }
+        let done = false;
+        const ok = () => { if (!done) { done = true; resolve(); } };
+        const bad = (e: unknown) => { if (!done) { done = true; reject(e as Error); } };
+        s.on('finish', ok); s.on('end', ok); s.on('close', ok); s.on('error', bad);
+      });
+      S.promises = {
+        finished: finishedP,
+        pipeline: (...args: unknown[]) => {
+          // Drop trailing callback AND a trailing options object ({ signal })
+          // — expo-server calls pipeline(body, res, { signal }); treating the
+          // options as a stream made us call `.pipe` on it ("streams[i].pipe
+          // is not a function") and the response never flushed.
+          const flat = (args as unknown[]).flat();
+          const streams = flat.filter(
+            (a) => typeof a !== 'function' && !!a && typeof (a as AnyStream).on === 'function',
+          ) as AnyStream[];
+          for (let i = 0; i < streams.length - 1; i++) streams[i].pipe!(streams[i + 1]);
+          return finishedP(streams[streams.length - 1]);
+        },
+      };
       return Stream;
+    },
+    'stream/promises': () => (map.stream() as unknown as { promises: unknown }).promises,
+    // require('stream/consumers') — buffer/text/json/arrayBuffer/blob of a
+    // stream. fetch-nodeshim (pulled in by @expo/cli's fetch wrapper) needs it.
+    // Accepts a Node Readable ('data'/'end'), a WHATWG ReadableStream
+    // (getReader), or any async-iterable.
+    'stream/consumers': () => {
+      const collect = (stream: unknown): Promise<Buffer> => {
+        const s = stream as {
+          getReader?: () => { read(): Promise<{ done: boolean; value?: unknown }> };
+          [Symbol.asyncIterator]?: () => AsyncIterator<unknown>;
+          on?: (ev: string, fn: (...a: unknown[]) => void) => void;
+          destroyed?: boolean; _ended?: boolean;
+        };
+        const toBuf = (c: unknown) => (Buffer.isBuffer(c) ? c : Buffer.from(c as ArrayBuffer | string));
+        if (typeof s.getReader === 'function') {
+          return (async () => {
+            const reader = s.getReader!();
+            const chunks: Buffer[] = [];
+            for (;;) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              if (value !== undefined) chunks.push(toBuf(value));
+            }
+            return Buffer.concat(chunks);
+          })();
+        }
+        if (typeof s[Symbol.asyncIterator] === 'function') {
+          return (async () => {
+            const chunks: Buffer[] = [];
+            for await (const c of s as AsyncIterable<unknown>) chunks.push(toBuf(c));
+            return Buffer.concat(chunks);
+          })();
+        }
+        return new Promise<Buffer>((resolve, reject) => {
+          const chunks: Buffer[] = [];
+          if (!s.on) { resolve(Buffer.alloc(0)); return; }
+          s.on('data', (c: unknown) => chunks.push(toBuf(c)));
+          s.on('end', () => resolve(Buffer.concat(chunks)));
+          s.on('error', (e: unknown) => reject(e as Error));
+        });
+      };
+      return {
+        buffer: collect,
+        arrayBuffer: (s: unknown) => collect(s).then((b) => b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength)),
+        text: (s: unknown) => collect(s).then((b) => b.toString('utf8')),
+        json: (s: unknown) => collect(s).then((b) => JSON.parse(b.toString('utf8'))),
+        blob: (s: unknown) => collect(s).then((b) => new Blob([b])),
+      };
     },
     url: () => urlModule,
     timers: () => timersModule,
@@ -176,6 +253,7 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
     tty: () => ttyModule,
     dns: () => dnsModule,
     'dns/promises': () => dnsModule.promises,
+    dgram: () => dgramModule,
     readline: () => readlineModule,
     'readline/promises': () => readlineModule.promises,
     diagnostics_channel: () => diagnosticsChannelModule,

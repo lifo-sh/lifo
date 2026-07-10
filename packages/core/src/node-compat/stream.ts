@@ -136,6 +136,16 @@ export class Readable extends EventEmitter {
 
   /** Create a Readable from an iterable / async iterable (Node's Readable.from). */
   static from(iterable: Iterable<unknown> | AsyncIterable<unknown>, opts?: ReadableOptions): Readable {
+    // Node treats a string or Buffer/TypedArray as a SINGLE chunk, not an
+    // iterable of chars/bytes. Iterating a Buffer yields numbers, which then
+    // surface downstream as non-Uint8Array chunks (undici's readAllBytes throws
+    // "Received non-Uint8Array chunk" — hit by @expo/cli's response cache).
+    if (typeof iterable === 'string' || iterable instanceof Uint8Array) {
+      const r = new Readable(opts);
+      r.push(iterable);
+      r.push(null);
+      return r;
+    }
     const r = new Readable({ objectMode: true, ...opts });
     (async () => {
       try {

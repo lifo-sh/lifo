@@ -403,7 +403,12 @@ class Parser {
   private parseTrailingRedirections(): RedirectionNode[] {
     const redirections: RedirectionNode[] = [];
     while (this.isRedirectOperator(this.peek().kind)) {
+      const dup = this.peek().kind === TokenKind.RedirectDup;
       const operator = this.advance().value as RedirectionNode['operator'];
+      if (dup) {
+        redirections.push({ operator, target: [] });
+        continue;
+      }
       const targetToken = this.expect(TokenKind.Word);
       redirections.push({
         operator,
@@ -423,7 +428,12 @@ class Parser {
 
       // Check for redirections
       if (this.isRedirectOperator(token.kind)) {
+        const dup = token.kind === TokenKind.RedirectDup;
         const operator = this.advance().value as RedirectionNode['operator'];
+        if (dup) {
+          redirections.push({ operator, target: [] });
+          continue;
+        }
         const targetToken = this.expect(TokenKind.Word);
         redirections.push({
           operator,
@@ -492,6 +502,7 @@ class Parser {
       || kind === TokenKind.RedirectIn
       || kind === TokenKind.RedirectErr
       || kind === TokenKind.RedirectErrAppend
-      || kind === TokenKind.RedirectAll;
+      || kind === TokenKind.RedirectAll
+      || kind === TokenKind.RedirectDup;
   }
 }

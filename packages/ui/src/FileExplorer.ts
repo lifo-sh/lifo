@@ -51,11 +51,11 @@ const STYLES = `
   flex-direction: column;
   height: 100%;
   width: 100%;
-  color: #a9b1d6;
+  color: var(--tk-fg, #a9b1d6);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   font-size: 13px;
   overflow: hidden;
-  background: #1a1b26;
+  background: var(--tk-bg, #1a1b26);
 }
 
 /* ── Toolbar ── */
@@ -64,8 +64,8 @@ const STYLES = `
   align-items: center;
   gap: 4px;
   padding: 6px 8px;
-  border-bottom: 1px solid #2f3146;
-  background: #16161e;
+  border-bottom: 1px solid var(--tk-border, #2f3146);
+  background: var(--tk-bg-dark, #16161e);
   min-height: 36px;
   flex-shrink: 0;
 }
@@ -78,14 +78,14 @@ const STYLES = `
   border: none;
   border-radius: 4px;
   background: transparent;
-  color: #565f89;
+  color: var(--tk-comment, #565f89);
   cursor: pointer;
   font-size: 16px;
   transition: background 0.15s, color 0.15s;
 }
 .lf-toolbar-btn:hover {
-  background: #1e2030;
-  color: #a9b1d6;
+  background: var(--tk-hover, #1e2030);
+  color: var(--tk-fg, #a9b1d6);
 }
 .lf-toolbar-btn:disabled {
   opacity: 0.3;
@@ -106,7 +106,7 @@ const STYLES = `
 .lf-crumb {
   background: none;
   border: none;
-  color: #565f89;
+  color: var(--tk-comment, #565f89);
   font-size: 12px;
   cursor: pointer;
   padding: 2px 4px;
@@ -115,11 +115,11 @@ const STYLES = `
   transition: background 0.15s, color 0.15s;
 }
 .lf-crumb:hover {
-  background: #1e2030;
-  color: #7aa2f7;
+  background: var(--tk-hover, #1e2030);
+  color: var(--tk-blue, #7aa2f7);
 }
 .lf-crumb-sep {
-  color: #2f3146;
+  color: var(--tk-border, #2f3146);
   font-size: 11px;
   user-select: none;
 }
@@ -135,14 +135,14 @@ const STYLES = `
 .lf-tree {
   width: 180px;
   min-width: 140px;
-  border-right: 1px solid #2f3146;
+  border-right: 1px solid var(--tk-border, #2f3146);
   overflow-y: auto;
   padding: 4px 0;
   flex-shrink: 0;
-  background: #16161e;
+  background: var(--tk-bg-dark, #16161e);
 }
 .lf-tree::-webkit-scrollbar { width: 4px; }
-.lf-tree::-webkit-scrollbar-thumb { background: #2f3146; border-radius: 2px; }
+.lf-tree::-webkit-scrollbar-thumb { background: var(--tk-border, #2f3146); border-radius: 2px; }
 
 .lf-tree-item {
   display: flex;
@@ -152,22 +152,22 @@ const STYLES = `
   cursor: pointer;
   white-space: nowrap;
   font-size: 12px;
-  color: #9aa5ce;
+  color: var(--tk-muted, #9aa5ce);
   transition: background 0.1s;
   user-select: none;
 }
 .lf-tree-item:hover {
-  background: #1e2030;
+  background: var(--tk-hover, #1e2030);
 }
 .lf-tree-item.active {
-  background: #292e42;
-  color: #7aa2f7;
+  background: var(--tk-active, #292e42);
+  color: var(--tk-blue, #7aa2f7);
 }
 .lf-tree-chevron {
   display: inline-flex;
   width: 14px;
   font-size: 10px;
-  color: #565f89;
+  color: var(--tk-comment, #565f89);
   flex-shrink: 0;
   transition: transform 0.15s;
 }
@@ -199,22 +199,22 @@ const STYLES = `
   overflow: hidden;
 }
 .lf-list::-webkit-scrollbar { width: 6px; }
-.lf-list::-webkit-scrollbar-thumb { background: #2f3146; border-radius: 3px; }
+.lf-list::-webkit-scrollbar-thumb { background: var(--tk-border, #2f3146); border-radius: 3px; }
 
 .lf-list-header {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 80px 140px;
   gap: 8px;
   padding: 6px 12px;
-  border-bottom: 1px solid #2f3146;
+  border-bottom: 1px solid var(--tk-border, #2f3146);
   font-size: 10px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: #565f89;
+  color: var(--tk-comment, #565f89);
   position: sticky;
   top: 0;
-  background: #1a1b26;
+  background: var(--tk-bg, #1a1b26);
   z-index: 1;
 }
 
@@ -230,10 +230,10 @@ const STYLES = `
   min-height: 30px;
 }
 .lf-list-row:hover {
-  background: #1e2030;
+  background: var(--tk-hover, #1e2030);
 }
 .lf-list-row.selected {
-  background: #292e42;
+  background: var(--tk-active, #292e42);
 }
 
 .lf-list-name {
@@ -256,19 +256,19 @@ const STYLES = `
 .lf-list-size {
   text-align: right;
   font-size: 12px;
-  color: #565f89;
+  color: var(--tk-comment, #565f89);
   font-variant-numeric: tabular-nums;
 }
 
 .lf-list-modified {
   font-size: 12px;
-  color: #565f89;
+  color: var(--tk-comment, #565f89);
 }
 
 .lf-list-empty {
   padding: 24px;
   text-align: center;
-  color: #565f89;
+  color: var(--tk-comment, #565f89);
   font-size: 12px;
 }
 
@@ -286,15 +286,15 @@ const STYLES = `
   justify-content: space-between;
   gap: 8px;
   padding: 6px 12px;
-  border-bottom: 1px solid #2f3146;
-  background: #16161e;
+  border-bottom: 1px solid var(--tk-border, #2f3146);
+  background: var(--tk-bg-dark, #16161e);
   min-height: 36px;
   flex-shrink: 0;
 }
 .lf-viewer-filename {
   font-size: 12px;
   font-weight: 500;
-  color: #c0caf5;
+  color: var(--tk-fg-bright, #c0caf5);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -306,32 +306,32 @@ const STYLES = `
 }
 .lf-viewer-btn {
   padding: 4px 10px;
-  border: 1px solid #2f3146;
+  border: 1px solid var(--tk-border, #2f3146);
   border-radius: 4px;
   background: transparent;
-  color: #9aa5ce;
+  color: var(--tk-muted, #9aa5ce);
   font-size: 11px;
   cursor: pointer;
   transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
 .lf-viewer-btn:hover {
-  background: #1e2030;
-  color: #c0caf5;
+  background: var(--tk-hover, #1e2030);
+  color: var(--tk-fg-bright, #c0caf5);
 }
 .lf-viewer-btn.primary {
-  background: #7aa2f7;
-  color: #1a1b26;
-  border-color: #7aa2f7;
+  background: var(--tk-blue, #7aa2f7);
+  color: var(--tk-bg, #1a1b26);
+  border-color: var(--tk-blue, #7aa2f7);
 }
 .lf-viewer-btn.primary:hover {
-  background: #89b4fa;
+  background: var(--tk-blue-bright, #89b4fa);
 }
 .lf-viewer-textarea {
   flex: 1;
   width: 100%;
   padding: 12px;
-  background: #1a1b26;
-  color: #a9b1d6;
+  background: var(--tk-bg, #1a1b26);
+  color: var(--tk-fg, #a9b1d6);
   border: none;
   resize: none;
   font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", Menlo, monospace;
@@ -357,7 +357,7 @@ const STYLES = `
   min-height: 0;
   overflow: auto;
   padding: 12px;
-  background: #1a1b26;
+  background: var(--tk-bg, #1a1b26);
 }
 .lf-media-container video,
 .lf-media-container audio,
@@ -376,7 +376,7 @@ const STYLES = `
   position: absolute;
   inset: 0;
   background: rgba(122, 162, 247, 0.08);
-  border: 2px dashed #7aa2f7;
+  border: 2px dashed var(--tk-blue, #7aa2f7);
   border-radius: 6px;
   display: flex;
   align-items: center;
@@ -385,8 +385,8 @@ const STYLES = `
   pointer-events: none;
 }
 .lf-drop-overlay span {
-  background: #292e42;
-  color: #7aa2f7;
+  background: var(--tk-active, #292e42);
+  color: var(--tk-blue, #7aa2f7);
   padding: 8px 16px;
   border-radius: 6px;
   font-size: 13px;
@@ -397,8 +397,8 @@ const STYLES = `
 .lf-context-menu {
   position: fixed;
   z-index: 1000;
-  background: #16161e;
-  border: 1px solid #2f3146;
+  background: var(--tk-bg-dark, #16161e);
+  border: 1px solid var(--tk-border, #2f3146);
   border-radius: 6px;
   padding: 4px 0;
   min-width: 160px;
@@ -412,14 +412,14 @@ const STYLES = `
   padding: 6px 12px;
   border: none;
   background: none;
-  color: #a9b1d6;
+  color: var(--tk-fg, #a9b1d6);
   font-size: 12px;
   cursor: pointer;
   text-align: left;
   transition: background 0.1s;
 }
 .lf-context-item:hover {
-  background: #292e42;
+  background: var(--tk-active, #292e42);
 }
 .lf-context-item.danger {
   color: #f7768e;
@@ -432,7 +432,7 @@ const STYLES = `
   padding: 6px 12px;
   border: none;
   background: none;
-  color: #a9b1d6;
+  color: var(--tk-fg, #a9b1d6);
   font-size: 12px;
   cursor: pointer;
   text-align: left;
@@ -440,20 +440,20 @@ const STYLES = `
   position: relative;
 }
 .lf-context-submenu-trigger:hover {
-  background: #292e42;
+  background: var(--tk-active, #292e42);
 }
 .lf-context-submenu-trigger .lf-submenu-arrow {
   margin-left: 12px;
   font-size: 10px;
-  color: #565f89;
+  color: var(--tk-comment, #565f89);
 }
 .lf-context-submenu {
   position: absolute;
   left: 100%;
   top: 0;
   z-index: 1001;
-  background: #16161e;
-  border: 1px solid #2f3146;
+  background: var(--tk-bg-dark, #16161e);
+  border: 1px solid var(--tk-border, #2f3146);
   border-radius: 6px;
   padding: 4px 0;
   min-width: 160px;
@@ -465,15 +465,15 @@ const STYLES = `
 }
 .lf-context-sep {
   height: 1px;
-  background: #2f3146;
+  background: var(--tk-border, #2f3146);
   margin: 4px 0;
 }
 
 /* ── Rename input ── */
 .lf-rename-input {
-  background: #1a1b26;
-  color: #c0caf5;
-  border: 1px solid #7aa2f7;
+  background: var(--tk-bg, #1a1b26);
+  color: var(--tk-fg-bright, #c0caf5);
+  border: 1px solid var(--tk-blue, #7aa2f7);
   border-radius: 3px;
   padding: 1px 4px;
   font-size: 13px;
@@ -496,7 +496,7 @@ const STYLES = `
   padding: 0;
   border: none;
   background: transparent;
-  color: #c0caf5;
+  color: var(--tk-fg-bright, #c0caf5);
   font-size: 12px;
   font-family: inherit;
   outline: none;
@@ -506,11 +506,11 @@ const STYLES = `
 .lf-search-input.visible {
   width: 140px;
   padding: 4px 8px;
-  background: #1a1b26;
-  border: 1px solid #2f3146;
+  background: var(--tk-bg, #1a1b26);
+  border: 1px solid var(--tk-border, #2f3146);
 }
 .lf-search-input.visible:focus {
-  border-color: #7aa2f7;
+  border-color: var(--tk-blue, #7aa2f7);
 }
 `;
 
@@ -801,7 +801,7 @@ export class FileExplorer {
     this.upBtn.addEventListener('click', () => this.goUp());
 
     const sep = document.createElement('div');
-    sep.style.cssText = 'width:1px;height:16px;background:#2f3146;margin:0 2px;';
+    sep.style.cssText = 'width:1px;height:16px;background:var(--tk-border, #2f3146);margin:0 2px;';
 
     this.breadcrumbsEl = document.createElement('div');
     this.breadcrumbsEl.className = 'lf-breadcrumbs';
@@ -958,7 +958,7 @@ export class FileExplorer {
       const nameSpan = document.createElement('span');
       nameSpan.textContent = entry.name;
       if (entry.type === 'directory') {
-        nameSpan.style.color = '#7aa2f7';
+        nameSpan.style.color = 'var(--tk-blue, #7aa2f7)';
       }
       nameCell.append(icon, nameSpan);
 
@@ -1085,7 +1085,7 @@ export class FileExplorer {
         };
       } catch {
         mediaContainer.textContent = '(Unable to read media file)';
-        mediaContainer.style.color = '#565f89';
+        mediaContainer.style.color = 'var(--tk-comment, #565f89)';
       }
 
       viewer.appendChild(mediaContainer);
