@@ -250,7 +250,10 @@ export class ServiceWorkerBridge {
 
 		const handler = this.portRegistry.get(port);
 		if (!handler) {
-			this.respondText(requestId, 404, { 'content-type': 'text/plain' }, `No server listening on port ${port}`);
+			// x-lifo marks this as "port not bound" (vs an app's own 404) so the
+			// service worker can render a friendly auto-reloading page for
+			// document requests while curl/tunnel keep the terse text.
+			this.respondText(requestId, 404, { 'content-type': 'text/plain', 'x-lifo': 'no-server' }, `No server listening on port ${port}`);
 			return;
 		}
 

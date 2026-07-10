@@ -55,6 +55,51 @@ const PATH_SHIM = `(function(){
 })();`;
 
 /**
+ * Friendly page for "nothing is listening on this port" — shown for document
+ * requests instead of the bridge's terse text 404. Polls the same URL and
+ * reloads the moment a server binds the port, so `npm run dev` in the
+ * terminal makes the preview appear without a manual refresh.
+ */
+function noServerPage(port, path) {
+	return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nothing on :${port}</title>
+<style>
+  body { margin:0; min-height:100vh; display:grid; place-items:center; background:#16161e; color:#c0caf5; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .card { text-align:center; padding:2rem; max-width:34rem; }
+  .code { font-size:3rem; font-weight:700; color:#414868; margin:0; }
+  h1 { font-size:1rem; font-weight:600; margin:.75rem 0 .25rem; }
+  p { font-size:.8rem; color:#565f89; line-height:1.6; margin:.25rem 0; }
+  code { color:#7aa2f7; background:#1a1b26; padding:.1rem .4rem; border-radius:4px; }
+  .dot { display:inline-block; width:.5em; height:.5em; border-radius:50%; background:#e0af68; margin-right:.4em; animation:pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity:.25 } }
+</style>
+</head>
+<body>
+<div class="card">
+  <p class="code">404</p>
+  <h1>Nothing is running on port ${port}</h1>
+  <p>Start a dev server in the terminal — e.g. <code>npm run dev &</code> or <code>npm start</code>.</p>
+  <p><span class="dot"></span>waiting for the port — this page reloads automatically</p>
+</div>
+<script>
+  (function poll() {
+    setTimeout(function () {
+      fetch(location.href, { cache: 'no-store' }).then(function (r) {
+        if (r.headers.get('x-lifo') !== 'no-server') location.reload();
+        else poll();
+      }).catch(poll);
+    }, 1500);
+  })();
+</script>
+</body>
+</html>`;
+}
+
+/**
  * Injected into every VM-served HTML page. Replaces same-origin WebSocket with
  * a shim that tunnels through the service worker → host page → in-VM ws server
  * (Vite HMR). WebSockets can't be intercepted by a SW's fetch handler, so the
@@ -270,10 +315,23 @@ async function serveFromVm(event, port, path) {
 	}
 	const headers = {};
 	let contentType = '';
+	let lifoMarker = '';
 	for (const [k, v] of Object.entries(res.headers || {})) {
 		if (STRIP_HEADERS.has(k.toLowerCase())) continue;
 		headers[k] = v;
 		if (k.toLowerCase() === 'content-type') contentType = String(v).toLowerCase();
+		if (k.toLowerCase() === 'x-lifo') lifoMarker = String(v);
+	}
+
+	// Port not bound: render the friendly auto-reloading 404 for documents
+	// (iframes / tabs); non-document requests keep the terse text response.
+	const wantsHtml = event.request.destination === 'document'
+		|| (event.request.headers.get('accept') || '').includes('text/html');
+	if (res.statusCode === 404 && lifoMarker === 'no-server' && wantsHtml) {
+		return new Response(noServerPage(port, path), {
+			status: 404,
+			headers: { 'content-type': 'text/html; charset=utf-8', 'x-lifo': 'no-server' },
+		});
 	}
 
 	// The body arrives as a transferred ArrayBuffer (bodyBuffer) — zero-copy,
