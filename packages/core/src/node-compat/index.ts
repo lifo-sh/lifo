@@ -115,8 +115,8 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
       };
     },
     util: () => utilModule,
-    http: () => createHttp(ctx.portRegistry, 'http:'),
-    https: () => createHttp(ctx.portRegistry, 'https:'),
+    http: () => createHttp(ctx.portRegistry, 'http:', ctx.env),
+    https: () => createHttp(ctx.portRegistry, 'https:', ctx.env),
     child_process: () => createChildProcess(ctx.executeCapture, ctx.executeCaptureResult),
     stream: () => {
       // Node.js CJS: require('stream') returns the Stream base class with

@@ -1,5 +1,6 @@
 import { EventEmitter } from './events.js';
 import type { VirtualRequestHandler, VirtualResponse } from '../kernel/index.js';
+import { makeProxyingFetch } from './proxy-fetch.js';
 
 /** Extended VirtualResponse with a done promise for async middleware */
 export interface VirtualResponseWithDone extends VirtualResponse {
@@ -95,12 +96,14 @@ class ClientRequest extends EventEmitter {
   private aborted = false;
   private portRegistry?: Map<number, VirtualRequestHandler>;
   private protocol: 'http:' | 'https:';
+  private fetchImpl?: typeof fetch;
 
-  constructor(options: RequestOptions, cb?: (res: IncomingMessage) => void, portRegistry?: Map<number, VirtualRequestHandler>, protocol: 'http:' | 'https:' = 'http:') {
+  constructor(options: RequestOptions, cb?: (res: IncomingMessage) => void, portRegistry?: Map<number, VirtualRequestHandler>, protocol: 'http:' | 'https:' = 'http:', fetchImpl?: typeof fetch) {
     super();
     this.options = options;
     this.portRegistry = portRegistry;
     this.protocol = protocol;
+    this.fetchImpl = fetchImpl;
     if (cb) this.on('response', cb as (...args: unknown[]) => void);
 
     // Defer the actual fetch
@@ -174,7 +177,10 @@ class ClientRequest extends EventEmitter {
     const url = `${proto}://${host}${portStr}${path}`;
 
     try {
-      const resp = await fetch(url, {
+      // Use the CORS-proxying fetch when provided (routes api.expo.dev etc.
+      // through the relay in the browser); otherwise the plain global fetch.
+      const doFetch = this.fetchImpl ?? fetch;
+      const resp = await doFetch(url, {
         method: this.options.method || 'GET',
         headers: this.options.headers,
         body: this.options.method !== 'GET' && this.body ? this.body : undefined,
@@ -190,7 +196,11 @@ class ClientRequest extends EventEmitter {
       msg.emit('data', text);
       msg.emit('end');
     } catch (e) {
-      this.emit('error', e);
+      // Defer on a MACROTASK (like Node's async error delivery). Emitting
+      // synchronously let callers that retry-on-error chain the next attempt
+      // in the same microtask turn — a failing endpoint then spun the
+      // browser's main thread forever (frozen tab on `expo start`).
+      setTimeout(() => this.emit('error', e), 0);
     }
   }
 
@@ -545,9 +555,24 @@ class Agent extends EventEmitter {
   destroy(): void {}
 }
 
-export function createHttp(portRegistry?: Map<number, VirtualRequestHandler>, protocol: 'http:' | 'https:' = 'http:') {
+export function createHttp(
+  portRegistry?: Map<number, VirtualRequestHandler>,
+  protocol: 'http:' | 'https:' = 'http:',
+  env?: Record<string, string>,
+) {
   // Track active servers created by this http module instance
   const activeServers: Server[] = [];
+
+  // Outbound requests to known non-CORS hosts (api.expo.dev etc.) must route
+  // through the CORS proxy in the browser — @expo/cli reaches the network via
+  // require('https').request (fetch-nodeshim), not the injected global fetch,
+  // so this module needs the same proxying the node command's fetch gets.
+  // Without it `expo start` froze the tab: the native-modules request to
+  // api.expo.dev died on CORS and the CLI's retry path spun the main thread.
+  const realFetch = (globalThis as { fetch?: typeof fetch }).fetch;
+  const proxiedFetch = env && typeof realFetch === 'function'
+    ? makeProxyingFetch(realFetch.bind(globalThis), env)
+    : undefined;
 
   function httpRequest(
     urlOrOptions: string | RequestOptions,
@@ -576,7 +601,7 @@ export function createHttp(portRegistry?: Map<number, VirtualRequestHandler>, pr
       callback = optionsOrCb as ((res: IncomingMessage) => void) | undefined;
     }
 
-    return new ClientRequest(options, callback, portRegistry, protocol);
+    return new ClientRequest(options, callback, portRegistry, protocol, proxiedFetch);
   }
 
   function httpGet(
