@@ -62,6 +62,58 @@ function makeNodeGlobal(overrides: Record<string, unknown>): Record<string, unkn
 
 import { makeProxyingFetch } from '../../node-compat/proxy-fetch.js';
 import * as nodeTimers from '../../node-compat/timers.js';
+
+/**
+ * Native-backed stand-in for the `fetch-nodeshim` package. minifetch ships its
+ * own http/https-based fetch for old Node; in the VM the NATIVE fetch stack is
+ * strictly better (real web streams and Response objects), and our
+ * CORS-proxying fetch handles the hosts a browser can't reach directly.
+ * Serving this instead of letting minifetch run over our http shims removes a
+ * whole class of impedance bugs (setHeader, stream duck-typing, gzip).
+ *
+ * One critical adaptation: expo's response cache constructs
+ * `new Response(fs.createReadStream(...))` — a NODE stream, which the native
+ * Response coerces to the literal string "[object Object]" (surfacing as
+ * SyntaxError: "[object Object]" is not valid JSON, killing `expo start`).
+ * The Response subclass converts node-style streams to web streams first.
+ */
+function makeFetchNodeshim(fetchImpl: typeof fetch): Record<string, unknown> {
+	const g = globalThis as unknown as Record<string, unknown>;
+	type NodeishStream = { on: (ev: string, fn: (...a: unknown[]) => void) => unknown; getReader?: unknown };
+	const nodeStreamToWeb = (s: NodeishStream): ReadableStream =>
+		new ReadableStream({
+			start(controller) {
+				s.on('data', (chunk: unknown) => {
+					try {
+						controller.enqueue(typeof chunk === 'string' ? new TextEncoder().encode(chunk) : (chunk as Uint8Array));
+					} catch { /* closed */ }
+				});
+				s.on('end', () => { try { controller.close(); } catch { /* closed */ } });
+				s.on('error', (e: unknown) => { try { controller.error(e); } catch { /* closed */ } });
+			},
+		});
+	const NativeResponse = g.Response as typeof Response;
+	class ShimResponse extends NativeResponse {
+		constructor(body?: unknown, init?: ResponseInit) {
+			const b = body as NodeishStream | null | undefined;
+			if (b && typeof b === 'object' && typeof b.on === 'function' && !(b instanceof Uint8Array) && typeof b.getReader !== 'function') {
+				body = nodeStreamToWeb(b);
+			}
+			super(body as BodyInit | null, init);
+		}
+	}
+	return {
+		fetch: fetchImpl,
+		default: fetchImpl,
+		Response: ShimResponse,
+		Request: g.Request,
+		Headers: g.Headers,
+		FormData: g.FormData,
+		Blob: g.Blob,
+		URL: g.URL,
+		URLSearchParams: g.URLSearchParams,
+	};
+}
 import { createConsole } from '../../node-compat/console.js';
 import { Buffer } from '../../node-compat/buffer.js';
 import { VFSError } from '../../kernel/vfs/index.js';
@@ -919,6 +971,10 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 				})
 			: proxying) as typeof fetch;
 
+		// Serve require('fetch-nodeshim') from the native fetch stack — see
+		// makeFetchNodeshim. Built per-run so it uses this run's proxying fetch.
+		const fetchNodeshim = typeof nodeFetch === 'function' ? makeFetchNodeshim(nodeFetch) : undefined;
+
 		// process.exit() handling. While the main script is still executing
 		// synchronously, exit() must throw (to abort it). Once we're purely
 		// event-driven (a long-running server is up and we're just awaiting it),
@@ -1013,6 +1069,9 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			// resolution, since it IS installed (its index.js would load a missing
 			// .node binary). See lightningcssStub.
 			if (name === 'lightningcss') return lightningcssStub;
+			// fetch-nodeshim: serve the native fetch stack (see makeFetchNodeshim) —
+			// intercept BEFORE node_modules resolution since the package IS installed.
+			if (name === 'fetch-nodeshim' && fetchNodeshim) return fetchNodeshim;
 
 			// @babel/core: answer the async API with sync execution (see babel-sync.ts)
 			if (name === '@babel/core') {
@@ -1467,6 +1526,9 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			// resolution, since it IS installed (its index.js would load a missing
 			// .node binary). See lightningcssStub.
 			if (name === 'lightningcss') return lightningcssStub;
+			// fetch-nodeshim: serve the native fetch stack (see makeFetchNodeshim) —
+			// intercept BEFORE node_modules resolution since the package IS installed.
+			if (name === 'fetch-nodeshim' && fetchNodeshim) return fetchNodeshim;
 
 				// @babel/core: answer the async API with sync execution (see babel-sync.ts)
 				if (name === '@babel/core') {
