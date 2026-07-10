@@ -34,8 +34,24 @@ const wsConnClient = new Map();
  * because the SW maps this client's requests by clientId, not by path.
  */
 const PATH_SHIM = `(function(){
-  var m = location.pathname.match(/^\\/_sw\\/\\d+(\\/.*)?$/);
-  if (m) history.replaceState(history.state, '', (m[1] || '/') + location.search + location.hash);
+  var m = location.pathname.match(/^\\/_sw\\/(\\d+)(\\/.*)?$/);
+  if (!m) return;
+  history.replaceState(history.state, '', (m[2] || '/') + location.search + location.hash);
+  // Reload persistence: with the prefix stripped, reloading a top-level
+  // preview tab would hit "/" and load the playground instead. Save the
+  // restore target (with the CURRENT route at unload time, so client-side
+  // navigation is preserved) in per-tab sessionStorage; the playground's
+  // boot script redirects back when it finds the key. Top-level tabs only —
+  // the iframe shares the parent tab's sessionStorage and must not hijack
+  // the parent's reloads.
+  if (window.top === window) {
+    var port = m[1];
+    addEventListener('pagehide', function () {
+      try {
+        sessionStorage.setItem('lifo-preview-restore', JSON.stringify({ url: '/_sw/' + port + location.pathname + location.search + location.hash, t: Date.now() }));
+      } catch (e) {}
+    });
+  }
 })();`;
 
 /**
