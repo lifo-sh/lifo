@@ -60,6 +60,14 @@ export type BuiltinFn = (
 export interface StreamDefaults {
   stdout?: CommandOutputStream;
   stderr?: CommandOutputStream;
+  /**
+   * Abort signal for the commands run under these defaults. Threaded explicitly
+   * (rather than via the mutable `config.getAbortSignal`) so a background job's
+   * signal reaches its inner command even though `getAbortSignal` is restored
+   * synchronously before the job's async body runs — without it, `kill <pid>`
+   * on a background job never propagates to the process it spawned.
+   */
+  abortSignal?: AbortSignal;
 }
 
 export interface InterpreterConfig {
@@ -134,8 +142,14 @@ export class Interpreter {
       this.config.isBackgroundContext = true;
       this.config.getAbortSignal = () => abortController.signal;
 
-      // Background jobs don't get terminal stdin
-      const promise = this.executeListEntries(list.entries, undefined, defaults);
+      // Background jobs don't get terminal stdin. Thread the job's abort signal
+      // through `defaults` so the inner command observes THIS controller (the
+      // one `kill <pid>` aborts), not the parent signal that getAbortSignal is
+      // restored to below before this async body reads it.
+      const promise = this.executeListEntries(list.entries, undefined, {
+        ...defaults,
+        abortSignal: abortController.signal,
+      });
 
       // Restore config
       this.config.isBackgroundContext = wasBackgroundContext;
@@ -573,8 +587,11 @@ export class Interpreter {
             let pid: number | undefined;
             let abortController: AbortController;
 
-            // Get shell signal (may be from background job's abortController)
-            const shellSignal = this.config.getAbortSignal?.() ?? new AbortController().signal;
+            // Get shell signal (may be from background job's abortController).
+            // An explicitly-threaded `defaults.abortSignal` wins: it's how a
+            // background job hands its own signal down without racing the
+            // synchronous restore of config.getAbortSignal.
+            const shellSignal = defaults?.abortSignal ?? this.config.getAbortSignal?.() ?? new AbortController().signal;
 
             if (shouldRegister) {
               // Register process so it's visible in ps from other shells

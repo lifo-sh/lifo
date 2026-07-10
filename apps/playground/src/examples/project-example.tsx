@@ -6,6 +6,7 @@ import { ExamplePanel } from '@/components/example-panel';
 import { TerminalView } from '@/components/terminal-view';
 import { PreviewBrowser } from '@/components/preview-browser';
 import { PreviewTabs, type PreviewTab } from '@/components/preview-tabs';
+import { ProcessManager } from '@/components/process-manager';
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable';
 
 export interface ProjectExampleProps {
@@ -34,6 +35,8 @@ export function ProjectExample({ title, subtitle, files, cwd, previewPort, previ
   // Box id from the SW bridge — routes /_sw/<boxId>/<port>/ to THIS example's
   // VM, so several previews can be alive at once without colliding.
   const [boxId, setBoxId] = useState<string>('');
+  // The booted sandbox, exposed to the per-example process manager.
+  const [sandbox, setSandbox] = useState<Sandbox | null>(null);
 
   const bootTerminal = async (term: Terminal) => {
     // Point the VM's fetch CORS-proxy at this same origin — a /_cors endpoint
@@ -48,6 +51,7 @@ export function ProjectExample({ title, subtitle, files, cwd, previewPort, previ
     });
     // git in every example shell (create-expo-app scaffolds ask to `git init`).
     sandbox.commands.register('git', gitCommand);
+    setSandbox(sandbox);
 
     // No tunnel service here: the service worker below is the browser transport;
     // a relay (ws://localhost:3005) only exists for the CLI, so starting the
@@ -69,6 +73,7 @@ export function ProjectExample({ title, subtitle, files, cwd, previewPort, previ
 
   return (
     <ExamplePanel title={title} subtitle={subtitle}>
+      <div className="relative flex flex-col flex-1 min-h-0">
       {hasPreview ? (
         <ResizablePanelGroup direction="vertical" autoSaveId={`pg-project-${previews?.[0]?.port ?? previewPort}-split`} className="flex-1 min-h-0">
           <ResizablePanel defaultSize={45} minSize={20}>
@@ -95,6 +100,8 @@ export function ProjectExample({ title, subtitle, files, cwd, previewPort, previ
       ) : (
         <div className="flex flex-col flex-1 min-h-0">{terminalPanel}</div>
       )}
+      <ProcessManager sandbox={sandbox} />
+      </div>
     </ExamplePanel>
   );
 }
