@@ -5,6 +5,7 @@ import type { Terminal } from '@lifo-sh/ui';
 import { ExamplePanel } from '@/components/example-panel';
 import { TerminalView } from '@/components/terminal-view';
 import { PreviewBrowser } from '@/components/preview-browser';
+import { PreviewTabs, type PreviewTab } from '@/components/preview-tabs';
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable';
 
 export interface ProjectExampleProps {
@@ -15,6 +16,8 @@ export interface ProjectExampleProps {
   cwd: string;
   /** Virtual port to mount an iframe preview browser for (server examples). */
   previewPort?: number;
+  /** Multiple preview tabs (e.g. App + Studio). Takes precedence over previewPort. */
+  previews?: PreviewTab[];
   /** Extra env for the sandbox (e.g. Expo-friendly defaults for a stock scaffold). */
   env?: Record<string, string>;
 }
@@ -24,9 +27,10 @@ export interface ProjectExampleProps {
  * service-worker-backed preview (bottom), split by a resizable handle. The SW
  * bridge serves /_sw/<port>/ with no host process (last-booted example wins).
  */
-export function ProjectExample({ title, subtitle, files, cwd, previewPort, env }: ProjectExampleProps) {
+export function ProjectExample({ title, subtitle, files, cwd, previewPort, previews, env }: ProjectExampleProps) {
+  const hasPreview = !!(previews?.length || previewPort);
   // null = connecting, true = SW ready, false = unavailable
-  const [swReady, setSwReady] = useState<boolean | null>(previewPort ? null : true);
+  const [swReady, setSwReady] = useState<boolean | null>(hasPreview ? null : true);
 
   const bootTerminal = async (term: Terminal) => {
     const sandbox = await Sandbox.create({ terminal: term, files, cwd, env });
@@ -36,7 +40,7 @@ export function ProjectExample({ title, subtitle, files, cwd, previewPort, env }
     // No tunnel service here: the service worker below is the browser transport;
     // a relay (ws://localhost:3005) only exists for the CLI, so starting the
     // tunnel in the playground just spams reconnect errors.
-    if (!previewPort) return;
+    if (!hasPreview) return;
 
     // Service-worker transport: serve /_sw/<port>/ with no host process.
     const swBridge = new ServiceWorkerBridge(sandbox.kernel.portRegistry);
@@ -52,8 +56,8 @@ export function ProjectExample({ title, subtitle, files, cwd, previewPort, env }
 
   return (
     <ExamplePanel title={title} subtitle={subtitle}>
-      {previewPort ? (
-        <ResizablePanelGroup direction="vertical" autoSaveId={`pg-project-${previewPort}-split`} className="flex-1 min-h-0">
+      {hasPreview ? (
+        <ResizablePanelGroup direction="vertical" autoSaveId={`pg-project-${previews?.[0]?.port ?? previewPort}-split`} className="flex-1 min-h-0">
           <ResizablePanel defaultSize={45} minSize={20}>
             {terminalPanel}
           </ResizablePanel>
@@ -64,7 +68,7 @@ export function ProjectExample({ title, subtitle, files, cwd, previewPort, env }
                 Starting preview…
               </div>
             ) : swReady ? (
-              <PreviewBrowser port={previewPort} />
+              previews?.length ? <PreviewTabs tabs={previews} /> : <PreviewBrowser port={previewPort!} />
             ) : (
               <div className="flex-1 h-full grid place-items-center text-[12px] text-tokyo-comment text-center px-4">
                 Service worker unavailable in this browser — run the tunnel relay and open

@@ -20,7 +20,7 @@ export function tinbaseTodoAppFiles(root: string): Record<string, string> {
 			'@vitejs/plugin-react': '^5.0.0',
 			'@types/react': '^18.3.12',
 			'@types/react-dom': '^18.3.1',
-			tinbase: '^0.1.0',
+			tinbase: '^0.8.1',
 			'@supabase/supabase-js': '^2.110.0',
 		},
 	}, null, 2);

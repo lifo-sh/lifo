@@ -3,6 +3,8 @@ import { useEffect, useRef, useState } from 'react';
 interface PreviewBrowserProps {
   /** In-VM virtual port; the iframe loads /_sw/<port>/ through the service worker. */
   port: number;
+  /** Initial path inside the app (default "/") — e.g. "/_/" for tinbase studio. */
+  initialPath?: string;
 }
 
 /**
@@ -10,8 +12,8 @@ interface PreviewBrowserProps {
  * iframe pointed at /_sw/<port>/. The iframe is a SW-controlled client, so its
  * requests route into the VM; HMR flows through the WebSocket shim.
  */
-export function PreviewBrowser({ port }: PreviewBrowserProps) {
-  const path = `/_sw/${port}/`;
+export function PreviewBrowser({ port, initialPath = '/' }: PreviewBrowserProps) {
+  const path = `/_sw/${port}${initialPath.startsWith('/') ? initialPath : '/' + initialPath}`;
   const [nonce, setNonce] = useState(0);
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [currentUrl, setCurrentUrl] = useState(location.origin + path);
