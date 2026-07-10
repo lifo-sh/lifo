@@ -25,6 +25,20 @@ const clientPorts = new Map();
 const wsConnClient = new Map();
 
 /**
+ * Injected into every VM-served HTML page, FIRST. The /_sw/<port>/ prefix is
+ * only the routing entry — the app must believe it lives at the domain root,
+ * exactly like on a real dev server. Client-side routers (Expo Router, React
+ * Router) match routes against location.pathname; without this they see
+ * /_sw/8081/ and render "Unmatched Route". Strip the prefix from the visible
+ * URL before any app code runs; subsequent fetches stay correctly routed
+ * because the SW maps this client's requests by clientId, not by path.
+ */
+const PATH_SHIM = `(function(){
+  var m = location.pathname.match(/^\\/_sw\\/\\d+(\\/.*)?$/);
+  if (m) history.replaceState(history.state, '', (m[1] || '/') + location.search + location.hash);
+})();`;
+
+/**
  * Injected into every VM-served HTML page. Replaces same-origin WebSocket with
  * a shim that tunnels through the service worker → host page → in-VM ws server
  * (Vite HMR). WebSockets can't be intercepted by a SW's fetch handler, so the
@@ -257,7 +271,7 @@ async function serveFromVm(event, port, path) {
 	// is never touched — this is a proxy-level seam, like the relay's byte pipe.
 	if (contentType.includes('text/html') && bodyBuf) {
 		let html = new TextDecoder().decode(bodyBuf);
-		const tag = `<script>${WS_SHIM}</script>`;
+		const tag = `<script>${PATH_SHIM}</script><script>${WS_SHIM}</script>`;
 		const headIdx = html.indexOf('<head>');
 		html = headIdx !== -1
 			? html.slice(0, headIdx + 6) + tag + html.slice(headIdx + 6)
