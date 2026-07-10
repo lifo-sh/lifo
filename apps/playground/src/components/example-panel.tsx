@@ -1,7 +1,6 @@
 import { type ReactNode, useState } from 'react';
 import { Info, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
-import { useOutputChrome, ReportProcessesProvider } from '@/components/output-chrome';
-import { useTheme } from '@/lib/theme';
+import { useOutputChrome } from '@/components/output-chrome';
 
 interface ExamplePanelProps {
   title: string;
@@ -10,16 +9,13 @@ interface ExamplePanelProps {
 }
 
 /**
- * Compact output-panel chrome (VS Code-like): a full-width navbar, the example
- * body flush beneath it, and a thin status bar at the bottom. The description
- * is collapsed by default (info toggle).
+ * Compact output-panel chrome (VS Code-like): a full-width navbar with the
+ * example body flush beneath it. The description is collapsed by default
+ * (info toggle).
  */
 export function ExamplePanel({ title, subtitle, children }: ExamplePanelProps) {
   const chrome = useOutputChrome();
-  const { mode } = useTheme();
   const [showDesc, setShowDesc] = useState(false);
-  // Reported by the terminal area (null = this example has no box/terminal).
-  const [procs, setProcs] = useState<number | null>(null);
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
@@ -54,28 +50,7 @@ export function ExamplePanel({ title, subtitle, children }: ExamplePanelProps) {
         </div>
       )}
 
-      <ReportProcessesProvider value={setProcs}>
-        <div className="flex-1 min-h-0 flex flex-col">{children}</div>
-      </ReportProcessesProvider>
-
-      {/* Status bar. */}
-      <div className="flex items-center gap-3 h-6 px-3 border-t border-tokyo-border bg-tokyo-bg-dark text-[10.5px] text-tokyo-comment shrink-0 select-none">
-        {procs !== null && (
-          <span className="flex items-center gap-1.5">
-            <span
-              className={
-                'inline-block w-1.5 h-1.5 rounded-full ' + (procs > 0 ? 'bg-tokyo-green' : 'bg-tokyo-comment/50')
-              }
-            />
-            {procs > 0 ? `${procs} running` : 'idle'}
-          </span>
-        )}
-        <span className="ml-auto flex items-center gap-1">
-          <span className="w-1.5 h-1.5 rounded-full bg-tokyo-blue/70" />
-          Lifo VM
-        </span>
-        <span className="uppercase tracking-wide">{mode}</span>
-      </div>
+      <div className="flex-1 min-h-0 flex flex-col">{children}</div>
     </div>
   );
 }

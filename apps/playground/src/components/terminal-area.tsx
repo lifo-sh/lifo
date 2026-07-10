@@ -4,7 +4,6 @@ import { MoreVertical, Plus, Activity, Square, RotateCcw, Download, Upload, X } 
 import { cn } from '@/lib/utils';
 import { TerminalView } from '@/components/terminal-view';
 import { ProcessPanel } from '@/components/process-panel';
-import { useReportProcesses } from '@/components/output-chrome';
 import { listProcesses, killProcess, type InspectableBox } from '@/lib/process-inspector';
 
 interface TerminalAreaProps {
@@ -49,7 +48,6 @@ export function TerminalArea({ bootTab, box, initialLabels, canAdd = true, onRes
   const termCounter = useRef(labels.length);
   const nextId = useRef(labels.length + 1);
   const menuRef = useRef<HTMLDivElement>(null);
-  const reportProcesses = useReportProcesses();
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -59,11 +57,6 @@ export function TerminalArea({ bootTab, box, initialLabels, canAdd = true, onRes
     document.addEventListener('mousedown', onDoc);
     return () => document.removeEventListener('mousedown', onDoc);
   }, [menuOpen]);
-
-  // Feed the example's status bar (null until the box is up).
-  useEffect(() => {
-    reportProcesses?.(box ? procCount : null);
-  }, [procCount, box, reportProcesses]);
 
   const focusTab = (i: number) => {
     setActive(i);

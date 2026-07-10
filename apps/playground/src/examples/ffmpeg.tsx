@@ -1,15 +1,21 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Kernel } from '@lifo-sh/core';
 import { ExamplePanel } from '@/components/example-panel';
-import { TerminalView } from '@/components/terminal-view';
+import { TerminalArea } from '@/components/terminal-area';
 import { FileExplorerView } from '@/components/file-explorer-view';
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable';
-import { createMonacoProvider } from '@/lib/monaco';
+import { createMonacoProvider, setMonacoTheme } from '@/lib/monaco';
 import { bootShell } from '@/lib/shell';
+import { useTheme } from '@/lib/theme';
 
 export default function FfmpegExample() {
   const editorProvider = useMemo(() => createMonacoProvider(), []);
   const [kernel, setKernel] = useState<Kernel | null>(null);
+  const { mode } = useTheme();
+
+  useEffect(() => {
+    setMonacoTheme(mode);
+  }, [mode]);
 
   useEffect(() => {
     let cancelled = false;
@@ -35,6 +41,8 @@ export default function FfmpegExample() {
     };
   }, []);
 
+  const box = kernel ? { kernel, env: kernel.getDefaultEnv() } : null;
+
   return (
     <ExamplePanel
       title="FFmpeg"
@@ -48,7 +56,7 @@ export default function FfmpegExample() {
       {kernel ? (
         <ResizablePanelGroup direction="vertical" autoSaveId="pg-ffmpeg-split" className="flex-1 min-h-0">
           <ResizablePanel defaultSize={62} minSize={30}>
-            <div className="w-full h-full rounded-lg overflow-hidden border border-tokyo-border bg-tokyo-bg">
+            <div className="w-full h-full overflow-hidden">
               <FileExplorerView
                 vfs={kernel.vfs}
                 cwd="/home/user/media"
@@ -59,12 +67,7 @@ export default function FfmpegExample() {
           </ResizablePanel>
           <ResizableHandle className="my-0.5" />
           <ResizablePanel defaultSize={38} minSize={15}>
-            <div className="w-full h-full rounded-lg overflow-hidden border border-tokyo-border bg-tokyo-bg p-2">
-              <TerminalView
-                className="w-full h-full"
-                onReady={(term) => void bootShell(term, kernel, { pkgs: ['git', 'ffmpeg'] })}
-              />
-            </div>
+            <TerminalArea box={box} bootTab={(term) => void bootShell(term, kernel, { pkgs: ['git', 'ffmpeg'] })} />
           </ResizablePanel>
         </ResizablePanelGroup>
       ) : null}

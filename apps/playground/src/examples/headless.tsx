@@ -64,11 +64,13 @@ export default function HeadlessExample() {
 
   return (
     <ExamplePanel title="Headless / AI Agent" subtitle="Programmatic command execution — no terminal UI">
-      <div className="flex flex-col flex-1 min-h-0 p-2 gap-2">
-        <Button size="sm" onClick={run} disabled={running} className="self-start">
-          {running ? 'Running…' : 'Run'}
-        </Button>
-        <pre className="flex-1 min-h-0 bg-tokyo-bg-dark border border-tokyo-border rounded-md px-4 py-3.5 font-code text-xs leading-relaxed whitespace-pre-wrap text-tokyo-fg overflow-y-auto">
+      <div className="flex flex-col flex-1 min-h-0">
+        <div className="flex items-center px-2 py-1.5 border-b border-tokyo-border bg-tokyo-bg-dark shrink-0">
+          <Button size="sm" onClick={run} disabled={running}>
+            {running ? 'Running…' : 'Run'}
+          </Button>
+        </div>
+        <pre className="flex-1 min-h-0 bg-tokyo-bg-dark px-4 py-3 font-code text-xs leading-relaxed whitespace-pre-wrap text-tokyo-fg overflow-y-auto">
           {output || 'Click Run to execute the headless demo (Sandbox API — no terminal).'}
         </pre>
       </div>

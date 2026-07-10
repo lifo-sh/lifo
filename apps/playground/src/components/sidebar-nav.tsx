@@ -11,7 +11,7 @@ interface SidebarNavProps {
 export function SidebarNav({ activeId, onSelect }: SidebarNavProps) {
   const { mode, toggle } = useTheme();
   return (
-    <nav className="h-full flex flex-col overflow-y-auto bg-tokyo-bg-darker">
+    <nav className="h-full flex flex-col overflow-y-auto bg-tokyo-bg-dark">
       <div className="p-4 pb-3 border-b border-tokyo-border shrink-0">
         <div className="flex items-center gap-2">
           <img
