@@ -11,10 +11,8 @@ export default function CreateExpoAppExample() {
           then <code>npx expo start --web</code>. No Lifo-specific edits: Metro runs in-band (the VM
           reports a single CPU) and the preview mounts below on port 8081.
           <span className="block mt-1.5 text-tokyo-comment/80">
-            Note: create-expo-app calls <code>api.expo.dev</code>, which the browser can't reach
-            (no CORS). Run the Lifo relay first — it doubles as a CORS proxy:{' '}
-            <code>node apps/tunnel-server/server.js</code> on your Mac. (A hosted proxy will remove
-            this step later.)
+            create-expo-app calls <code>api.expo.dev</code> (a non-CORS host); the page&apos;s own{' '}
+            <code>/_cors</code> proxy handles it, so no separate relay is needed.
           </span>
         </>
       }

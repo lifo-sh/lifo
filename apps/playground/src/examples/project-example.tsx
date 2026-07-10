@@ -33,7 +33,16 @@ export function ProjectExample({ title, subtitle, files, cwd, previewPort, previ
   const [swReady, setSwReady] = useState<boolean | null>(hasPreview ? null : true);
 
   const bootTerminal = async (term: Terminal) => {
-    const sandbox = await Sandbox.create({ terminal: term, files, cwd, env });
+    // Point the VM's fetch CORS-proxy at this same origin — a /_cors endpoint
+    // served by the Vite dev middleware locally and by the Next.js site in
+    // production. So create-expo-app / `expo start` reach api.expo.dev with no
+    // separate tunnel relay. Caller env wins if it sets LIFO_CORS_PROXY.
+    const sandbox = await Sandbox.create({
+      terminal: term,
+      files,
+      cwd,
+      env: { LIFO_CORS_PROXY: `${location.origin}/_cors?url=`, ...env },
+    });
     // git in every example shell (create-expo-app scaffolds ask to `git init`).
     sandbox.commands.register('git', gitCommand);
 

@@ -3,10 +3,11 @@ import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import path from 'path';
 import { portBridgePlugin } from './src/vite-plugin-port-bridge';
+import { corsProxyPlugin } from './src/vite-plugin-cors-proxy';
 
 export default defineConfig(({ command }) => ({
   base: command === 'build' ? '/playground/' : '/',
-  plugins: [react(), tailwindcss(), portBridgePlugin()],
+  plugins: [react(), tailwindcss(), portBridgePlugin(), corsProxyPlugin()],
   server: {
     port: 5173,
   },
