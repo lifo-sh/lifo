@@ -12,6 +12,7 @@ export interface PreviewTab {
 }
 
 interface PreviewTabsProps {
+  boxId: string;
   tabs: PreviewTab[];
 }
 
@@ -20,11 +21,11 @@ interface PreviewTabsProps {
  * its own PreviewBrowser. All panes stay mounted — switching tabs only toggles
  * visibility, so each preview keeps its state (route, scroll, session).
  */
-export function PreviewTabs({ tabs }: PreviewTabsProps) {
+export function PreviewTabs({ boxId, tabs }: PreviewTabsProps) {
   const [active, setActive] = useState(0);
 
   if (tabs.length === 1) {
-    return <PreviewBrowser port={tabs[0].port} initialPath={tabs[0].path} />;
+    return <PreviewBrowser boxId={boxId} port={tabs[0].port} initialPath={tabs[0].path} />;
   }
 
   return (
@@ -52,7 +53,7 @@ export function PreviewTabs({ tabs }: PreviewTabsProps) {
             className="absolute inset-0"
             style={{ display: i === active ? 'block' : 'none' }}
           >
-            <PreviewBrowser port={tab.port} initialPath={tab.path} />
+            <PreviewBrowser boxId={boxId} port={tab.port} initialPath={tab.path} />
           </div>
         ))}
       </div>

@@ -19,7 +19,7 @@
 					sessionStorage.removeItem('lifo-preview-restore');
 					var r = JSON.parse(raw);
 					// 30s TTL: catch reloads/back, not a deliberate return later.
-					if (r && /^\/_sw\/\d+\//.test(r.url) && Date.now() - r.t < 30000) {
+					if (r && /^\/_sw\/[A-Za-z0-9_-]+\/\d+\//.test(r.url) && Date.now() - r.t < 30000) {
 						location.replace(r.url);
 					}
 				}

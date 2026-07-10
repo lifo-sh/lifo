@@ -31,6 +31,9 @@ export function ProjectExample({ title, subtitle, files, cwd, previewPort, previ
   const hasPreview = !!(previews?.length || previewPort);
   // null = connecting, true = SW ready, false = unavailable
   const [swReady, setSwReady] = useState<boolean | null>(hasPreview ? null : true);
+  // Box id from the SW bridge — routes /_sw/<boxId>/<port>/ to THIS example's
+  // VM, so several previews can be alive at once without colliding.
+  const [boxId, setBoxId] = useState<string>('');
 
   const bootTerminal = async (term: Terminal) => {
     // Point the VM's fetch CORS-proxy at this same origin — a /_cors endpoint
@@ -51,8 +54,9 @@ export function ProjectExample({ title, subtitle, files, cwd, previewPort, previ
     // tunnel in the playground just spams reconnect errors.
     if (!hasPreview) return;
 
-    // Service-worker transport: serve /_sw/<port>/ with no host process.
+    // Service-worker transport: serve /_sw/<boxId>/<port>/ with no host process.
     const swBridge = new ServiceWorkerBridge(sandbox.kernel.portRegistry);
+    setBoxId(swBridge.boxId);
     const ready = await swBridge.connect(`${import.meta.env.BASE_URL}sw.js`, '/');
     setSwReady(ready);
   };
@@ -77,7 +81,9 @@ export function ProjectExample({ title, subtitle, files, cwd, previewPort, previ
                 Starting preview…
               </div>
             ) : swReady ? (
-              previews?.length ? <PreviewTabs tabs={previews} /> : <PreviewBrowser port={previewPort!} />
+              previews?.length
+                ? <PreviewTabs boxId={boxId} tabs={previews} />
+                : <PreviewBrowser boxId={boxId} port={previewPort!} />
             ) : (
               <div className="flex-1 h-full grid place-items-center text-[12px] text-tokyo-comment text-center px-4">
                 Service worker unavailable in this browser — run the tunnel relay and open

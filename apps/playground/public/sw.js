@@ -12,15 +12,25 @@
  * itself) pass through to the network untouched.
  */
 
-const SW_PREFIX = /^\/_sw\/(\d+)(\/.*)?$/;
+// Preview routing. Each example/sandbox in the page is its own "box" (kernel +
+// bridge); the boxId disambiguates them so several previews can be alive at
+// once — and colliding port numbers across examples — all route to the right
+// VM. Two forms:
+//   FULL  /_sw/<boxId>/<port>/<path>  — box explicit (iframe entry URL)
+//   PORT  /_sw/<port>/<path>          — box = the REQUESTING client's box
+// The PORT form keeps sibling-service URLs working with no boxId baked in
+// (e.g. an app's .env EXPO_PUBLIC_SUPABASE_URL=/_sw/54321 → the same box's
+// backend). boxIds are `box_<alnum>` so they never collide with a numeric port.
+const SW_PREFIX = /^\/_sw\/(box_[A-Za-z0-9]+)\/(\d+)(\/.*)?$/;
+const SW_PREFIX_PORT = /^\/_sw\/(\d+)(\/.*)?$/;
 const REQUEST_TIMEOUT_MS = 30000;
 
-/** MessagePort to the VM host page (last connected tab wins, like the relay). */
-let hostPort = null;
-/** requestId → { resolve, timer } */
+/** boxId → MessagePort to that box's host bridge (one per live example). */
+const hostPorts = new Map();
+/** requestId → { resolve, timer } (ids are globally unique across boxes). */
 const pending = new Map();
-/** clientId → virtual port */
-const clientPorts = new Map();
+/** clientId → { boxId, port } */
+const clientBox = new Map();
 /** connId → clientId, for routing WebSocket messages back to the app client */
 const wsConnClient = new Map();
 
@@ -34,9 +44,9 @@ const wsConnClient = new Map();
  * because the SW maps this client's requests by clientId, not by path.
  */
 const PATH_SHIM = `(function(){
-  var m = location.pathname.match(/^\\/_sw\\/(\\d+)(\\/.*)?$/);
+  var m = location.pathname.match(/^\\/_sw\\/([A-Za-z0-9_-]+)\\/(\\d+)(\\/.*)?$/);
   if (!m) return;
-  history.replaceState(history.state, '', (m[2] || '/') + location.search + location.hash);
+  history.replaceState(history.state, '', (m[3] || '/') + location.search + location.hash);
   // Reload persistence: with the prefix stripped, reloading a top-level
   // preview tab would hit "/" and load the playground instead. Save the
   // restore target (with the CURRENT route at unload time, so client-side
@@ -45,10 +55,10 @@ const PATH_SHIM = `(function(){
   // the iframe shares the parent tab's sessionStorage and must not hijack
   // the parent's reloads.
   if (window.top === window) {
-    var port = m[1];
+    var prefix = '/_sw/' + m[1] + '/' + m[2];
     addEventListener('pagehide', function () {
       try {
-        sessionStorage.setItem('lifo-preview-restore', JSON.stringify({ url: '/_sw/' + port + location.pathname + location.search + location.hash, t: Date.now() }));
+        sessionStorage.setItem('lifo-preview-restore', JSON.stringify({ url: prefix + location.pathname + location.search + location.hash, t: Date.now() }));
       } catch (e) {}
     });
   }
@@ -190,12 +200,13 @@ async function routeToClient(connId, msg) {
 self.addEventListener('message', (event) => {
 	const data = event.data || {};
 
-	if (data.type === 'lifo-connect' && event.ports && event.ports[0]) {
-		if (hostPort) {
-			try { hostPort.close(); } catch { /* already closed */ }
-		}
-		hostPort = event.ports[0];
-		hostPort.onmessage = (ev) => {
+	if (data.type === 'lifo-connect' && event.ports && event.ports[0] && data.boxId) {
+		const boxId = data.boxId;
+		const prev = hostPorts.get(boxId);
+		if (prev) { try { prev.close(); } catch { /* already closed */ } }
+		const port = event.ports[0];
+		hostPorts.set(boxId, port);
+		port.onmessage = (ev) => {
 			const msg = ev.data || {};
 			if (msg.type === 'response') {
 				const entry = pending.get(msg.requestId);
@@ -208,37 +219,52 @@ self.addEventListener('message', (event) => {
 				void routeToClient(msg.connId, msg);
 			}
 		};
-		hostPort.postMessage({ type: 'lifo-connected' });
+		port.postMessage({ type: 'lifo-connected' });
 		return;
 	}
 
-	// WebSocket messages from an app client's shim → forward to the host bridge,
-	// tagged with the client's virtual port.
+	// WebSocket messages from an app client's shim → forward to the client's box.
 	if (data.type === 'ws-open' && event.source) {
 		const client = event.source;
 		void (async () => {
-			// An explicit /_sw/<port>/ in the ws URL targets that port (e.g. a
-			// realtime socket to a sibling backend). Otherwise the socket belongs
-			// to the client's own app port.
-			const prefixMatch = data.url.match(SW_PREFIX);
-			let port = prefixMatch ? parseInt(prefixMatch[1], 10) : clientPorts.get(client.id);
-			if (port == null) {
-				// SW may have restarted — re-derive the client's port from its URL.
-				const m = new URL(client.url).pathname.match(SW_PREFIX);
-				if (m) { port = parseInt(m[1], 10); clientPorts.set(client.id, port); }
+			// The client's own box (from its controlling URL).
+			let clientOwn = clientBox.get(client.id);
+			if (!clientOwn) {
+				const cm = new URL(client.url).pathname.match(SW_PREFIX);
+				if (cm) { clientOwn = { boxId: cm[1], port: parseInt(cm[2], 10) }; clientBox.set(client.id, clientOwn); }
 			}
-			if (port == null || !(await ensureHost())) {
+			// Resolve the socket's target: FULL /_sw/<boxId>/<port>/ is explicit;
+			// PORT /_sw/<port>/ is a sibling service in the client's own box;
+			// otherwise it's the client's own app port.
+			const full = data.url.match(SW_PREFIX);
+			const portOnly = !full && data.url.match(SW_PREFIX_PORT);
+			let target;
+			let clean;
+			if (full) {
+				target = { boxId: full[1], port: parseInt(full[2], 10) };
+				clean = full[3] || '/';
+			} else if (portOnly && clientOwn) {
+				target = { boxId: clientOwn.boxId, port: parseInt(portOnly[1], 10) };
+				clean = portOnly[2] || '/';
+			} else {
+				target = clientOwn;
+				clean = data.url;
+			}
+			if (!target || !(await ensureHost(target.boxId))) {
 				client.postMessage({ type: 'ws-close', connId: data.connId });
 				return;
 			}
 			wsConnClient.set(data.connId, client.id);
-			const clean = data.url.replace(SW_PREFIX, (_m, _p, rest) => rest || '/');
-			hostPort.postMessage({ type: 'ws-open', connId: data.connId, port, url: clean, protocol: data.protocol });
+			hostPorts.get(target.boxId).postMessage({ type: 'ws-open', connId: data.connId, port: target.port, url: clean, protocol: data.protocol });
 		})();
 		return;
 	}
 	if ((data.type === 'ws-send' || data.type === 'ws-close') && data.connId) {
-		if (hostPort) hostPort.postMessage(data);
+		// Route to the box that owns this connection's client.
+		const clientId = wsConnClient.get(data.connId);
+		const box = clientId ? clientBox.get(clientId) : null;
+		const p = box ? hostPorts.get(box.boxId) : null;
+		if (p) p.postMessage(data);
 		if (data.type === 'ws-close') wsConnClient.delete(data.connId);
 		return;
 	}
@@ -263,20 +289,21 @@ function b64ToBuf(b64) {
  * idle-termination with no hostPort — ask window clients (the playground tab)
  * to re-announce, and wait briefly for the reconnect.
  */
-async function ensureHost(timeoutMs = 5000) {
-	if (hostPort) return true;
+async function ensureHost(boxId, timeoutMs = 5000) {
+	if (hostPorts.has(boxId)) return true;
 	const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
 	for (const c of clients) c.postMessage({ type: 'lifo-need-host' });
 	const deadline = Date.now() + timeoutMs;
-	while (!hostPort && Date.now() < deadline) {
+	while (!hostPorts.has(boxId) && Date.now() < deadline) {
 		await new Promise((r) => setTimeout(r, 40));
 	}
-	return !!hostPort;
+	return hostPorts.has(boxId);
 }
 
-function vmRequest(port, path, request, bodyB64) {
+function vmRequest(boxId, port, path, request, bodyB64) {
 	return new Promise((resolve) => {
-		if (!hostPort) { resolve(null); return; }
+		const host = hostPorts.get(boxId);
+		if (!host) { resolve(null); return; }
 		const requestId = Math.random().toString(36).slice(2) + Date.now().toString(36);
 		const timer = setTimeout(() => {
 			pending.delete(requestId);
@@ -285,7 +312,7 @@ function vmRequest(port, path, request, bodyB64) {
 		pending.set(requestId, { resolve, timer });
 		const headers = {};
 		for (const [k, v] of request.headers.entries()) headers[k] = v;
-		hostPort.postMessage({
+		host.postMessage({
 			type: 'request',
 			requestId,
 			port,
@@ -300,13 +327,13 @@ function vmRequest(port, path, request, bodyB64) {
 // Hop-by-hop / response-forbidden headers we must not replay
 const STRIP_HEADERS = new Set(['set-cookie', 'content-encoding', 'content-length', 'transfer-encoding', 'connection', 'keep-alive']);
 
-async function serveFromVm(event, port, path) {
+async function serveFromVm(event, boxId, port, path) {
 	let bodyB64 = '';
 	if (event.request.method !== 'GET' && event.request.method !== 'HEAD') {
 		bodyB64 = bufToB64(await event.request.arrayBuffer());
 	}
-	if (!hostPort) await ensureHost();
-	const res = await vmRequest(port, path, event.request, bodyB64);
+	if (!hostPorts.has(boxId)) await ensureHost(boxId);
+	const res = await vmRequest(boxId, port, path, event.request, bodyB64);
 	if (!res) {
 		return new Response(
 			'Lifo VM is not connected. Keep the playground tab open (it hosts the virtual machine), then reload.',
@@ -358,18 +385,18 @@ async function serveFromVm(event, port, path) {
 	return new Response(bodyBuf, { status: res.statusCode || 200, headers });
 }
 
-async function portForRequest(event) {
-	// Subresources: the requesting client determines the app.
+async function boxForRequest(event) {
+	// Subresources: the requesting client determines the box.
 	if (event.clientId) {
-		if (clientPorts.has(event.clientId)) return clientPorts.get(event.clientId);
+		if (clientBox.has(event.clientId)) return clientBox.get(event.clientId);
 		// SW may have restarted and lost the map — re-derive from the client URL.
 		const client = await self.clients.get(event.clientId);
 		if (client) {
 			const m = new URL(client.url).pathname.match(SW_PREFIX);
 			if (m) {
-				const port = parseInt(m[1], 10);
-				clientPorts.set(event.clientId, port);
-				return port;
+				const box = { boxId: m[1], port: parseInt(m[2], 10) };
+				clientBox.set(event.clientId, box);
+				return box;
 			}
 		}
 		return null;
@@ -380,10 +407,10 @@ async function portForRequest(event) {
 		try { ref = new URL(event.request.referrer); } catch { return null; }
 		if (ref.origin !== self.location.origin) return null;
 		const m = ref.pathname.match(SW_PREFIX);
-		if (m) return parseInt(m[1], 10);
+		if (m) return { boxId: m[1], port: parseInt(m[2], 10) };
 		const all = await self.clients.matchAll({ type: 'window' });
 		const refClient = all.find((c) => c.url === event.request.referrer);
-		if (refClient && clientPorts.has(refClient.id)) return clientPorts.get(refClient.id);
+		if (refClient && clientBox.has(refClient.id)) return clientBox.get(refClient.id);
 	}
 	return null;
 }
@@ -392,23 +419,36 @@ self.addEventListener('fetch', (event) => {
 	const url = new URL(event.request.url);
 	if (url.origin !== self.location.origin) return;
 
-	// Entry point: /_sw/<port>/... → strip prefix, map the resulting document.
+	// Entry point: /_sw/<boxId>/<port>/... → strip prefix, map the document.
 	const m = url.pathname.match(SW_PREFIX);
 	if (m) {
-		const port = parseInt(m[1], 10);
-		const path = (m[2] || '/') + url.search;
-		if (event.resultingClientId) clientPorts.set(event.resultingClientId, port);
-		event.respondWith(serveFromVm(event, port, path));
+		const boxId = m[1];
+		const port = parseInt(m[2], 10);
+		const path = (m[3] || '/') + url.search;
+		if (event.resultingClientId) clientBox.set(event.resultingClientId, { boxId, port });
+		event.respondWith(serveFromVm(event, boxId, port, path));
 		return;
 	}
 
-	// Client-based routing: app clients get the VM, everyone else the network.
+	// Sibling-service: /_sw/<port>/... with no boxId → the REQUESTING client's
+	// box, that port (e.g. an app fetching its own backend on 54321).
+	const mp = url.pathname.match(SW_PREFIX_PORT);
+	if (mp) {
+		event.respondWith((async () => {
+			const box = await boxForRequest(event);
+			if (!box) return fetch(event.request);
+			return serveFromVm(event, box.boxId, parseInt(mp[1], 10), (mp[2] || '/') + url.search);
+		})());
+		return;
+	}
+
+	// Client-based routing: app clients get their box's VM, everyone else the network.
 	event.respondWith((async () => {
-		const port = await portForRequest(event);
-		if (port == null) return fetch(event.request);
+		const box = await boxForRequest(event);
+		if (!box) return fetch(event.request);
 		if (event.request.mode === 'navigate' && event.resultingClientId) {
-			clientPorts.set(event.resultingClientId, port);
+			clientBox.set(event.resultingClientId, box);
 		}
-		return serveFromVm(event, port, url.pathname + url.search);
+		return serveFromVm(event, box.boxId, box.port, url.pathname + url.search);
 	})());
 });

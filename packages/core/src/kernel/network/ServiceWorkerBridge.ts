@@ -138,11 +138,28 @@ function base64ToBytes(b64: string): Uint8Array {
 	return out;
 }
 
-/** The bridge that answers the SW's reconnection requests (last connect wins). */
-let activeBridge: ServiceWorkerBridge | null = null;
+/**
+ * Every live bridge, keyed by its box id. Each example/sandbox in the page
+ * owns its OWN kernel + bridge, so the SW must route /_sw/<boxId>/<port>/ to
+ * the RIGHT box — a single "last connect wins" host would break every other
+ * example's preview the moment a new one connected. When the SW restarts (idle
+ * eviction / update) it loses all ports, so every bridge re-announces.
+ */
+const activeBridges = new Map<string, ServiceWorkerBridge>();
 let swListenerInstalled = false;
 
+function makeBoxId(): string {
+	const rnd = (typeof crypto !== 'undefined' && crypto.randomUUID)
+		? crypto.randomUUID()
+		: Math.random().toString(36).slice(2);
+	// Alphanumeric only: the SW's `box_<id>` prefix must be distinguishable from
+	// a bare `/_sw/<port>/` (all-digits) path, so no dashes.
+	return 'box_' + rnd.replace(/[^a-z0-9]/gi, '').slice(0, 10);
+}
+
 export class ServiceWorkerBridge {
+	/** Stable id for this box; the SW routes /_sw/<boxId>/<port>/ here. */
+	readonly boxId: string = makeBoxId();
 	private port: MessagePort | null = null;
 	private wsConns = new Map<string, WsConnection>();
 	private registration: ServiceWorkerRegistration | null = null;
@@ -173,18 +190,16 @@ export class ServiceWorkerBridge {
 		try {
 			this.registration = await navigator.serviceWorker.register(swUrl, { scope });
 			await navigator.serviceWorker.ready;
-			activeBridge = this;
+			activeBridges.set(this.boxId, this);
 
 			if (!swListenerInstalled) {
 				swListenerInstalled = true;
+				// SW woke without state / was replaced → every box re-announces.
+				const reconnectAll = () => { for (const b of activeBridges.values()) void b.reconnect(); };
 				navigator.serviceWorker.addEventListener('message', (event: MessageEvent) => {
-					if ((event.data as { type?: string })?.type === 'lifo-need-host') {
-						void activeBridge?.reconnect();
-					}
+					if ((event.data as { type?: string })?.type === 'lifo-need-host') reconnectAll();
 				});
-				navigator.serviceWorker.addEventListener('controllerchange', () => {
-					void activeBridge?.reconnect();
-				});
+				navigator.serviceWorker.addEventListener('controllerchange', reconnectAll);
 			}
 
 			return this.reconnect();
@@ -200,7 +215,7 @@ export class ServiceWorkerBridge {
 		if (!controller) return false;
 		const channel = new MessageChannel();
 		this.attach(channel.port1);
-		controller.postMessage({ type: 'lifo-connect' }, [channel.port2]);
+		controller.postMessage({ type: 'lifo-connect', boxId: this.boxId }, [channel.port2]);
 		return true;
 	}
 
