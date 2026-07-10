@@ -21,17 +21,24 @@ export function tinbaseTodoAppFiles(root: string): Record<string, string> {
 			'@types/react': '^18.3.12',
 			'@types/react-dom': '^18.3.1',
 			tinbase: '^0.8.1',
+			// JS-based Postgres engine (@tinbase/pg-mem fork: PL/pgSQL, triggers,
+			// RLS). tinbase's createPgmemEngine imports it as `pg-mem`.
+			'pg-mem': 'npm:@tinbase/pg-mem@^3.2.0',
 			'@supabase/supabase-js': '^2.110.0',
 		},
 	}, null, 2);
 
 	// The backend: tinbase's fetch handler wrapped in a node http server, run
-	// inside the VM on port 54321. PGlite (Postgres/wasm) runs here in the VM,
-	// so only JSON crosses the service worker — not the ~16MB wasm.
-	files[`${root}/server.mjs`] = `import { createBackend } from 'tinbase'
+	// inside the VM on port 54321. The database is @tinbase/pg-mem — a pure-JS
+	// Postgres engine (PL/pgSQL, triggers, RLS) — so boot is instant and no
+	// wasm loads; only JSON crosses the service worker.
+	files[`${root}/server.mjs`] = `import { createBackend, createPgmemEngine } from 'tinbase'
 import http from 'node:http'
 
 const backend = await createBackend({
+  // pg-mem engine: pure-JS Postgres (no wasm) — instant boot. Drop this line
+  // to use the default PGlite (Postgres/wasm) engine instead.
+  engine: await createPgmemEngine(),
   migrations: [{
     name: '20240101000000_todos',
     sql: \`create table if not exists todos (
