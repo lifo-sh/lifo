@@ -1,4 +1,5 @@
 import { EventEmitter } from './events.js';
+import { Buffer } from './buffer.js';
 import type { VirtualRequestHandler, VirtualResponse } from '../kernel/index.js';
 import { makeProxyingFetch } from './proxy-fetch.js';
 
@@ -110,13 +111,65 @@ class ClientRequest extends EventEmitter {
     queueMicrotask(() => this.execute());
   }
 
-  write(data: string): void {
-    this.body += data;
+  write(data: string | Uint8Array): boolean {
+    this._chunks.push(data);
+    return true;
   }
 
-  end(data?: string): void {
-    if (data) this.body += data;
+  end(data?: string | Uint8Array): void {
+    if (data != null) this._chunks.push(data);
+    this.emit('finish');
   }
+
+  private _chunks: Array<string | Uint8Array> = [];
+
+  /** Assemble the request body binary-safely (fetch-nodeshim pipes
+   *  Uint8Array chunks; string-concatenating them would corrupt binaries). */
+  private buildBody(): string | Uint8Array | undefined {
+    if (this._chunks.length === 0) return this.body || undefined;
+    if (this._chunks.every((c) => typeof c === 'string')) {
+      return this.body + (this._chunks as string[]).join('');
+    }
+    const enc = new TextEncoder();
+    const parts: Uint8Array[] = [];
+    if (this.body) parts.push(enc.encode(this.body));
+    for (const c of this._chunks) parts.push(typeof c === 'string' ? enc.encode(c) : c);
+    let total = 0;
+    for (const p of parts) total += p.length;
+    const out = new Uint8Array(total);
+    let off = 0;
+    for (const p of parts) { out.set(p, off); off += p.length; }
+    return out;
+  }
+
+  // Node request-header API. fetch-nodeshim (minifetch) sets its headers via
+  // req.setHeader/hasHeader AFTER https.request() returns — without these it
+  // threw "e.setHeader is not a function" and every @expo/cli API call died.
+  setHeader(name: string, value: string | string[] | number): this {
+    if (!this.options.headers) this.options.headers = {};
+    (this.options.headers as Record<string, string>)[name] = Array.isArray(value) ? value.join(', ') : String(value);
+    return this;
+  }
+
+  getHeader(name: string): string | undefined {
+    const h = (this.options.headers ?? {}) as Record<string, string>;
+    const k = Object.keys(h).find((k) => k.toLowerCase() === name.toLowerCase());
+    return k !== undefined ? h[k] : undefined;
+  }
+
+  hasHeader(name: string): boolean {
+    return this.getHeader(name) !== undefined;
+  }
+
+  removeHeader(name: string): void {
+    const h = this.options.headers as Record<string, string> | undefined;
+    if (!h) return;
+    for (const k of Object.keys(h)) {
+      if (k.toLowerCase() === name.toLowerCase()) delete h[k];
+    }
+  }
+
+  flushHeaders(): void {}
 
   abort(): void {
     this.aborted = true;
@@ -142,11 +195,12 @@ class ClientRequest extends EventEmitter {
     if (this.portRegistry && port && (host === 'localhost' || host === '127.0.0.1')) {
       const handler = this.portRegistry.get(port);
       if (handler) {
+        const built = this.buildBody();
         const vReq = {
           method: this.options.method || 'GET',
           url: path,
           headers: this.options.headers || {},
-          body: this.body,
+          body: typeof built === 'string' ? built : built ? new TextDecoder().decode(built) : '',
         };
         const vRes = {
           statusCode: 200,
@@ -180,20 +234,29 @@ class ClientRequest extends EventEmitter {
       // Use the CORS-proxying fetch when provided (routes api.expo.dev etc.
       // through the relay in the browser); otherwise the plain global fetch.
       const doFetch = this.fetchImpl ?? fetch;
+      const method = this.options.method || 'GET';
+      const outBody = this.buildBody();
       const resp = await doFetch(url, {
-        method: this.options.method || 'GET',
+        method,
         headers: this.options.headers,
-        body: this.options.method !== 'GET' && this.body ? this.body : undefined,
+        body: method !== 'GET' && method !== 'HEAD' && outBody ? (outBody as BodyInit) : undefined,
       });
 
       const headers: Record<string, string> = {};
       resp.headers.forEach((v, k) => { headers[k] = v; });
+      // Browser fetch already decompressed the body but keeps the original
+      // content-encoding/length headers — consumers (fetch-nodeshim) would
+      // try to gunzip AGAIN through zlib streams. Drop them.
+      delete headers['content-encoding'];
+      delete headers['content-length'];
 
       const msg = new IncomingMessage(resp.status, resp.statusText, headers);
       this.emit('response', msg);
 
-      const text = await resp.text();
-      msg.emit('data', text);
+      // Deliver bytes (Buffer), not text — binary downloads (tarballs, wasm)
+      // are corrupted by a UTF-8 round-trip.
+      const buf = Buffer.from(new Uint8Array(await resp.arrayBuffer()));
+      msg.emit('data', buf);
       msg.emit('end');
     } catch (e) {
       // Defer on a MACROTASK (like Node's async error delivery). Emitting
