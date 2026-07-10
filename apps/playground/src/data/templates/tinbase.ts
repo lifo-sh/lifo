@@ -66,7 +66,15 @@ const server = http.createServer((req, res) => {
 })
 
 server.listen(54321, () => {
+  // Print the connection details like \`supabase start\` does — Studio's login
+  // asks for the service_role key.
   console.log('tinbase running on port 54321 (like supabase start)')
+  console.log('')
+  console.log('         API URL: http://localhost:54321')
+  console.log('      Studio URL: http://localhost:54321/_/  (the Studio preview tab)')
+  console.log('        anon key: ' + backend.anonKey)
+  console.log('service_role key: ' + backend.serviceRoleKey)
+  console.log('')
   console.log('data persists while this server is running')
 })
 `;
