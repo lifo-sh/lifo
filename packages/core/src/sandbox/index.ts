@@ -5,4 +5,5 @@ export type {
   CommandResult,
   SandboxCommands,
   SandboxFs,
+  SnapshotOptions,
 } from './types.js';

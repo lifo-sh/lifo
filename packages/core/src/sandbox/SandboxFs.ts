@@ -3,6 +3,8 @@ import type { SandboxFs as ISandboxFs } from './types.js';
 import { resolve, dirname } from '../utils/path.js';
 import { createTar, parseTar, compressGzip, decompressGzip } from '../utils/archive.js';
 import type { TarEntry } from '../utils/archive.js';
+import { isExcluded } from '../kernel/vfs/sync.js';
+import type { SnapshotOptions } from './types.js';
 
 /**
  * Async wrapper around VFS that matches the industry-standard filesystem API.
@@ -89,11 +91,12 @@ export class SandboxFsImpl implements ISandboxFs {
   /** Directories to skip during export (virtual providers) */
   private static SKIP_DIRS = new Set(['/proc', '/dev']);
 
-  async exportSnapshot(): Promise<Uint8Array> {
+  async exportSnapshot(options: SnapshotOptions = {}): Promise<Uint8Array> {
     const entries: TarEntry[] = [];
 
     const walk = (absPath: string): void => {
       if (SandboxFsImpl.SKIP_DIRS.has(absPath)) return;
+      if (isExcluded(absPath, options.exclude)) return;
 
       const stat = this.vfs.stat(absPath);
 
@@ -153,6 +156,9 @@ export class SandboxFsImpl implements ISandboxFs {
       if (parent !== '/' && !this.vfs.exists(parent)) {
         this.vfs.mkdir(parent, { recursive: true });
       }
+      // Defensive: never write a file over an existing directory (a restore
+      // must not throw mid-way and leave the tree half-populated).
+      if (this.vfs.exists(path) && this.vfs.stat(path).type === 'directory') continue;
       this.vfs.writeFile(path, entry.data);
     }
   }

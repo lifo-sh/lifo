@@ -6,6 +6,7 @@ export type {
 	CommandResult,
 	SandboxCommands,
 	SandboxFs,
+	SnapshotOptions,
 } from './sandbox/index.js';
 
 // Kernel
@@ -48,6 +49,18 @@ export type {
 	VFSWatchListener,
 	VFSEventType,
 } from './kernel/vfs/index.js';
+
+// VFS sync (full dump, incremental change stream, wire encoding)
+export {
+	dumpChanges,
+	applyChanges,
+	applyChange,
+	watchChanges,
+	serializeChange,
+	deserializeChange,
+	isExcluded,
+} from './kernel/vfs/sync.js';
+export type { VfsChange, SyncOptions } from './kernel/vfs/sync.js';
 
 // Blob storage & content store
 export { MemoryBlobStore, IndexedDBBlobStore, hashBytes } from './kernel/storage/index.js';

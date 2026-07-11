@@ -71,6 +71,15 @@ export interface SandboxCommands {
 
 // ─── SandboxFs ───
 
+export interface SnapshotOptions {
+  /**
+   * Path segments to skip in the snapshot, e.g. `['node_modules', '.git']`.
+   * Excluding `node_modules` yields a much smaller snapshot, but the restored
+   * box must reinstall (`npm install`) before it can run.
+   */
+  exclude?: string[];
+}
+
 export interface SandboxFs {
   readFile(path: string): Promise<string>;
   readFile(path: string, encoding: null): Promise<Uint8Array>;
@@ -83,8 +92,8 @@ export interface SandboxFs {
   rename(oldPath: string, newPath: string): Promise<void>;
   cp(src: string, dest: string): Promise<void>;
   writeFiles(files: Array<{ path: string; content: string | Uint8Array }>): Promise<void>;
-  /** Export entire VFS as a tar.gz snapshot */
-  exportSnapshot(): Promise<Uint8Array>;
+  /** Export the VFS as a tar.gz snapshot (optionally excluding paths). */
+  exportSnapshot(options?: SnapshotOptions): Promise<Uint8Array>;
   /** Restore VFS from a tar.gz snapshot */
   importSnapshot(data: Uint8Array): Promise<void>;
 }

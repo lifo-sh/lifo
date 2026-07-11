@@ -97,18 +97,47 @@ function tarReadOctal(buf: Uint8Array, offset: number, len: number): number {
   return str ? parseInt(str, 8) : 0;
 }
 
+/**
+ * A GNU long-name header ('L') + payload, emitted before an entry whose path
+ * exceeds the 100-byte `name` field. parseTar() decodes typeflag 76 into the
+ * next entry's path, so deep trees (e.g. node_modules) round-trip instead of
+ * truncating and colliding.
+ */
+function tarLongNameBlocks(pathBytes: Uint8Array): Uint8Array[] {
+  const header = new Uint8Array(512);
+  tarWriteString(header, 0, '././@LongLink', 100);
+  tarWriteOctal(header, 100, 0, 8); // mode
+  tarWriteOctal(header, 108, 0, 8); // uid
+  tarWriteOctal(header, 116, 0, 8); // gid
+  tarWriteOctal(header, 124, pathBytes.length + 1, 12); // size = path + NUL
+  tarWriteOctal(header, 136, 0, 12); // mtime
+  header[156] = 76; // 'L'
+  tarWriteString(header, 257, 'ustar', 6);
+  tarWriteString(header, 263, '00', 2);
+  tarWriteString(header, 265, 'user', 32);
+  tarWriteString(header, 297, 'user', 32);
+  tarWriteOctal(header, 148, tarChecksum(header), 7);
+  header[155] = 0x20;
+
+  const payload = new Uint8Array(Math.ceil((pathBytes.length + 1) / 512) * 512);
+  payload.set(pathBytes, 0); // trailing NUL(s) already zero
+  return [header, payload];
+}
+
 export function createTar(entries: TarEntry[]): Uint8Array {
   const blocks: Uint8Array[] = [];
 
   for (const entry of entries) {
-    const header = new Uint8Array(512);
-
     let path = entry.path;
     if (entry.type === 'directory' && !path.endsWith('/')) path += '/';
     // Remove leading /
     if (path.startsWith('/')) path = path.slice(1);
 
-    tarWriteString(header, 0, path, 100);          // name
+    const pathBytes = encode(path);
+    if (pathBytes.length > 100) blocks.push(...tarLongNameBlocks(pathBytes));
+
+    const header = new Uint8Array(512);
+    tarWriteString(header, 0, path, 100);          // name (truncated if long; LongLink wins)
     tarWriteOctal(header, 100, entry.mode, 8);      // mode
     tarWriteOctal(header, 108, 0, 8);               // uid
     tarWriteOctal(header, 116, 0, 8);               // gid
