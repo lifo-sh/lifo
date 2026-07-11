@@ -1845,9 +1845,10 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			// gracefully rather than throw. Race the main promise against
 			// exitPromise: long-running servers await forever (`new Promise(()=>{})`),
 			// so without this a graceful exit would hang on the never-resolving main.
+			let mainResolved = false;
 			if (isEsm && result && typeof result.then === 'function') {
 				interceptExit = true;
-				await Promise.race([result, exitPromise]);
+				await Promise.race([result.then(() => { mainResolved = true; }), exitPromise]);
 			}
 
 			// Graceful async process.exit() (interactive keypress, etc.) — the
@@ -1876,7 +1877,15 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			// aborts, or things stay quiescent for ~300ms (the script finished).
 			if (!activeServers || activeServers.length === 0) {
 				let prevCacheSize = moduleCache.size;
-				let staleCount = 0;
+				let prevPending = pendingAsync;
+				let lastInputSeq = (nodeStdin as unknown as { inputSeq?: number }).inputSeq ?? 0;
+				// Track the last moment real work happened. We stop hanging once nothing
+				// meaningful has moved for a grace window. This is deliberately wall-clock
+				// based (not tick counters): a finished CLI that leaves stdin in raw mode
+				// with a stray keypress listener (e.g. create-expo-app) makes isActive()
+				// and rawMode *flicker*, which would defeat any consecutive-tick counter.
+				let lastWorkMs = 0; // ms elapsed since loop start when work last happened
+				let elapsed = 0;
 				const hardDeadline = Date.now() + 600000; // 10 min cap (long installs)
 				while (Date.now() < hardDeadline) {
 					const tick = await Promise.race([
@@ -1884,14 +1893,30 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 						exitPromise.then(() => 'exit' as const),
 					]);
 					if (tick === 'exit' || ctx.signal.aborted || pendingRejection || asyncExitCode !== null) break;
+					elapsed += 50;
 					activeServers = getActiveServers();
 					if (activeServers && activeServers.length > 0) break;
-					if (pendingAsync > 0 || nodeStdin.isActive() || moduleCache.size > prevCacheSize) {
-						staleCount = 0;
+					const seq = (nodeStdin as unknown as { inputSeq?: number }).inputSeq ?? 0;
+					// "Meaningful work": an async op in flight, a new module loading, a new
+					// async op started, or fresh stdin input (the user answering a prompt).
+					// A merely *attached* stdin consumer sitting idle is NOT work — that's the
+					// leftover-listener case we want to time out.
+					if (
+						pendingAsync > 0 ||
+						moduleCache.size > prevCacheSize ||
+						pendingAsync > prevPending ||
+						seq !== lastInputSeq
+					) {
+						lastWorkMs = elapsed;
 						prevCacheSize = moduleCache.size;
-					} else if (++staleCount >= 6) {
-						break;
+						prevPending = pendingAsync;
+						lastInputSeq = seq;
 					}
+					// Grace after the last meaningful work: short once the ESM main has
+					// resolved, longer otherwise (CJS has no such signal, so lean toward not
+					// cutting a slow-to-answer interactive prompt short).
+					const idleMs = elapsed - lastWorkMs;
+					if (idleMs >= (mainResolved ? 500 : 2500)) break;
 				}
 			}
 

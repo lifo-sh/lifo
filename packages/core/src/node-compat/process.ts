@@ -30,6 +30,7 @@ export function createInteractiveStdin(
       const chunk = await input.read();
       if (chunk === null) { ended = true; emit('end'); break; }
       if (chunk === '') continue;
+      stdin.inputSeq++; // bump so the node runner sees stdin is actively read
       emit('data', encoding ? chunk : Buffer.from(chunk));
     }
   }
@@ -37,6 +38,9 @@ export function createInteractiveStdin(
   const stdin = {
     isTTY: interactive,
     isRaw: false,
+    /** Bumped on every input chunk; the node runner uses it to tell a
+     *  live prompt (recent input) from a leftover consumer (idle). */
+    inputSeq: 0,
     fd: 0,
     readable: true,
     setRawMode(v: boolean) { stdin.isRaw = !!v; setRawMode?.(!!v); return stdin; },
