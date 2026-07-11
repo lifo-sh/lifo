@@ -2,6 +2,7 @@ import { Moon, Sun } from 'lucide-react';
 import { examples, exampleGroups } from '@/examples/registry';
 import { cn } from '@/lib/utils';
 import { useTheme } from '@/lib/theme';
+import { LifoLogo } from '@/components/logo';
 
 interface SidebarNavProps {
   activeId: string;
@@ -14,13 +15,7 @@ export function SidebarNav({ activeId, onSelect }: SidebarNavProps) {
     <nav className="h-full flex flex-col overflow-y-auto bg-tokyo-bg-dark">
       <div className="p-4 pb-3 border-b border-tokyo-border shrink-0">
         <div className="flex items-center gap-2">
-          <img
-            src={`${import.meta.env.BASE_URL}logo.png`}
-            alt="Lifo"
-            width={22}
-            height={22}
-            className="rounded-[5px] shrink-0"
-          />
+          <LifoLogo className="size-[22px] shrink-0" />
           <h1 className="text-lg font-bold text-tokyo-fg-bright tracking-tight">Lifo</h1>
           <button
             onClick={toggle}
