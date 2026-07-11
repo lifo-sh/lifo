@@ -937,6 +937,22 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			? kernelOrPortRegistry
 			: kernelOrPortRegistry?.portRegistry;
 
+		// Count in-flight child processes. create-expo-app shells out to `npm
+		// install` (and post-install steps like `git init`) via child_process; that
+		// work registers no fetch and may go quiet for seconds (e.g. package
+		// extraction/linking), so without tracking it the quiescence wait below
+		// would mistake a busy install for an idle run and hand the prompt back
+		// before the CLI finishes — its final "your project is ready" then prints
+		// after the shell prompt (seen with Expo SDK 57).
+		let pendingChild = 0;
+		const trackChild = <F extends ((...a: never[]) => Promise<unknown>) | undefined>(run: F): F => {
+			if (!run) return run;
+			return ((...a: Parameters<NonNullable<F>>) => {
+				pendingChild++;
+				return Promise.resolve((run as NonNullable<F>)(...a)).finally(() => { pendingChild--; });
+			}) as F;
+		};
+
 		const nodeCtx: NodeContext = {
 			vfs: ctx.vfs,
 			cwd: ctx.cwd,
@@ -952,8 +968,8 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			portRegistry,
 			// Lets child_process (exec/spawn) shell out to other VM commands —
 			// e.g. create-expo-app running `npm pack` / `npm install`.
-			executeCapture: ctx.executeCapture,
-			executeCaptureResult: ctx.executeCaptureResult,
+			executeCapture: trackChild(ctx.executeCapture),
+			executeCaptureResult: trackChild(ctx.executeCaptureResult),
 		};
 
 		// Back require('module')'s Module#_compile with the real module executor
@@ -1897,12 +1913,13 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 					activeServers = getActiveServers();
 					if (activeServers && activeServers.length > 0) break;
 					const seq = (nodeStdin as unknown as { inputSeq?: number }).inputSeq ?? 0;
-					// "Meaningful work": an async op in flight, a new module loading, a new
-					// async op started, or fresh stdin input (the user answering a prompt).
-					// A merely *attached* stdin consumer sitting idle is NOT work — that's the
-					// leftover-listener case we want to time out.
+					// "Meaningful work": an async op in flight, a child process running, a
+					// new module loading, a new async op started, or fresh stdin input (the
+					// user answering a prompt). A merely *attached* stdin consumer sitting
+					// idle is NOT work — that's the leftover-listener case we time out.
 					if (
 						pendingAsync > 0 ||
+						pendingChild > 0 ||
 						moduleCache.size > prevCacheSize ||
 						pendingAsync > prevPending ||
 						seq !== lastInputSeq
