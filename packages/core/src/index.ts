@@ -62,6 +62,10 @@ export {
 } from './kernel/vfs/sync.js';
 export type { VfsChange, SyncOptions } from './kernel/vfs/sync.js';
 
+// VFS snapshot (tar.gz), operable on any VFS — non-blocking (yields)
+export { exportVfsSnapshot, importVfsSnapshot } from './kernel/vfs/snapshot.js';
+export type { VfsSnapshotOptions } from './kernel/vfs/snapshot.js';
+
 // Blob storage & content store
 export { MemoryBlobStore, IndexedDBBlobStore, hashBytes } from './kernel/storage/index.js';
 export { ContentStore, CHUNK_THRESHOLD, CHUNK_SIZE } from './kernel/storage/index.js';
