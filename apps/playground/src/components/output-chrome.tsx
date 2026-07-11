@@ -1,17 +1,13 @@
 import { createContext, useContext } from 'react';
 
 /**
- * Lets the per-example header (ExamplePanel) drive app-shell chrome it doesn't
- * own — namely collapsing/expanding the Code column — without threading props
- * through every example. The provider lives in app-shell; ExamplePanel reads it.
+ * Carries the active example's pre-highlighted code snippet down to the
+ * terminal area, which renders it as a "README.md" tab. Provided by app-shell
+ * so examples don't have to thread it through.
  */
 export interface OutputChrome {
-  /** True when there's a Code column that can be toggled (desktop, code example). */
-  canToggleCode: boolean;
-  /** Whether the Code column is currently open. */
-  codeOpen: boolean;
-  /** Toggle the Code column. */
-  toggleCode: () => void;
+  /** Pre-highlighted HTML for the example's code sample (undefined = none). */
+  snippet?: string;
 }
 
 const OutputChromeContext = createContext<OutputChrome | null>(null);
