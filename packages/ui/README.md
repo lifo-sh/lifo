@@ -1,6 +1,10 @@
 # @lifo-sh/ui
 
-Terminal UI package for [Lifo](https://github.com/lifo-sh/lifo) -- a Linux-like OS that runs natively in the browser. Wraps xterm.js with WebGL rendering and auto-fit.
+Embeddable UI components for [Lifo](https://github.com/lifo-sh/lifo) — a tiny Linux-like VM that runs in the browser. Framework-agnostic: mount them into any DOM element.
+
+- **`Terminal`** — a themeable xterm.js terminal (WebGL, auto-fit) bound to a box's shell.
+- **`PreviewBrowser`** — an iframe view bound to an in-VM port, with optional Chrome-like chrome (back / forward / reload, a friendly address bar, open-in-new-tab).
+- **`FileExplorer`** — a file tree over the box's filesystem (optional editor).
 
 ## Install
 
@@ -10,7 +14,7 @@ npm install @lifo-sh/ui @lifo-sh/core
 
 ## Usage
 
-Create a `Terminal` and pass it to `Sandbox.create()`:
+A terminal, bound to a box's shell:
 
 ```typescript
 import { Terminal } from '@lifo-sh/ui';
@@ -20,29 +24,33 @@ const terminal = new Terminal(document.getElementById('terminal'));
 const sandbox = await Sandbox.create({ terminal });
 ```
 
-### Standalone
+A live preview of an in-VM port:
 
 ```typescript
-import { Terminal } from '@lifo-sh/ui';
+import { ServiceWorkerBridge } from '@lifo-sh/core';
+import { PreviewBrowser } from '@lifo-sh/ui';
 
-const terminal = new Terminal(document.getElementById('terminal'));
-terminal.write('Hello from Lifo!\r\n');
+const bridge = new ServiceWorkerBridge(sandbox.kernel.portRegistry);
+await bridge.connect('/sw.js', '/');
+new PreviewBrowser(document.getElementById('preview'), { bridge, port: 3000 });
 ```
 
-## What's Included
+See the [Embeddable UI docs](https://lifo.sh/docs/embeddable-ui) for a complete from-scratch example (box + terminal + preview) and the full API.
 
-- xterm.js terminal emulator
-- WebGL renderer for GPU-accelerated rendering
-- Auto-fit addon for responsive sizing
-- Implements the `ITerminal` interface from `@lifo-sh/core`
+## What's included
+
+- `Terminal` — xterm.js + WebGL + auto-fit, implements `ITerminal` from `@lifo-sh/core`.
+- `PreviewBrowser` — service-worker-backed iframe preview of an in-VM port.
+- `FileExplorer` — filesystem tree with an optional editor provider.
+- Themed with CSS variables (`--tk-*`, Tokyo Night by default) — override to reskin.
 
 ## Packages
 
 | Package | Description |
 |---|---|
 | [@lifo-sh/core](https://www.npmjs.com/package/@lifo-sh/core) | Kernel, shell, commands, sandbox API |
-| **@lifo-sh/ui** | Terminal UI (xterm.js wrapper) |
-| [lifo-sh](https://www.npmjs.com/package/lifo-sh) | CLI -- run Lifo in your terminal |
+| **@lifo-sh/ui** | Embeddable UI — terminal, preview browser, file explorer |
+| [lifo-sh](https://www.npmjs.com/package/lifo-sh) | CLI — run Lifo in your terminal |
 
 ## Links
 

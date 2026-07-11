@@ -43,6 +43,9 @@ export interface BootShellOptions {
   env?: Record<string, string>;
   /** Initial working directory for this shell. */
   cwd?: string;
+  /** Print the welcome banner (/etc/motd — the Lifo ASCII art + tagline) before
+   *  the first prompt. Used for the interactive example's first terminal. */
+  banner?: boolean;
 }
 
 interface ShellExecCtx {
@@ -116,6 +119,14 @@ export async function bootShell(
   await shell.sourceFile(env.HOME + '/.bashrc');
   if (opts.cwd) shell.setCwd(opts.cwd);
   if (opts.services) await kernel.bootServices();
+
+  // Welcome banner (the Lifo ASCII art + tagline) before the first prompt.
+  // Sandbox.create() prints this when it owns the xterm; the playground creates
+  // its own Terminal (for tab management), so we print it here on request.
+  if (opts.banner) {
+    const motd = kernel.vfs.readFileString('/etc/motd');
+    if (motd) terminal.write(motd.replace(/\r\n/g, '\n').replace(/\n/g, '\r\n'));
+  }
   shell.start();
 
   return shell;

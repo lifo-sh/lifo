@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { Kernel } from '@lifo-sh/core';
 import type { Terminal } from '@lifo-sh/ui';
 import { ExamplePanel } from '@/components/example-panel';
@@ -20,8 +20,12 @@ export default function InteractiveExample() {
     return k;
   }, []);
 
+  // Show the welcome banner on the first terminal only, not every new tab.
+  const firstBoot = useRef(true);
   const bootTab = (term: Terminal) => {
-    void kernelPromise.then((k) => bootShell(term, k, { network: true }));
+    const banner = firstBoot.current;
+    firstBoot.current = false;
+    void kernelPromise.then((k) => bootShell(term, k, { network: true, banner }));
   };
 
   const box = kernel ? { kernel, env: kernel.getDefaultEnv() } : null;

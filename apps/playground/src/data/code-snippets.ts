@@ -365,7 +365,6 @@ const CODE_VITE_REACT = `\
 <span class="code-comment"># A real Vite dev server with React fast-refresh,</span>
 <span class="code-comment"># running entirely in your browser — no host process.</span>
 
-<span class="code-fn">cd</span> react-app
 <span class="code-fn">npm</span> install          <span class="code-comment"># real npm registry, in-browser</span>
 <span class="code-fn">npm</span> run dev &        <span class="code-comment"># vite on virtual port 5173</span>
 
@@ -381,7 +380,6 @@ const CODE_VITE_REACT_TS = `\
 <span class="code-comment"># Vite + React + TypeScript, same stack as the JS</span>
 <span class="code-comment"># example: tsx transforms, fast-refresh, all in-browser.</span>
 
-<span class="code-fn">cd</span> react-ts-app
 <span class="code-fn">npm</span> install
 <span class="code-fn">npm</span> run dev &
 
@@ -408,7 +406,6 @@ const CODE_TINBASE = `\
 <span class="code-comment"># (tinbase.vercel.app) runs as a server IN the VM, and a</span>
 <span class="code-comment"># Vite + React + TS app talks to it via supabase-js.</span>
 
-<span class="code-fn">cd</span> tinbase-todo
 <span class="code-fn">npm</span> install
 <span class="code-fn">npm</span> run backend &   <span class="code-comment"># tinbase on :54321 (like supabase start)</span>
 <span class="code-fn">npm</span> run dev &       <span class="code-comment"># vite + react on :5173</span>
@@ -446,7 +443,6 @@ const CODE_EXPO = `\
 <span class="code-comment"># Metro dev server, running entirely in your browser.</span>
 <span class="code-comment"># Metro runs in-band (maxWorkers=1) and offline.</span>
 
-<span class="code-fn">cd</span> expo-app
 <span class="code-fn">npm</span> install          <span class="code-comment"># expo, react-native, metro, …</span>
 <span class="code-fn">npm</span> run start &      <span class="code-comment"># expo start --web → Metro dev server :8081</span>
 
@@ -461,7 +457,6 @@ const CODE_EXPO_ROUTER = `\
 <span class="code-comment"># server, running entirely in your browser.</span>
 <span class="code-comment"># Routes live in app/ (app/index.js, app/about.js).</span>
 
-<span class="code-fn">cd</span> expo-router-app
 <span class="code-fn">npm</span> install          <span class="code-comment"># expo-router, react-navigation, …</span>
 <span class="code-fn">npm</span> run start &      <span class="code-comment"># expo start --web → Metro dev server :8082</span>
 
@@ -494,7 +489,6 @@ const CODE_EXPO_SUPABASE = `\
 <span class="code-comment"># Native web app (Metro + Fast Refresh) talking supabase-js</span>
 <span class="code-comment"># to a tinbase backend (pure-JS Postgres via pg-mem).</span>
 
-<span class="code-fn">cd</span> expo-supabase
 <span class="code-fn">npm</span> install
 <span class="code-fn">npm</span> run backend &   <span class="code-comment"># tinbase :54321 — prints anon +</span>
                     <span class="code-comment"># service_role keys (like supabase start)</span>

@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Terminal } from '@lifo-sh/ui';
-import { MoreVertical, Plus, Activity, Square, RotateCcw, Download, Upload, X } from 'lucide-react';
+import { MoreVertical, Plus, Activity, Square, RotateCcw, Download, Upload, X, FileText, PanelTopClose } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { TerminalView } from '@/components/terminal-view';
 import { ProcessPanel } from '@/components/process-panel';
+import { CodeColumn } from '@/components/code-column';
+import { useOutputChrome } from '@/components/output-chrome';
 import { listProcesses, killProcess, type InspectableBox } from '@/lib/process-inspector';
 
 interface TerminalAreaProps {
@@ -22,11 +24,16 @@ interface TerminalAreaProps {
   onRestart?: () => void;
   onSnapshot?: () => void;
   onRestore?: () => void;
+  /** When provided, shows a button to fold the terminal panel (preview examples). */
+  onFold?: () => void;
 }
 
 type Tab =
   | { id: number; kind: 'terminal'; label: string }
-  | { id: number; kind: 'process'; label: string };
+  | { id: number; kind: 'process'; label: string }
+  | { id: number; kind: 'readme'; label: string };
+
+const README_ID = -1;
 
 /**
  * Shared terminal chrome (VS Code-like): flat tabbed terminals over one kernel,
@@ -34,13 +41,20 @@ type Tab =
  * restart, snapshot, restore — the latter three only when handlers are given).
  * Every tab is closable; the box menu reopens Processes if it was closed.
  */
-export function TerminalArea({ bootTab, box, initialLabels, canAdd = true, onRestart, onSnapshot, onRestore }: TerminalAreaProps) {
+export function TerminalArea({ bootTab, box, initialLabels, canAdd = true, onRestart, onSnapshot, onRestore, onFold }: TerminalAreaProps) {
   const labels = initialLabels?.length ? initialLabels : ['Terminal 1'];
+  // The example's code sample, captured at mount, shown as a README.md tab.
+  const chrome = useOutputChrome();
+  const snippetRef = useRef(chrome?.snippet);
+  const hasReadme = !!snippetRef.current;
+
   const [tabs, setTabs] = useState<Tab[]>(() => [
+    ...(hasReadme ? [{ id: README_ID, kind: 'readme' as const, label: 'README.md' }] : []),
     ...labels.map((label, i) => ({ id: i, kind: 'terminal' as const, label })),
     { id: labels.length, kind: 'process' as const, label: 'Processes' },
   ]);
-  const [active, setActive] = useState(0);
+  // Default to the first terminal (README is present but not selected).
+  const [active, setActive] = useState(hasReadme ? 1 : 0);
   const [menuOpen, setMenuOpen] = useState(false);
   const [procCount, setProcCount] = useState(0);
   const [busy, setBusy] = useState<string | null>(null);
@@ -85,6 +99,7 @@ export function TerminalArea({ bootTab, box, initialLabels, canAdd = true, onRes
   const closeTab = (i: number, e?: React.MouseEvent) => {
     e?.stopPropagation();
     const closing = tabs[i];
+    if (closing?.kind === 'readme') return; // README is a permanent first tab
     if (closing?.kind === 'terminal') termsRef.current.delete(closing.id);
     setTabs((t) => t.filter((_, idx) => idx !== i));
     setActive((a) => {
@@ -174,20 +189,23 @@ export function TerminalArea({ bootTab, box, initialLabels, canAdd = true, onRes
               )}
             >
               {t.kind === 'process' && <Activity size={12} className={cn('shrink-0', running && 'text-tokyo-green')} />}
-              <span>{t.label}</span>
+              {t.kind === 'readme' && <FileText size={12} className="shrink-0 text-tokyo-blue" />}
+              <span className={cn(t.kind === 'readme' && 'pr-1.5')}>{t.label}</span>
               {running && (
                 <span className="text-[10px] tabular-nums text-tokyo-green">({procCount})</span>
               )}
-              <button
-                onClick={(e) => closeTab(i, e)}
-                title="Close tab"
-                className={cn(
-                  'grid place-items-center w-4 h-4 rounded-sm hover:bg-tokyo-active hover:text-tokyo-fg-bright shrink-0 transition-opacity',
-                  i === active ? 'opacity-70 hover:opacity-100' : 'opacity-0 group-hover:opacity-70',
-                )}
-              >
-                <X size={12} />
-              </button>
+              {t.kind !== 'readme' && (
+                <button
+                  onClick={(e) => closeTab(i, e)}
+                  title="Close tab"
+                  className={cn(
+                    'grid place-items-center w-4 h-4 rounded-sm hover:bg-tokyo-active hover:text-tokyo-fg-bright shrink-0 transition-opacity',
+                    i === active ? 'opacity-70 hover:opacity-100' : 'opacity-0 group-hover:opacity-70',
+                  )}
+                >
+                  <X size={12} />
+                </button>
+              )}
             </div>
             );
           })}
@@ -203,6 +221,15 @@ export function TerminalArea({ bootTab, box, initialLabels, canAdd = true, onRes
           )}
         </div>
         {busy && <span className="text-[10px] text-tokyo-comment px-2 self-center">{busy}</span>}
+        {onFold && (
+          <button
+            onClick={onFold}
+            title="Collapse terminal"
+            className="px-2.5 grid place-items-center bg-transparent border-none text-tokyo-comment hover:text-tokyo-fg-bright hover:bg-tokyo-hover cursor-pointer"
+          >
+            <PanelTopClose size={16} />
+          </button>
+        )}
         <div className="relative flex items-stretch" ref={menuRef}>
           <button
             onClick={() => setMenuOpen((v) => !v)}
@@ -256,6 +283,10 @@ export function TerminalArea({ bootTab, box, initialLabels, canAdd = true, onRes
                       bootTab(term);
                     }}
                   />
+                </div>
+              ) : t.kind === 'readme' ? (
+                <div className="flex-1 min-h-0">
+                  <CodeColumn snippet={snippetRef.current} />
                 </div>
               ) : (
                 <div className="flex-1 min-h-0 flex flex-col">

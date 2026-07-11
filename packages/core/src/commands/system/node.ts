@@ -937,14 +937,51 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			? kernelOrPortRegistry
 			: kernelOrPortRegistry?.portRegistry;
 
-		const nodeCtx: NodeContext = {
+		// Count in-flight child processes. create-expo-app shells out to `npm
+		// install` (and post-install steps like `git init`) via child_process; that
+		// work registers no fetch and may go quiet for seconds (e.g. package
+		// extraction/linking), so without tracking it the quiescence wait below
+		// would mistake a busy install for an idle run and hand the prompt back
+		// before the CLI finishes — its final "your project is ready" then prints
+		// after the shell prompt (seen with Expo SDK 57).
+		let pendingChild = 0;
+		const trackChild = <F extends ((...a: never[]) => Promise<unknown>) | undefined>(run: F): F => {
+			if (!run) return run;
+			return ((...a: Parameters<NonNullable<F>>) => {
+				pendingChild++;
+				return Promise.resolve((run as NonNullable<F>)(...a)).finally(() => { pendingChild--; });
+			}) as F;
+		};
+
+			// Real process.exit() kills the process — nothing prints afterward. In the
+		// VM an event-driven exit() must RETURN rather than throw (so a caller like
+		// Expo's Ctrl+C handler, which calls process.exit() at the end of a try
+		// block, completes cleanly instead of hitting its catch — see requestExit).
+		// That means code after process.exit() keeps running. Gate all program
+		// output on this flag so anything written post-exit stays silent, matching
+		// Node. Without it, Expo's logCmdError prints a CommandError's message and
+		// then — in a fall-through path Node never reaches — re-prints it with the
+		// full stack trace. Set by requestExit() when an exit is handled.
+		let exited = false;
+		const gateStream = <S extends { write: (chunk: string) => unknown }>(s: S): S =>
+			new Proxy(s, {
+				get(target, prop, recv) {
+					if (prop === 'write') {
+						return (chunk: string) => (exited ? true : (target.write as (c: string) => unknown).call(target, chunk));
+					}
+					return Reflect.get(target, prop, recv);
+				},
+			});
+		const runStdout = gateStream(ctx.stdout);
+		const runStderr = gateStream(ctx.stderr);
+	const nodeCtx: NodeContext = {
 			vfs: ctx.vfs,
 			cwd: ctx.cwd,
 			// Copy the shell env once so the node run has its own process.env
 			// (isolated from the shell) that is then shared across all its modules.
 			env: { ...ctx.env },
-			stdout: ctx.stdout,
-			stderr: ctx.stderr,
+			stdout: runStdout,
+			stderr: runStderr,
 			argv: [filename, ...scriptArgs],
 			filename,
 			dirname: dir,
@@ -952,8 +989,8 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			portRegistry,
 			// Lets child_process (exec/spawn) shell out to other VM commands —
 			// e.g. create-expo-app running `npm pack` / `npm install`.
-			executeCapture: ctx.executeCapture,
-			executeCaptureResult: ctx.executeCaptureResult,
+			executeCapture: trackChild(ctx.executeCapture),
+			executeCaptureResult: trackChild(ctx.executeCaptureResult),
 		};
 
 		// Back require('module')'s Module#_compile with the real module executor
@@ -1008,6 +1045,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 		const requestExit = (code: number): boolean => {
 			if (!interceptExit) return false; // still in the sync script → throw as usual
 			asyncExitCode = code;
+			exited = true; // real process.exit() is now dead: silence any post-exit output
 			signalExit();
 			return true;
 		};
@@ -1519,13 +1557,13 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 				argv: nodeCtx.argv,
 				env: nodeCtx.env,
 				cwd: nodeCtx.cwd,
-				stdout: ctx.stdout,
-				stderr: ctx.stderr,
+				stdout: runStdout,
+				stderr: runStderr,
 				stdin: nodeStdin,
 				interactive,
 				onExit: requestExit,
 			});
-			const modConsole = createConsole(ctx.stdout, ctx.stderr);
+			const modConsole = createConsole(runStdout, runStderr);
 
 			function modRequire(name: string): unknown {
 				// Strip node: prefix
@@ -1763,13 +1801,13 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			argv: nodeCtx.argv,
 			env: nodeCtx.env,
 			cwd: nodeCtx.cwd,
-			stdout: ctx.stdout,
-			stderr: ctx.stderr,
+			stdout: runStdout,
+			stderr: runStderr,
 			stdin: nodeStdin,
 			interactive,
 			onExit: requestExit,
 		});
-		const nodeConsole = createConsole(ctx.stdout, ctx.stderr);
+		const nodeConsole = createConsole(runStdout, runStderr);
 
 		const module = { exports: {} as Record<string, unknown> };
 		const exports = module.exports;
@@ -1845,9 +1883,10 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			// gracefully rather than throw. Race the main promise against
 			// exitPromise: long-running servers await forever (`new Promise(()=>{})`),
 			// so without this a graceful exit would hang on the never-resolving main.
+			let mainResolved = false;
 			if (isEsm && result && typeof result.then === 'function') {
 				interceptExit = true;
-				await Promise.race([result, exitPromise]);
+				await Promise.race([result.then(() => { mainResolved = true; }), exitPromise]);
 			}
 
 			// Graceful async process.exit() (interactive keypress, etc.) — the
@@ -1876,7 +1915,15 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			// aborts, or things stay quiescent for ~300ms (the script finished).
 			if (!activeServers || activeServers.length === 0) {
 				let prevCacheSize = moduleCache.size;
-				let staleCount = 0;
+				let prevPending = pendingAsync;
+				let lastInputSeq = (nodeStdin as unknown as { inputSeq?: number }).inputSeq ?? 0;
+				// Track the last moment real work happened. We stop hanging once nothing
+				// meaningful has moved for a grace window. This is deliberately wall-clock
+				// based (not tick counters): a finished CLI that leaves stdin in raw mode
+				// with a stray keypress listener (e.g. create-expo-app) makes isActive()
+				// and rawMode *flicker*, which would defeat any consecutive-tick counter.
+				let lastWorkMs = 0; // ms elapsed since loop start when work last happened
+				let elapsed = 0;
 				const hardDeadline = Date.now() + 600000; // 10 min cap (long installs)
 				while (Date.now() < hardDeadline) {
 					const tick = await Promise.race([
@@ -1884,14 +1931,31 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 						exitPromise.then(() => 'exit' as const),
 					]);
 					if (tick === 'exit' || ctx.signal.aborted || pendingRejection || asyncExitCode !== null) break;
+					elapsed += 50;
 					activeServers = getActiveServers();
 					if (activeServers && activeServers.length > 0) break;
-					if (pendingAsync > 0 || nodeStdin.isActive() || moduleCache.size > prevCacheSize) {
-						staleCount = 0;
+					const seq = (nodeStdin as unknown as { inputSeq?: number }).inputSeq ?? 0;
+					// "Meaningful work": an async op in flight, a child process running, a
+					// new module loading, a new async op started, or fresh stdin input (the
+					// user answering a prompt). A merely *attached* stdin consumer sitting
+					// idle is NOT work — that's the leftover-listener case we time out.
+					if (
+						pendingAsync > 0 ||
+						pendingChild > 0 ||
+						moduleCache.size > prevCacheSize ||
+						pendingAsync > prevPending ||
+						seq !== lastInputSeq
+					) {
+						lastWorkMs = elapsed;
 						prevCacheSize = moduleCache.size;
-					} else if (++staleCount >= 6) {
-						break;
+						prevPending = pendingAsync;
+						lastInputSeq = seq;
 					}
+					// Grace after the last meaningful work: short once the ESM main has
+					// resolved, longer otherwise (CJS has no such signal, so lean toward not
+					// cutting a slow-to-answer interactive prompt short).
+					const idleMs = elapsed - lastWorkMs;
+					if (idleMs >= (mainResolved ? 500 : 2500)) break;
 				}
 			}
 

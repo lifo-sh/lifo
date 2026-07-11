@@ -878,26 +878,7 @@ async function npmRun(ctx: CommandContext, shellExecute?: ShellExecuteFn, regist
 
 	// Register local bin scripts from node_modules so they're available in scripts
 	if (registry) {
-		const nmDir = join(ctx.cwd, 'node_modules');
-		ctx.stderr.write(`[npm:debug] cwd="${ctx.cwd}", nmDir="${nmDir}", exists=${ctx.vfs.exists(nmDir)}\n`);
-		if (ctx.vfs.exists(nmDir)) {
-			try {
-				const entries = ctx.vfs.readdir(nmDir);
-				ctx.stderr.write(`[npm:debug] node_modules entries (${entries.length}): ${entries.slice(0, 20).join(', ')}\n`);
-				// Check vite specifically
-				const vitePkg = join(nmDir, 'vite', 'package.json');
-				if (ctx.vfs.exists(vitePkg)) {
-					const vPkg = JSON.parse(ctx.vfs.readFileString(vitePkg));
-					ctx.stderr.write(`[npm:debug] vite pkg.bin=${JSON.stringify(vPkg.bin)}\n`);
-				} else {
-					ctx.stderr.write(`[npm:debug] vite/package.json not found at ${vitePkg}\n`);
-				}
-			} catch (e) { ctx.stderr.write(`[npm:debug] readdir error: ${e}\n`); }
-		}
-		const count = registerLocalBins(ctx.vfs, ctx.cwd, registry, kernel);
-		ctx.stderr.write(`[npm:debug] registered ${count} local bins, script="${script}"\n`);
-		const firstWord = script.trim().split(/\s+/)[0];
-		ctx.stderr.write(`[npm:debug] first command: "${firstWord}", has=${registry.has(firstWord)}\n`);
+		registerLocalBins(ctx.vfs, ctx.cwd, registry, kernel);
 	}
 
 	// For simple scripts (single command, no shell operators), invoke directly
