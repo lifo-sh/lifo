@@ -1,6 +1,6 @@
 {
   "name": "lifo-pkg-git",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Git command for Lifo, powered by isomorphic-git",
   "license": "MIT",
   "author": "Sanket Sahu",

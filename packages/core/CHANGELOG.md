@@ -1,5 +1,11 @@
 # @lifo-sh/core
 
+## 0.6.0
+
+### Minor Changes
+
+- node-compat fixes: prompt-based CLIs like `create-expo-app` return to the shell prompt on their own (raw-mode leftover + in-flight child-process tracking in the `node` runner); output is silenced after `process.exit()` so error stacks match Node; `npm run` no longer prints internal debug lines. Version realigned across the linked `@lifo-sh` suite.
+
 ## 0.3.0
 
 ### Minor Changes

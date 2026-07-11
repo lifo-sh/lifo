@@ -1,5 +1,11 @@
 # @lifo-sh/ui
 
+## 0.6.0
+
+### Minor Changes
+
+- Add `PreviewBrowser` — an embeddable, framework-agnostic preview of an in-VM port (a service-worker-backed iframe with optional back/forward/reload chrome and a friendly address bar). `@lifo-sh/ui` now covers Terminal, PreviewBrowser, and FileExplorer.
+
 ## 0.3.0
 
 ### Minor Changes

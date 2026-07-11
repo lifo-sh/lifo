@@ -1,6 +1,6 @@
 {
   "name": "lifo-pkg-ffmpeg",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "FFmpeg command for Lifo, powered by ffmpeg.wasm",
   "license": "MIT",
   "author": "Sanket Sahu",

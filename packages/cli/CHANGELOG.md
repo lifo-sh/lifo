@@ -1,5 +1,11 @@
 # lifo-sh
 
+## 0.6.0
+
+### Minor Changes
+
+- Version alignment across the linked `@lifo-sh` suite (no functional changes).
+
 ## 0.3.0
 
 ### Minor Changes
