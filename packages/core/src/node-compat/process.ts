@@ -192,9 +192,6 @@ export function createProcess(opts: ProcessOptions) {
       // main script already settled), let it — returning instead of throwing
       // so a caller like Expo's Ctrl+C handler completes its try block cleanly.
       if (opts.onExit?.(code)) return undefined as never;
-      if (code !== 0) {
-        opts.stderr.write(`[process.exit] code=${code}\n`);
-      }
       throw new ProcessExitError(code);
     },
     // Report a TTY on interactive runs so CLIs that gate their interactive UI on

@@ -953,14 +953,35 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			}) as F;
 		};
 
-		const nodeCtx: NodeContext = {
+			// Real process.exit() kills the process — nothing prints afterward. In the
+		// VM an event-driven exit() must RETURN rather than throw (so a caller like
+		// Expo's Ctrl+C handler, which calls process.exit() at the end of a try
+		// block, completes cleanly instead of hitting its catch — see requestExit).
+		// That means code after process.exit() keeps running. Gate all program
+		// output on this flag so anything written post-exit stays silent, matching
+		// Node. Without it, Expo's logCmdError prints a CommandError's message and
+		// then — in a fall-through path Node never reaches — re-prints it with the
+		// full stack trace. Set by requestExit() when an exit is handled.
+		let exited = false;
+		const gateStream = <S extends { write: (chunk: string) => unknown }>(s: S): S =>
+			new Proxy(s, {
+				get(target, prop, recv) {
+					if (prop === 'write') {
+						return (chunk: string) => (exited ? true : (target.write as (c: string) => unknown).call(target, chunk));
+					}
+					return Reflect.get(target, prop, recv);
+				},
+			});
+		const runStdout = gateStream(ctx.stdout);
+		const runStderr = gateStream(ctx.stderr);
+	const nodeCtx: NodeContext = {
 			vfs: ctx.vfs,
 			cwd: ctx.cwd,
 			// Copy the shell env once so the node run has its own process.env
 			// (isolated from the shell) that is then shared across all its modules.
 			env: { ...ctx.env },
-			stdout: ctx.stdout,
-			stderr: ctx.stderr,
+			stdout: runStdout,
+			stderr: runStderr,
 			argv: [filename, ...scriptArgs],
 			filename,
 			dirname: dir,
@@ -1024,6 +1045,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 		const requestExit = (code: number): boolean => {
 			if (!interceptExit) return false; // still in the sync script → throw as usual
 			asyncExitCode = code;
+			exited = true; // real process.exit() is now dead: silence any post-exit output
 			signalExit();
 			return true;
 		};
@@ -1535,13 +1557,13 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 				argv: nodeCtx.argv,
 				env: nodeCtx.env,
 				cwd: nodeCtx.cwd,
-				stdout: ctx.stdout,
-				stderr: ctx.stderr,
+				stdout: runStdout,
+				stderr: runStderr,
 				stdin: nodeStdin,
 				interactive,
 				onExit: requestExit,
 			});
-			const modConsole = createConsole(ctx.stdout, ctx.stderr);
+			const modConsole = createConsole(runStdout, runStderr);
 
 			function modRequire(name: string): unknown {
 				// Strip node: prefix
@@ -1779,13 +1801,13 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			argv: nodeCtx.argv,
 			env: nodeCtx.env,
 			cwd: nodeCtx.cwd,
-			stdout: ctx.stdout,
-			stderr: ctx.stderr,
+			stdout: runStdout,
+			stderr: runStderr,
 			stdin: nodeStdin,
 			interactive,
 			onExit: requestExit,
 		});
-		const nodeConsole = createConsole(ctx.stdout, ctx.stderr);
+		const nodeConsole = createConsole(runStdout, runStderr);
 
 		const module = { exports: {} as Record<string, unknown> };
 		const exports = module.exports;
