@@ -49,7 +49,29 @@ Reproducible numbers behind the claims, so "~0 ms boot, $0 infra" is backed by d
 - [ ] Dev-server cold-start (Vite) measured end to end.
 - [ ] Publish a report + keep the harness in CI so regressions show up.
 
-### 2. A single distributable binary for host VMs — *exploring*
+### 2. The `lifo` CLI — *planned*
+
+A `lifo` command-line tool to run a box straight from your terminal — the on-ramp to server-side use before the standalone binary lands. Bonus: it gives Windows a consistent POSIX shell + coreutils build environment (npm scripts like `rm -rf dist && NODE_ENV=production …` just work, same paths and semantics as macOS/Linux) without WSL or Docker — for pure-JS toolchains. Native compilation stays out of scope, so it complements WSL/Docker rather than replacing them; the host-fs mount (phase 3) is what makes it useful for building a local project.
+
+- [ ] `lifo` — boot a box and drop into its interactive shell.
+- [ ] `lifo run <script.js>` — run a script in a fresh box and exit with its code.
+- [ ] `--mount <hostDir>:<vmPath>` — map a host directory into the VM (see phase 3).
+- [ ] `--expose <port>` — forward an in-VM port to localhost.
+- [ ] Config/flags for env, cwd, and which filesystem backend to use.
+- [ ] Cross-platform build parity: verify common POSIX-assuming npm scripts run on Windows in a box.
+
+### 3. Filesystem persistence & durability — *planned*
+
+Today the VFS is in-memory with IndexedDB persistence in the browser and whole-disk snapshots. Make the backing store pluggable and durable per environment.
+
+- [ ] Backend interface: one VFS, swappable persistence layers.
+- [ ] Browser persistent layer — IndexedDB today; evaluate OPFS for larger/faster disks.
+- [ ] Host filesystem backend — back a box's disk with a real directory when running via the CLI.
+- [ ] Volatile in-memory backend — throwaway sandboxes with no persistence.
+- [ ] Snapshot & restore (have it) → export/import a box image across environments.
+- [ ] Write-ahead log (WAL) for crash-consistent, incremental persistence (vs. snapshot-only).
+
+### 4. A single distributable binary for host VMs — *exploring*
 
 Lifo already runs in Node. Next: a single `lifo` binary (no Node install required) that runs **isolated VM instances per use case** — per-agent, per-project, per-request — so you can spin up and tear down disposable sandboxes on a server without Docker.
 
@@ -57,17 +79,38 @@ Lifo already runs in Node. Next: a single `lifo` binary (no Node install require
 - [ ] Isolation boundary + lifecycle API for many concurrent VMs in one host process.
 - [ ] Resource limits (cpu/mem/fs quotas) per VM.
 
-### 3. Tunnelling & a Docker-free dev sandbox — *planned*
+### 5. Tunnelling & network — *planned*
 
-- [ ] Expose an in-VM port to a public URL through a tunnel.
+- [ ] Expose an in-VM port to a public URL through a tunnel (self-hosted relay or hosted proxy).
+- [ ] Harden the WebSocket tunnel + relay (`apps/tunnel-server`): auth, reconnect, multiplexing.
+- [ ] Cloud/host proxy for hosts without a same-origin service worker.
 - [ ] Document using Lifo in place of Docker for local dev and CI sandboxes — honestly, for the cases where it fits.
 
-### 4. Package manager & WASM runtimes — *planned*
+### 6. Host escape hatches (opt-in) — *exploring*
+
+A deliberate, permissioned way to step outside the sandbox and talk to the host. These are powerful and risky by design — off by default, gated behind explicit per-capability permissions, and never enabled implicitly.
+
+- [ ] Host command execution (CLI/Node): run real host-machine commands from inside a box — e.g. `osascript`/AppleScript on macOS, or a whitelisted shell.
+- [ ] Browser API bridge: call Web APIs (clipboard, notifications, geolocation, …) from in-VM code, through a mediated channel.
+- [ ] A capability/permission model: opt-in per hatch, auditable, revocable; clear docs on the risks.
+- [ ] Sensible defaults: everything disabled unless the embedder explicitly grants it.
+
+### 7. Embeddable UI (terminal & browser) — *in progress*
+
+Turn the playground's building blocks into reusable components so anyone can embed a Lifo UI. Shipped in `@lifo-sh/ui` (framework-agnostic).
+
+- [x] Terminal component — a themeable terminal bound to a box's shell (core).
+- [x] Preview browser component — an iframe view bound to an in-VM port (core), with back/forward/reload + a friendly address bar.
+- [x] Package + document the components with a from-scratch integration example (see the Embeddable UI doc).
+- [ ] Browser chrome — tabs, history (*low priority*, after the core views).
+- [ ] Migrate the playground to consume the packaged components (dogfood).
+
+### 8. Package manager & WASM runtimes — *planned*
 
 - [ ] First-class package manager for VM tools.
 - [ ] Pluggable WASM runtimes so more binaries (ffmpeg, Python, native CLIs) run inside the VM.
 
-### 5. Broader Node & serverless coverage — *planned*
+### 9. Broader Node & serverless coverage — *planned*
 
 - [ ] Extend the Node compatibility layer toward serverless handlers.
 - [ ] Cover more of the ecosystem unmodified.

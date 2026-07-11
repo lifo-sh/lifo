@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Terminal } from '@lifo-sh/ui';
-import { MoreVertical, Plus, Activity, Square, RotateCcw, Download, Upload, X, FileText } from 'lucide-react';
+import { MoreVertical, Plus, Activity, Square, RotateCcw, Download, Upload, X, FileText, PanelTopClose } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { TerminalView } from '@/components/terminal-view';
 import { ProcessPanel } from '@/components/process-panel';
@@ -24,6 +24,8 @@ interface TerminalAreaProps {
   onRestart?: () => void;
   onSnapshot?: () => void;
   onRestore?: () => void;
+  /** When provided, shows a button to fold the terminal panel (preview examples). */
+  onFold?: () => void;
 }
 
 type Tab =
@@ -39,7 +41,7 @@ const README_ID = -1;
  * restart, snapshot, restore — the latter three only when handlers are given).
  * Every tab is closable; the box menu reopens Processes if it was closed.
  */
-export function TerminalArea({ bootTab, box, initialLabels, canAdd = true, onRestart, onSnapshot, onRestore }: TerminalAreaProps) {
+export function TerminalArea({ bootTab, box, initialLabels, canAdd = true, onRestart, onSnapshot, onRestore, onFold }: TerminalAreaProps) {
   const labels = initialLabels?.length ? initialLabels : ['Terminal 1'];
   // The example's code sample, captured at mount, shown as a README.md tab.
   const chrome = useOutputChrome();
@@ -219,6 +221,15 @@ export function TerminalArea({ bootTab, box, initialLabels, canAdd = true, onRes
           )}
         </div>
         {busy && <span className="text-[10px] text-tokyo-comment px-2 self-center">{busy}</span>}
+        {onFold && (
+          <button
+            onClick={onFold}
+            title="Collapse terminal"
+            className="px-2.5 grid place-items-center bg-transparent border-none text-tokyo-comment hover:text-tokyo-fg-bright hover:bg-tokyo-hover cursor-pointer"
+          >
+            <PanelTopClose size={16} />
+          </button>
+        )}
         <div className="relative flex items-stretch" ref={menuRef}>
           <button
             onClick={() => setMenuOpen((v) => !v)}

@@ -1,4 +1,6 @@
 import { type ReactNode, useRef, useState } from 'react';
+import { PanelTopOpen } from 'lucide-react';
+import { Panel as RawPanel, type ImperativePanelHandle } from 'react-resizable-panels';
 import { Sandbox, ServiceWorkerBridge } from '@lifo-sh/core';
 import gitCommand from 'lifo-pkg-git';
 import type { Terminal } from '@lifo-sh/ui';
@@ -48,6 +50,11 @@ export function ProjectExample({ title, subtitle, files, cwd, previewPort, previ
 
   const sandboxRef = useRef<Sandbox | null>(null);
   const bridgeRef = useRef<ServiceWorkerBridge | null>(null);
+
+  // Fold/unfold the terminal panel (preview examples). The terminal panel is
+  // *collapsed* (size 0), never unmounted, so the box/kernel/scrollback survive.
+  const termPanelRef = useRef<ImperativePanelHandle>(null);
+  const [terminalFolded, setTerminalFolded] = useState(false);
 
   // The first terminal creates the Sandbox + SW bridge; extra terminals attach
   // a shell onto the shared kernel.
@@ -111,6 +118,7 @@ export function ProjectExample({ title, subtitle, files, cwd, previewPort, previ
       onRestart={restart}
       onSnapshot={sandbox ? () => downloadSnapshot(sandbox) : undefined}
       onRestore={sandbox ? () => pickAndRestoreSnapshot(sandbox) : undefined}
+      onFold={hasPreview ? () => termPanelRef.current?.collapse() : undefined}
     />
   );
 
@@ -120,12 +128,32 @@ export function ProjectExample({ title, subtitle, files, cwd, previewPort, previ
         <ResizablePanelGroup
           direction="vertical"
           autoSaveId={`pg-project-${previewTabs[0]?.port ?? previewPort}-split`}
-          className="flex-1 min-h-0"
+          className="relative flex-1 min-h-0"
         >
-          <ResizablePanel defaultSize={45} minSize={20}>
+          <RawPanel
+            ref={termPanelRef}
+            collapsible
+            collapsedSize={0}
+            defaultSize={45}
+            minSize={20}
+            className="overflow-hidden"
+            onCollapse={() => setTerminalFolded(true)}
+            onExpand={() => setTerminalFolded(false)}
+          >
             {terminalArea}
-          </ResizablePanel>
+          </RawPanel>
           <ResizableHandle className="my-0.5" />
+          {/* When the terminal is folded, a slim bar to bring it back */}
+          {terminalFolded && (
+            <button
+              onClick={() => termPanelRef.current?.expand()}
+              title="Show terminal"
+              className="absolute top-0 left-0 right-0 z-20 flex items-center justify-center gap-1.5 h-6 text-[11px] text-tokyo-comment bg-tokyo-bg-dark border-b border-tokyo-border hover:text-tokyo-fg-bright cursor-pointer"
+            >
+              <PanelTopOpen size={13} />
+              Show terminal
+            </button>
+          )}
           <ResizablePanel defaultSize={55} minSize={20}>
             {swReady === null ? (
               <div className="flex-1 h-full grid place-items-center text-[12px] text-tokyo-comment">
