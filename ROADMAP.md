@@ -115,6 +115,26 @@ Turn the playground's building blocks into reusable components so anyone can emb
 - [ ] Extend the Node compatibility layer toward serverless handlers.
 - [ ] Cover more of the ecosystem unmodified.
 
+### 10. Off-main-thread VM (Web Worker) — *planned*
+
+Heavy VM work (npm install, bundling, snapshot dumps) runs synchronously on the browser main thread and freezes the tab. Move the whole VM into one dedicated module Worker per box so the UI never blocks. Design is complete and parked in [docs/plans/vm-in-web-worker.md](docs/plans/vm-in-web-worker.md) — ships dark behind `VITE_VM_WORKER`, no public API change (worker mode is additive/opt-in).
+
+- [ ] Hand-rolled page↔worker RPC protocol + `ITerminal` proxy/adapter (same-thread first).
+- [ ] `BoxHost` boot orchestration behind RPC; commands/inspector/snapshot into the worker.
+- [ ] Move `ServiceWorkerBridge` into the worker via `MessagePort` transfer (page stays the SW registrar).
+- [ ] Flip transport to a real module Worker; validate ffmpeg.wasm (COOP/COEP unknown).
+- [ ] `createBrowserBox()` bootstrap helper hiding SW + worker setup behind one call.
+
+### 11. Dockerfile & Compose provisioning — *exploring*
+
+Boot a Lifo box from a `Dockerfile`, and orchestrate several boxes from a `docker-compose.yml`. This is **not** OCI/Docker compatibility (running arbitrary base images and native ELF binaries stays out of scope — see Scope above). Instead, treat these files as a familiar **declarative provisioning format** for boxes: interpret the subset of instructions Lifo can honor, and clearly reject the rest. The payoff is a zero-friction on-ramp — point Lifo at an existing repo's Dockerfile and it just boots.
+
+- [ ] Dockerfile subset interpreter: `WORKDIR`, `COPY`/`ADD`, `ENV`, `ARG`, `EXPOSE` (→ port forward), `RUN` (for shell/npm steps the VM already supports), `CMD`/`ENTRYPOINT`. `FROM node:*`/`FROM alpine` maps to the base VM environment rather than a pulled image.
+- [ ] Honest capability boundary: statically detect and clearly report instructions/base images Lifo can't run (native package installs, non-JS runtimes) instead of failing opaquely.
+- [ ] `docker-compose.yml` → multiple boxes wired over the virtual network, with `ports`/`depends_on`/`environment` mapped to Lifo's ports + network + env.
+- [ ] Surface it in the CLI (`lifo up`, `lifo build -f Dockerfile`) and as a browser provisioning input.
+- [ ] Interop with WASM runtimes (phase 8): as more binaries run in-VM, more `RUN` steps become honorable.
+
 ---
 
 Priorities shift with real usage. Have a use case? Open an issue.
