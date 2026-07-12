@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Terminal } from '@lifo-sh/ui';
-import { MoreVertical, Plus, Activity, Square, RotateCcw, Download, Upload, X, FileText, PanelTopClose } from 'lucide-react';
+import { MoreVertical, Plus, Activity, Square, RotateCcw, Download, Upload, X, FileText } from 'lucide-react';
+import { downloadSnapshot, pickAndRestoreSnapshot } from '@/lib/box-snapshot';
 import { cn } from '@/lib/utils';
 import { TerminalView } from '@/components/terminal-view';
 import { ProcessPanel } from '@/components/process-panel';
@@ -20,12 +21,9 @@ interface TerminalAreaProps {
   initialLabels?: string[];
   /** Show the "+" to open more terminals (default true). */
   canAdd?: boolean;
-  /** Box-menu actions — only shown when provided (project examples). */
+  /** Restart the box — only shown when provided (project examples). Snapshot &
+   *  restore are always offered whenever a box exists. */
   onRestart?: () => void;
-  onSnapshot?: () => void;
-  onRestore?: () => void;
-  /** When provided, shows a button to fold the terminal panel (preview examples). */
-  onFold?: () => void;
 }
 
 type Tab =
@@ -41,7 +39,7 @@ const README_ID = -1;
  * restart, snapshot, restore — the latter three only when handlers are given).
  * Every tab is closable; the box menu reopens Processes if it was closed.
  */
-export function TerminalArea({ bootTab, box, initialLabels, canAdd = true, onRestart, onSnapshot, onRestore, onFold }: TerminalAreaProps) {
+export function TerminalArea({ bootTab, box, initialLabels, canAdd = true, onRestart }: TerminalAreaProps) {
   const labels = initialLabels?.length ? initialLabels : ['Terminal 1'];
   // The example's code sample, captured at mount, shown as a README.md tab.
   const chrome = useOutputChrome();
@@ -165,8 +163,11 @@ export function TerminalArea({ bootTab, box, initialLabels, canAdd = true, onRes
     { label: 'Process manager', icon: Activity, onClick: openProcesses },
     { label: 'Stop all', icon: Square, onClick: () => void stopAll() },
     ...(onRestart ? [{ label: 'Restart box', icon: RotateCcw, onClick: () => { setMenuOpen(false); onRestart(); } }] : []),
-    ...(onSnapshot ? [{ label: 'Snapshot (download)', icon: Download, onClick: run('Snapshotting…', onSnapshot) }] : []),
-    ...(onRestore ? [{ label: 'Restore (upload)', icon: Upload, onClick: () => { setMenuOpen(false); onRestore(); } }] : []),
+    // Snapshot & restore work off any box's VFS, so every example gets them.
+    ...(box ? [
+      { label: 'Snapshot (download)', icon: Download, onClick: run('Snapshotting…', () => downloadSnapshot(box.kernel.vfs)) },
+      { label: 'Restore (upload)', icon: Upload, onClick: () => { setMenuOpen(false); pickAndRestoreSnapshot(box.kernel.vfs); } },
+    ] : []),
   ];
 
   return (
@@ -221,15 +222,6 @@ export function TerminalArea({ bootTab, box, initialLabels, canAdd = true, onRes
           )}
         </div>
         {busy && <span className="text-[10px] text-tokyo-comment px-2 self-center">{busy}</span>}
-        {onFold && (
-          <button
-            onClick={onFold}
-            title="Collapse terminal"
-            className="px-2.5 grid place-items-center bg-transparent border-none text-tokyo-comment hover:text-tokyo-fg-bright hover:bg-tokyo-hover cursor-pointer"
-          >
-            <PanelTopClose size={16} />
-          </button>
-        )}
         <div className="relative flex items-stretch" ref={menuRef}>
           <button
             onClick={() => setMenuOpen((v) => !v)}

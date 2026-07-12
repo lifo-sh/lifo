@@ -23,7 +23,7 @@ import type { VFS } from '../kernel/vfs/index.js';
 import { NativeFsProvider } from '../kernel/vfs/providers/NativeFsProvider.js';
 import type { NativeFsModule } from '../kernel/vfs/providers/NativeFsProvider.js';
 import type { ITerminal } from '../terminal/ITerminal.js';
-import type { SandboxOptions, SandboxCommands, SandboxFs } from './types.js';
+import type { SandboxOptions, SandboxCommands, SandboxFs, SnapshotOptions } from './types.js';
 import { SandboxFsImpl } from './SandboxFs.js';
 import { SandboxCommandsImpl } from './SandboxCommands.js';
 import { HeadlessTerminal } from './HeadlessTerminal.js';
@@ -267,10 +267,11 @@ export class Sandbox {
 	}
 
 	/**
-	 * Export the entire VFS as a tar.gz snapshot.
+	 * Export the VFS as a tar.gz snapshot. Pass `{ exclude: ['node_modules'] }`
+	 * to skip subtrees (smaller snapshot; restore then needs a reinstall).
 	 */
-	async exportSnapshot(): Promise<Uint8Array> {
-		return this.fs.exportSnapshot();
+	async exportSnapshot(options?: SnapshotOptions): Promise<Uint8Array> {
+		return this.fs.exportSnapshot(options);
 	}
 
 	/**

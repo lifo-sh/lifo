@@ -1,8 +1,8 @@
 import type { VFS } from '../kernel/vfs/index.js';
 import type { SandboxFs as ISandboxFs } from './types.js';
-import { resolve, dirname } from '../utils/path.js';
-import { createTar, parseTar, compressGzip, decompressGzip } from '../utils/archive.js';
-import type { TarEntry } from '../utils/archive.js';
+import { resolve } from '../utils/path.js';
+import { exportVfsSnapshot, importVfsSnapshot } from '../kernel/vfs/snapshot.js';
+import type { SnapshotOptions } from './types.js';
 
 /**
  * Async wrapper around VFS that matches the industry-standard filesystem API.
@@ -87,73 +87,11 @@ export class SandboxFsImpl implements ISandboxFs {
   }
 
   /** Directories to skip during export (virtual providers) */
-  private static SKIP_DIRS = new Set(['/proc', '/dev']);
-
-  async exportSnapshot(): Promise<Uint8Array> {
-    const entries: TarEntry[] = [];
-
-    const walk = (absPath: string): void => {
-      if (SandboxFsImpl.SKIP_DIRS.has(absPath)) return;
-
-      const stat = this.vfs.stat(absPath);
-
-      if (stat.type === 'directory') {
-        // Add directory entry (skip root itself)
-        if (absPath !== '/') {
-          entries.push({
-            path: absPath,
-            data: new Uint8Array(0),
-            type: 'directory',
-            mode: stat.mode,
-            mtime: stat.mtime,
-          });
-        }
-
-        const children = this.vfs.readdir(absPath);
-        for (const child of children) {
-          const childPath = absPath === '/' ? `/${child.name}` : `${absPath}/${child.name}`;
-          walk(childPath);
-        }
-      } else {
-        entries.push({
-          path: absPath,
-          data: this.vfs.readFile(absPath),
-          type: 'file',
-          mode: stat.mode,
-          mtime: stat.mtime,
-        });
-      }
-    };
-
-    walk('/');
-
-    const tar = createTar(entries);
-    return compressGzip(tar);
+  async exportSnapshot(options: SnapshotOptions = {}): Promise<Uint8Array> {
+    return exportVfsSnapshot(this.vfs, options);
   }
 
   async importSnapshot(data: Uint8Array): Promise<void> {
-    const tar = await decompressGzip(data);
-    const entries = parseTar(tar);
-
-    // Process directories first, then files, to ensure parents exist
-    const dirs = entries.filter((e) => e.type === 'directory');
-    const files = entries.filter((e) => e.type === 'file');
-
-    for (const entry of dirs) {
-      const path = entry.path.startsWith('/') ? entry.path : '/' + entry.path;
-      if (!this.vfs.exists(path)) {
-        this.vfs.mkdir(path, { recursive: true });
-      }
-    }
-
-    for (const entry of files) {
-      const path = entry.path.startsWith('/') ? entry.path : '/' + entry.path;
-      // Ensure parent directory exists
-      const parent = dirname(path);
-      if (parent !== '/' && !this.vfs.exists(parent)) {
-        this.vfs.mkdir(parent, { recursive: true });
-      }
-      this.vfs.writeFile(path, entry.data);
-    }
+    return importVfsSnapshot(this.vfs, data);
   }
 }

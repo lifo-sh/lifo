@@ -1,12 +1,14 @@
-import type { Sandbox } from '@lifo-sh/core';
+import { exportVfsSnapshot, importVfsSnapshot } from '@lifo-sh/core';
+import type { VFS } from '@lifo-sh/core';
 
 /**
  * Download the box's disk as a .tar.gz snapshot. Processes aren't captured —
  * only the VFS — so a restored box starts with the same files but no running
- * servers (re-run the dev command after restoring).
+ * servers (re-run the dev command after restoring). Works off any box's VFS,
+ * so every example can snapshot, not just the preview ones.
  */
-export async function downloadSnapshot(sandbox: Sandbox, name = 'lifo-box'): Promise<void> {
-  const data = await sandbox.exportSnapshot();
+export async function downloadSnapshot(vfs: VFS, name = 'lifo-box'): Promise<void> {
+  const data = await exportVfsSnapshot(vfs);
   // Copy into a fresh ArrayBuffer so the Blob type is exactly BlobPart (the VFS
   // may hand back a view over a larger buffer).
   const buf = data.slice();
@@ -18,12 +20,11 @@ export async function downloadSnapshot(sandbox: Sandbox, name = 'lifo-box'): Pro
   document.body.appendChild(a);
   a.click();
   a.remove();
-  // Revoke on the next tick so the download has started.
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 /** Prompt for a .tar.gz file and restore the box's disk from it. */
-export function pickAndRestoreSnapshot(sandbox: Sandbox, onDone?: (ok: boolean) => void): void {
+export function pickAndRestoreSnapshot(vfs: VFS, onDone?: (ok: boolean) => void): void {
   const input = document.createElement('input');
   input.type = 'file';
   input.accept = '.gz,.tgz,.tar,application/gzip';
@@ -35,7 +36,7 @@ export function pickAndRestoreSnapshot(sandbox: Sandbox, onDone?: (ok: boolean) 
     }
     try {
       const buf = new Uint8Array(await file.arrayBuffer());
-      await sandbox.importSnapshot(buf);
+      await importVfsSnapshot(vfs, buf);
       onDone?.(true);
     } catch {
       onDone?.(false);

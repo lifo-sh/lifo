@@ -1,5 +1,5 @@
 import { type ReactNode, useRef, useState } from 'react';
-import { PanelTopOpen } from 'lucide-react';
+import { PanelTopOpen, PanelTopClose } from 'lucide-react';
 import { Panel as RawPanel, type ImperativePanelHandle } from 'react-resizable-panels';
 import { Sandbox, ServiceWorkerBridge } from '@lifo-sh/core';
 import gitCommand from 'lifo-pkg-git';
@@ -8,7 +8,6 @@ import { ExamplePanel } from '@/components/example-panel';
 import { PreviewTabs, type PreviewTab } from '@/components/preview-tabs';
 import { TerminalArea } from '@/components/terminal-area';
 import { bootShell } from '@/lib/shell';
-import { downloadSnapshot, pickAndRestoreSnapshot } from '@/lib/box-snapshot';
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable';
 
 export interface ProjectExampleProps {
@@ -116,14 +115,23 @@ export function ProjectExample({ title, subtitle, files, cwd, previewPort, previ
         else void bootFirstTerminal(term);
       }}
       onRestart={restart}
-      onSnapshot={sandbox ? () => downloadSnapshot(sandbox) : undefined}
-      onRestore={sandbox ? () => pickAndRestoreSnapshot(sandbox) : undefined}
-      onFold={hasPreview ? () => termPanelRef.current?.collapse() : undefined}
     />
   );
 
+  // Fold/unfold the terminal panel — lives in the example header (one button
+  // toggles the whole terminal row).
+  const foldToggle = hasPreview ? (
+    <button
+      onClick={() => (terminalFolded ? termPanelRef.current?.expand() : termPanelRef.current?.collapse())}
+      title={terminalFolded ? 'Show terminal' : 'Hide terminal'}
+      className="w-6 h-6 grid place-items-center rounded bg-transparent border-none cursor-pointer text-tokyo-comment hover:text-tokyo-fg-bright hover:bg-tokyo-hover"
+    >
+      {terminalFolded ? <PanelTopOpen size={14} /> : <PanelTopClose size={14} />}
+    </button>
+  ) : undefined;
+
   return (
-    <ExamplePanel title={title} subtitle={subtitle}>
+    <ExamplePanel title={title} subtitle={subtitle} headerAction={foldToggle}>
       {hasPreview ? (
         <ResizablePanelGroup
           direction="vertical"
@@ -142,18 +150,7 @@ export function ProjectExample({ title, subtitle, files, cwd, previewPort, previ
           >
             {terminalArea}
           </RawPanel>
-          <ResizableHandle className="my-0.5" />
-          {/* When the terminal is folded, a slim bar to bring it back */}
-          {terminalFolded && (
-            <button
-              onClick={() => termPanelRef.current?.expand()}
-              title="Show terminal"
-              className="absolute top-0 left-0 right-0 z-20 flex items-center justify-center gap-1.5 h-6 text-[11px] text-tokyo-comment bg-tokyo-bg-dark border-b border-tokyo-border hover:text-tokyo-fg-bright cursor-pointer"
-            >
-              <PanelTopOpen size={13} />
-              Show terminal
-            </button>
-          )}
+          <ResizableHandle className={terminalFolded ? 'hidden' : 'my-0.5'} />
           <ResizablePanel defaultSize={55} minSize={20}>
             {swReady === null ? (
               <div className="flex-1 h-full grid place-items-center text-[12px] text-tokyo-comment">
