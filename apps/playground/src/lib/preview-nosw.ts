@@ -68,7 +68,12 @@ export function shimScript(port: number): string {
     if(u[0]==='/')return true; try{var url=new URL(u); return url.host==='localhost:'+PORT||url.host===location.host;}catch(_){return u[0]==='.';} }
   function pathOf(u){ if(u[0]==='/')return u; try{return new URL(u).pathname+new URL(u).search;}catch(_){return u;} }
   function vmreq(method,url,headers,body){ return new Promise(function(res){ var id='r'+(seq++);
-    pending.set(id,res); parentWin.postMessage({type:'request',requestId:id,port:PORT,method:method,url:pathOf(url),headers:headers||{},body:body?b64enc(body):''},'*'); }); }
+    // Normalize headers (Headers instance / [k,v][] / object) to a plain object.
+    var h={}; if(headers){ if(typeof headers.forEach==='function'&&!Array.isArray(headers)){headers.forEach(function(v,k){h[k]=v;});} else if(Array.isArray(headers)){headers.forEach(function(p){h[p[0]]=p[1];});} else {for(var k in headers)h[k]=headers[k];} }
+    // Restore Content-Length so in-VM body parsers (body-parser/express.json,
+    // whose hasBody() needs it) parse POST/PUT bodies. fetch/XHR omit it.
+    if(body&&body.length&&h['content-length']==null&&h['Content-Length']==null)h['content-length']=String(body.length);
+    pending.set(id,res); parentWin.postMessage({type:'request',requestId:id,port:PORT,method:method,url:pathOf(url),headers:h,body:body?b64enc(body):''},'*'); }); }
   // --- fetch shim ---
   var origFetch=window.fetch;
   window.fetch=function(input,init){ var url=typeof input==='string'?input:(input&&input.url);
@@ -76,8 +81,10 @@ export function shimScript(port: number): string {
     var method=(init&&init.method)||'GET'; var body=init&&init.body; var bytes=null;
     if(typeof body==='string')bytes=new TextEncoder().encode(body);
     return vmreq(method,url,(init&&init.headers)||{},bytes).then(function(m){
-      var buf=m.bodyBuffer||(m.body?b64dec(m.body).buffer:new ArrayBuffer(0));
-      return new Response(buf,{status:m.statusCode||200,headers:m.headers||{}}); }); };
+      var st=m.statusCode||200; var buf=m.bodyBuffer||(m.body?b64dec(m.body).buffer:new ArrayBuffer(0));
+      // 204/205/304 are null-body statuses — Response throws if given a body.
+      var nb=st===204||st===205||st===304;
+      return new Response(nb?null:buf,{status:st,headers:m.headers||{}}); }); };
   // --- image asset interceptor ---
   // RNW builds /assets/… URLs at RENDER time; the browser would load them from
   // the blob origin (no server, no SW) and 404. Route via the (shimmed) fetch →

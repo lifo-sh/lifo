@@ -312,6 +312,13 @@ function vmRequest(boxId, port, path, request, bodyB64) {
 		pending.set(requestId, { resolve, timer });
 		const headers = {};
 		for (const [k, v] of request.headers.entries()) headers[k] = v;
+		// The browser omits Content-Length from request.headers (a forbidden
+		// header it manages itself), but in-VM body parsers need it — e.g.
+		// body-parser/express.json only parses when hasBody() sees content-length
+		// or transfer-encoding. Restore it from the actual body byte length.
+		if (bodyB64 && headers['content-length'] == null && headers['transfer-encoding'] == null) {
+			headers['content-length'] = String(b64ToBuf(bodyB64).length);
+		}
 		host.postMessage({
 			type: 'request',
 			requestId,
@@ -382,7 +389,10 @@ async function serveFromVm(event, boxId, port, path) {
 		return new Response(html, { status: res.statusCode || 200, headers });
 	}
 
-	return new Response(bodyBuf, { status: res.statusCode || 200, headers });
+	// 204/205/304 are null-body statuses — the Response constructor throws if
+	// given a body (even an empty buffer), which rejected e.g. DELETE → 204.
+	const nullBody = res.statusCode === 204 || res.statusCode === 205 || res.statusCode === 304;
+	return new Response(nullBody ? null : bodyBuf, { status: res.statusCode || 200, headers });
 }
 
 async function boxForRequest(event) {

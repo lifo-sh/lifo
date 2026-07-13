@@ -109,7 +109,8 @@ Turn the playground's building blocks into reusable components so anyone can emb
 - [x] Package + document the components with a from-scratch integration example (see the Embeddable UI doc).
 - [ ] Browser chrome — tabs, history (*low priority*, after the core views).
 - [ ] Migrate the playground to consume the packaged components (dogfood).
-- [ ] Example: a **Node/Express server with the preview browser** bound to its port — a full backend + live preview in one box, alongside the existing Vite/Expo examples. **← current focus #1**
+- [x] Example: a **Node/Express server with the preview browser** bound to its port — a full backend + live preview in one box, alongside the existing Vite/Expo examples. **← current focus #1**
+- [ ] **Supabase (tinbase) fidelity:** ship a real `supabase/` folder (migrations, `config.toml`, `seed.sql`) in the example and apply it like a real Supabase project, instead of creating migrations dynamically — so the example replicates an actual Supabase workflow.
 
 ### 8. Package manager & WASM runtimes — *planned*
 
@@ -117,6 +118,7 @@ Turn the playground's building blocks into reusable components so anyone can emb
 - [ ] **Keep the core light.** We've been stuffing commands into `@lifo-sh/core`; move the non-essential ones out into installable packages, pulled in on demand. Core ships only the essentials; everything else is a package.
 - [ ] `vi`/`vim` editor (as an installable package). Feasibility: *medium* — build a modal input state machine (normal/insert/visual) + basic motions/operators on top of the existing full-screen infra we already have for `nano`/`less` (raw-mode input, viewport/scroll, render loop). The plumbing is done; the work is the modal command grammar. Start with a usable subset (h/j/k/l, i/a/o, x/dd/dw, :w/:q/:wq, /search).
 - [ ] `ssh` client (as an installable package). Needs a WebSocket/tunnel transport for the connection — ties into phase 5 (tunnelling & network).
+- [ ] **Command suggestions ("the Lifo way").** When a user runs or installs a tool Lifo can't run natively, recommend the Lifo equivalent instead of just failing — e.g. `supabase` / `npm i -g supabase` → suggest **tinbase** (the only way to run Supabase in Lifo). A curated suggestion map surfaced on command-not-found and on install of a known-unsupported package.
 - [ ] Pluggable WASM runtimes so more binaries (ffmpeg, Python, native CLIs) run inside the VM.
 
 ### 9. Broader Node & serverless coverage — *planned*

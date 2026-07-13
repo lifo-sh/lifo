@@ -43,6 +43,14 @@ async function drainWriteData(data: unknown): Promise<string | Uint8Array> {
 import { EventEmitter } from './events.js';
 import { Buffer } from './buffer.js';
 
+// ─── fs.ReadStream / fs.WriteStream ───
+// Node exposes these constructors on the fs module. Libraries do brand checks
+// against them — e.g. `destroy` (used by Express's `send`/`express.static`) does
+// `stream instanceof fs.ReadStream`, which throws if the constructor is missing.
+// createReadStream/createWriteStream return instances of these so the checks work.
+export class ReadStream extends Readable {}
+export class WriteStream extends Writable {}
+
 // ─── Dirent ───
 
 interface Dirent {
@@ -627,7 +635,7 @@ export function createFs(vfs: VFS, cwd: string) {
   // in memory before being pushed to the stream.
   function createReadStream(path: string | URL, options?: { encoding?: string; start?: number; end?: number; highWaterMark?: number }): Readable {
     const abs = resolvePath(cwd, path);
-    const stream = new Readable();
+    const stream = new ReadStream();
 
     queueMicrotask(() => {
       try {
@@ -669,7 +677,7 @@ export function createFs(vfs: VFS, cwd: string) {
       try { vfs.writeFile(abs, ''); } catch { /* parent may not exist yet */ }
     }
 
-    const stream = new Writable();
+    const stream = new WriteStream();
 
     stream.write = (chunk: string | Uint8Array, _encoding?: string, cb?: () => void): boolean => {
       try {
@@ -935,6 +943,8 @@ export function createFs(vfs: VFS, cwd: string) {
     // Streams
     createReadStream,
     createWriteStream,
+    ReadStream,
+    WriteStream,
     // Watch
     watch,
     watchFile,

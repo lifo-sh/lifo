@@ -18,6 +18,27 @@ interface RequestOptions {
   timeout?: number;
 }
 
+/**
+ * A socket stub that is a real EventEmitter. Middleware like `on-finished` /
+ * `ee-first` (used by Express's `send`/`express.static`) attaches 'error' /
+ * 'close' / 'end' listeners to `req.socket` / `res.socket`; a plain object
+ * without `.on` crashes with "ee.on is not a function".
+ */
+type SocketStub = EventEmitter & {
+  remoteAddress?: string;
+  remotePort?: number;
+  encrypted?: boolean;
+  writable?: boolean;
+  readable?: boolean;
+  destroy: () => void;
+  unref?: () => void;
+  ref?: () => void;
+};
+
+function createSocketStub(props: Partial<SocketStub>): SocketStub {
+  return Object.assign(new EventEmitter(), { destroy: () => {}, ...props }) as SocketStub;
+}
+
 class IncomingMessage extends EventEmitter {
   statusCode: number;
   statusMessage: string;
@@ -34,19 +55,9 @@ class IncomingMessage extends EventEmitter {
   aborted = false;
   destroyed = false;
   readable = true;
-  // Minimal socket stub that Vite/Connect middleware expects
-  socket: {
-    remoteAddress: string;
-    remotePort: number;
-    encrypted: boolean;
-    destroy: () => void;
-    unref: () => void;
-    ref: () => void;
-  };
-  connection: {
-    remoteAddress: string;
-    encrypted: boolean;
-  };
+  // Socket stub (an EventEmitter) that Vite/Connect/Express middleware expects.
+  socket: SocketStub;
+  connection: SocketStub;
 
   constructor(statusCode: number, statusMessage: string, headers: Record<string, string>) {
     super();
@@ -54,14 +65,13 @@ class IncomingMessage extends EventEmitter {
     this.statusMessage = statusMessage;
     this.headers = headers;
     this.rawHeaders = Object.entries(headers).flatMap(([k, v]) => [k, v]);
-    const socketStub = {
+    const socketStub = createSocketStub({
       remoteAddress: '127.0.0.1',
       remotePort: 0,
       encrypted: false,
-      destroy: () => {},
       unref: () => {},
       ref: () => {},
-    };
+    });
     this.socket = socketStub;
     this.connection = socketStub;
   }
@@ -288,8 +298,9 @@ class ServerResponse extends EventEmitter {
   // preserved. A string _body would corrupt them via UTF-8 round-tripping.
   private _chunks: Uint8Array[] = [];
   private _vRes: { statusCode: number; headers: Record<string, string>; body: string; bodyBytes?: Uint8Array };
-  // Minimal socket stub that middleware may reference
-  socket: { destroy: () => void; writable: boolean; readable: boolean; remoteAddress: string } | null;
+  // Socket stub (an EventEmitter) that middleware may reference / attach to
+  // (e.g. on-finished in express.static).
+  socket: SocketStub | null;
   // Promise that resolves when end() is called (for async middleware)
   _donePromise: Promise<void>;
   private _doneResolve!: () => void;
@@ -301,12 +312,12 @@ class ServerResponse extends EventEmitter {
       this._doneResolve = resolve;
     });
     // Socket stub that resolves _donePromise on destroy (error abort path)
-    this.socket = {
+    const sock = createSocketStub({
       writable: true,
       readable: true,
       remoteAddress: '127.0.0.1',
       destroy: () => {
-        this.socket!.writable = false;
+        sock.writable = false;
         if (!this.finished) {
           this._vRes.statusCode = this.statusCode || 500;
           this._vRes.headers = {};
@@ -316,7 +327,8 @@ class ServerResponse extends EventEmitter {
           this._doneResolve();
         }
       },
-    };
+    });
+    this.socket = sock;
   }
 
   writeHead(statusCode: number, reasonOrHeaders?: string | Record<string, string | string[]>, headers?: Record<string, string | string[]>): this {
@@ -507,10 +519,14 @@ class Server extends EventEmitter {
       (vRes as VirtualResponseWithDone)._donePromise = res._donePromise;
       this.emit('request', req, res);
 
-      // Emit body data + end so middleware that reads the request body works
+      // Emit body data + end so middleware that reads the request body works.
+      // Emit a Buffer, not a string: body parsers (raw-body → body-parser →
+      // express.json) run the chunk through iconv-lite, which requires a
+      // Buffer/ArrayBufferView, and size checks compare byte length.
       queueMicrotask(() => {
-        if (vReq.body) {
-          req.emit('data', vReq.body);
+        if (vReq.body != null && vReq.body !== '') {
+          const chunk = typeof vReq.body === 'string' ? Buffer.from(vReq.body) : vReq.body;
+          req.emit('data', chunk);
         }
         req.complete = true;
         req.emit('end');
