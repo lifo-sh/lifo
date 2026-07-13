@@ -8,6 +8,7 @@ const InteractiveExample = lazy(() => import('@/examples/interactive'));
 const HeadlessExample = lazy(() => import('@/examples/headless'));
 const MultiExample = lazy(() => import('@/examples/multi'));
 const HttpExample = lazy(() => import('@/examples/http'));
+const ExpressExample = lazy(() => import('@/examples/express'));
 const NpmExample = lazy(() => import('@/examples/npm'));
 const ExplorerExample = lazy(() => import('@/examples/explorer'));
 const FfmpegExample = lazy(() => import('@/examples/ffmpeg'));
@@ -49,6 +50,7 @@ export const examples: ExampleConfig[] = [
   { id: 'vite-react', label: 'Vite with React', group: 'Real-World Stacks', Component: ViteReactExample },
   { id: 'vite-react-ts', label: 'Vite with React + TS', group: 'Real-World Stacks', Component: ViteReactTsExample },
   { id: 'create-vite', label: 'create-vite (1:1)', group: 'Real-World Stacks', Component: CreateViteExample },
+  { id: 'express', label: 'Node.js + Express', group: 'Real-World Stacks', Component: ExpressExample },
   { id: 'tinbase', label: 'Supabase Todo (tinbase)', group: 'Real-World Stacks', Component: TinbaseExample },
   { id: 'pglite', label: 'Postgres (PGlite)', group: 'Real-World Stacks', Component: PgliteExample },
   { id: 'expo', label: 'Expo (React Native Web)', group: 'Real-World Stacks', Component: ExpoExample },

@@ -521,6 +521,25 @@ const CODE_EXPO_SUPABASE = `\
 <span class="code-keyword">const</span> supabase = <span class="code-fn">createClient</span>(url, anonKey)
 <span class="code-keyword">await</span> supabase.<span class="code-fn">from</span>(<span class="code-string">'todos'</span>).<span class="code-fn">insert</span>({ title })`;
 
+const CODE_EXPRESS = `\
+<span class="code-comment"># A real Node.js + Express server, running in the VM.</span>
+<span class="code-comment"># Serves a JSON API and a static frontend from public/.</span>
+
+<span class="code-fn">npm</span> install        <span class="code-comment"># pulls express from npm</span>
+<span class="code-fn">node</span> server.js     <span class="code-comment"># Express listens on :3000</span>
+
+<span class="code-comment"># server.js</span>
+<span class="code-keyword">const</span> express = <span class="code-fn">require</span>(<span class="code-string">'express'</span>)
+<span class="code-keyword">const</span> app = <span class="code-fn">express</span>()
+app.<span class="code-fn">use</span>(express.<span class="code-fn">json</span>())
+app.<span class="code-fn">get</span>(<span class="code-string">'/api/todos'</span>, (req, res) => res.<span class="code-fn">json</span>(todos))
+app.<span class="code-fn">post</span>(<span class="code-string">'/api/todos'</span>, (req, res) => { <span class="code-comment">/* … */</span> })
+app.<span class="code-fn">use</span>(express.<span class="code-fn">static</span>(<span class="code-string">'public'</span>))
+app.<span class="code-fn">listen</span>(<span class="code-const">3000</span>)
+
+<span class="code-comment"># the preview pane loads /_sw/3000/ — the Express app</span>
+<span class="code-comment"># served from inside your browser, API + static and all.</span>`;
+
 export const codeSnippets: Record<string, string> = {
 	interactive: CODE_INTERACTIVE,
 	headless: CODE_HEADLESS,
@@ -536,6 +555,7 @@ export const codeSnippets: Record<string, string> = {
 	'vite-react': CODE_VITE_REACT,
 	'vite-react-ts': CODE_VITE_REACT_TS,
 	'create-vite': CODE_CREATE_VITE,
+	express: CODE_EXPRESS,
 	tinbase: CODE_TINBASE,
 	pglite: CODE_PGLITE,
 	expo: CODE_EXPO,
