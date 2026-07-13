@@ -119,23 +119,34 @@ Turn the playground's building blocks into reusable components so anyone can emb
 - [ ] Extend the Node compatibility layer toward serverless handlers.
 - [ ] Cover more of the ecosystem unmodified.
 
-### 10. Lighter browser bundling for mobile — *exploring*
+### 10. Off-main-thread VM (Web Worker) — *planned*
+
+Heavy VM work (npm install, bundling, snapshot dumps) runs synchronously on the browser main thread and freezes the tab. Move the whole VM into one dedicated module Worker per box so the UI never blocks. Design is complete and parked in [docs/plans/vm-in-web-worker.md](docs/plans/vm-in-web-worker.md) — ships dark behind `VITE_VM_WORKER`, no public API change (worker mode is additive/opt-in).
+
+- [ ] Hand-rolled page↔worker RPC protocol + `ITerminal` proxy/adapter (same-thread first).
+- [ ] `BoxHost` boot orchestration behind RPC; commands/inspector/snapshot into the worker.
+- [ ] Move `ServiceWorkerBridge` into the worker via `MessagePort` transfer (page stays the SW registrar).
+- [ ] Flip transport to a real module Worker; validate ffmpeg.wasm (COOP/COEP unknown).
+- [ ] `createBrowserBox()` bootstrap helper hiding SW + worker setup behind one call.
+
+### 11. Dockerfile & Compose provisioning — *exploring*
+
+Boot a Lifo box from a `Dockerfile`, and orchestrate several boxes from a `docker-compose.yml`. This is **not** OCI/Docker compatibility (running arbitrary base images and native ELF binaries stays out of scope — see Scope above). Instead, treat these files as a familiar **declarative provisioning format** for boxes: interpret the subset of instructions Lifo can honor, and clearly reject the rest. The payoff is a zero-friction on-ramp — point Lifo at an existing repo's Dockerfile and it just boots.
+
+- [ ] Dockerfile subset interpreter: `WORKDIR`, `COPY`/`ADD`, `ENV`, `ARG`, `EXPOSE` (→ port forward), `RUN` (for shell/npm steps the VM already supports), `CMD`/`ENTRYPOINT`. `FROM node:*`/`FROM alpine` maps to the base VM environment rather than a pulled image.
+- [ ] Honest capability boundary: statically detect and clearly report instructions/base images Lifo can't run (native package installs, non-JS runtimes) instead of failing opaquely.
+- [ ] `docker-compose.yml` → multiple boxes wired over the virtual network, with `ports`/`depends_on`/`environment` mapped to Lifo's ports + network + env.
+- [ ] Surface it in the CLI (`lifo up`, `lifo build -f Dockerfile`) and as a browser provisioning input.
+- [ ] Interop with WASM runtimes (phase 8): as more binaries run in-VM, more `RUN` steps become honorable.
+
+### 12. Lighter browser bundling for mobile — *exploring*
 
 Snapshots are ~90MB, too big for phones. Two prototypes exist: `pruneExpoModules` (trim `node_modules` to Metro's read set → keeps the real toolchain, ~8-13% of `node_modules`) and a `browser-metro` engine (offloads package bundling to a hosted pre-bundler, `esm.reactnative.run` → ~2MB, no toolchain on device; switchable with real Metro).
 
 - [ ] Decide per-stack: **prune** (keep the real toolchain in a smaller snapshot) vs **hosted pre-bundle** (tiny download, no on-device toolchain).
 - [ ] Does **Vite** need a prune command like Expo, or can a Vite example fetch pre-bundled deps from `esm.reactnative.run` (or similar) to cut in-browser load? Investigate — measure a Vite example's snapshot/bundle both ways.
 - [ ] Turn prune into a one-shot pre-snapshot command per stack; document snapshot sizes.
-
-## Known bugs
-
-- [ ] **Expo in the Node environment (headless / CLI).** Running Expo in a box under Node (not the browser) has rough edges:
-  - `npx create-expo-app` / `npx expo …` leak the *host* cwd into the VM, so a relative project path resolves against the host and `expo start/export` fail with `Invalid project root` / `ConfigError: expected package.json … does not exist`. Workarounds today: pass an **absolute** VM path to `create-expo-app`, and invoke the installed CLI directly (`node <app>/node_modules/@expo/cli/build/bin/cli …`) with the project root as a positional, not via `npx`. Fix the npx/cwd propagation so `npx expo` works unmodified.
-  - `expo start` fatally errors on the Expo version endpoint (`CommandError: … Bad Gateway`) unless `EXPO_OFFLINE=1` is set; investigate the CORS-proxy path for `api.expo.dev` under Node.
-  - `expo export --platform web` bundles fine but **crashes after bundling** with `TypeError: this.on is not a function` (an EventEmitter/stream shim gap in the export writer), so it never writes `dist/`. Blocks producing a real web export in-VM.
-  - `expo start` logs `An unknown error occurred while installing React Native DevTools … node_modules/fb-dotslash/index.js: Cannot read properties of undefined (reading 'wasm')` — a `fb-dotslash`/WASM shim gap. Non-fatal (Metro continues) but noisy.
-  - Repro harnesses: `bench/prune-trace.mjs`, `bench/gen-keepset.mjs`.
-- [ ] **Full-screen commands don't react to live terminal resize.** `nano`/`less`/`fastfetch`/`sl` read `LINES`/`COLUMNS` once at launch. Fixed: the shell now mirrors the real terminal size into `LINES`/`COLUMNS` before each command (previously unset → hard-coded 24×80, so on a shorter pane scrolling kicked in ~10 lines late). Still open: if the pane is resized *while* a full-screen command is running, it won't re-fit — needs a resize signal delivered to the running command (a `SIGWINCH`-style hook on `CommandContext`).
+- [ ] Full-screen commands (`nano`/`less`) don't re-fit on live terminal resize — they read `LINES`/`COLUMNS` once at launch (the shell now sets them to the real size, but a mid-run resize needs a `SIGWINCH`-style hook on `CommandContext`).
 
 ---
 
