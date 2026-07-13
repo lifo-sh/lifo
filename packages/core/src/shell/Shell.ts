@@ -879,7 +879,22 @@ export class Shell {
     this.redrawLine();
   }
 
+  /**
+   * Mirror the live terminal dimensions into LINES/COLUMNS so full-screen
+   * commands (nano, less, fastfetch, …) render to the real viewport. Without
+   * this they fall back to 24×80, so on a shorter pane the content overflows
+   * and scrolling kicks in ~(24 - realRows) lines too late.
+   */
+  private syncTerminalSize(): void {
+    const rows = this.terminal?.rows;
+    const cols = this.terminal?.cols;
+    if (typeof rows === 'number' && rows > 0) this.env['LINES'] = String(rows);
+    if (typeof cols === 'number' && cols > 0) this.env['COLUMNS'] = String(cols);
+  }
+
   private async executeLine(line: string): Promise<void> {
+    this.syncTerminalSize();
+
     // History expansion
     const expanded = this.historyManager.expand(line);
     const actualLine = expanded ?? line;
