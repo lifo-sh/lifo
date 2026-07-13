@@ -40,6 +40,11 @@ Runs in the browser and in Node today — the same VM, client-side or server-sid
 
 Each item ships independently and keeps the test suite green.
 
+**Current focus (in order):**
+
+1. A **Node.js + Express example with the preview browser** — a full backend + live preview in one box (part of phase 7).
+2. **Lighter Vite bundling** — prune and/or hosted pre-bundle via `esm.reactnative.run` (part of phase 12).
+
 ### 1. Benchmarks for browser & Node — *in progress*
 
 Reproducible numbers behind the claims, so "~0 ms boot, $0 infra" is backed by data.
@@ -104,7 +109,7 @@ Turn the playground's building blocks into reusable components so anyone can emb
 - [x] Package + document the components with a from-scratch integration example (see the Embeddable UI doc).
 - [ ] Browser chrome — tabs, history (*low priority*, after the core views).
 - [ ] Migrate the playground to consume the packaged components (dogfood).
-- [ ] Example: a **Node/Express server with the preview browser** bound to its port — a full backend + live preview in one box, alongside the existing Vite/Expo examples.
+- [ ] Example: a **Node/Express server with the preview browser** bound to its port — a full backend + live preview in one box, alongside the existing Vite/Expo examples. **← current focus #1**
 
 ### 8. Package manager & WASM runtimes — *planned*
 
@@ -144,7 +149,7 @@ Boot a Lifo box from a `Dockerfile`, and orchestrate several boxes from a `docke
 Snapshots are ~90MB, too big for phones. Two prototypes exist: `pruneExpoModules` (trim `node_modules` to Metro's read set → keeps the real toolchain, ~8-13% of `node_modules`) and a `browser-metro` engine (offloads package bundling to a hosted pre-bundler, `esm.reactnative.run` → ~2MB, no toolchain on device; switchable with real Metro).
 
 - [ ] Decide per-stack: **prune** (keep the real toolchain in a smaller snapshot) vs **hosted pre-bundle** (tiny download, no on-device toolchain).
-- [ ] Does **Vite** need a prune command like Expo, or can a Vite example fetch pre-bundled deps from `esm.reactnative.run` (or similar) to cut in-browser load? Investigate — measure a Vite example's snapshot/bundle both ways.
+- [ ] Does **Vite** need a prune command like Expo, or can a Vite example fetch pre-bundled deps from `esm.reactnative.run` (or similar) to cut in-browser load? Investigate — measure a Vite example's snapshot/bundle both ways. **← current focus #2**
 - [ ] Turn prune into a one-shot pre-snapshot command per stack; document snapshot sizes.
 - [ ] Full-screen commands (`nano`/`less`) don't re-fit on live terminal resize — they read `LINES`/`COLUMNS` once at launch (the shell now sets them to the real size, but a mid-run resize needs a `SIGWINCH`-style hook on `CommandContext`).
 
