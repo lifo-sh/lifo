@@ -104,16 +104,28 @@ Turn the playground's building blocks into reusable components so anyone can emb
 - [x] Package + document the components with a from-scratch integration example (see the Embeddable UI doc).
 - [ ] Browser chrome — tabs, history (*low priority*, after the core views).
 - [ ] Migrate the playground to consume the packaged components (dogfood).
+- [ ] Example: a **Node/Express server with the preview browser** bound to its port — a full backend + live preview in one box, alongside the existing Vite/Expo examples.
 
 ### 8. Package manager & WASM runtimes — *planned*
 
 - [ ] First-class package manager for VM tools.
+- [ ] **Keep the core light.** We've been stuffing commands into `@lifo-sh/core`; move the non-essential ones out into installable packages, pulled in on demand. Core ships only the essentials; everything else is a package.
+- [ ] `vi`/`vim` editor (as an installable package). Feasibility: *medium* — build a modal input state machine (normal/insert/visual) + basic motions/operators on top of the existing full-screen infra we already have for `nano`/`less` (raw-mode input, viewport/scroll, render loop). The plumbing is done; the work is the modal command grammar. Start with a usable subset (h/j/k/l, i/a/o, x/dd/dw, :w/:q/:wq, /search).
+- [ ] `ssh` client (as an installable package). Needs a WebSocket/tunnel transport for the connection — ties into phase 5 (tunnelling & network).
 - [ ] Pluggable WASM runtimes so more binaries (ffmpeg, Python, native CLIs) run inside the VM.
 
 ### 9. Broader Node & serverless coverage — *planned*
 
 - [ ] Extend the Node compatibility layer toward serverless handlers.
 - [ ] Cover more of the ecosystem unmodified.
+
+### 10. Lighter browser bundling for mobile — *exploring*
+
+Snapshots are ~90MB, too big for phones. Two prototypes exist: `pruneExpoModules` (trim `node_modules` to Metro's read set → keeps the real toolchain, ~8-13% of `node_modules`) and a `browser-metro` engine (offloads package bundling to a hosted pre-bundler, `esm.reactnative.run` → ~2MB, no toolchain on device; switchable with real Metro).
+
+- [ ] Decide per-stack: **prune** (keep the real toolchain in a smaller snapshot) vs **hosted pre-bundle** (tiny download, no on-device toolchain).
+- [ ] Does **Vite** need a prune command like Expo, or can a Vite example fetch pre-bundled deps from `esm.reactnative.run` (or similar) to cut in-browser load? Investigate — measure a Vite example's snapshot/bundle both ways.
+- [ ] Turn prune into a one-shot pre-snapshot command per stack; document snapshot sizes.
 
 ## Known bugs
 
@@ -123,6 +135,7 @@ Turn the playground's building blocks into reusable components so anyone can emb
   - `expo export --platform web` bundles fine but **crashes after bundling** with `TypeError: this.on is not a function` (an EventEmitter/stream shim gap in the export writer), so it never writes `dist/`. Blocks producing a real web export in-VM.
   - `expo start` logs `An unknown error occurred while installing React Native DevTools … node_modules/fb-dotslash/index.js: Cannot read properties of undefined (reading 'wasm')` — a `fb-dotslash`/WASM shim gap. Non-fatal (Metro continues) but noisy.
   - Repro harnesses: `bench/prune-trace.mjs`, `bench/gen-keepset.mjs`.
+- [ ] **Full-screen commands don't react to live terminal resize.** `nano`/`less`/`fastfetch`/`sl` read `LINES`/`COLUMNS` once at launch. Fixed: the shell now mirrors the real terminal size into `LINES`/`COLUMNS` before each command (previously unset → hard-coded 24×80, so on a shorter pane scrolling kicked in ~10 lines late). Still open: if the pane is resized *while* a full-screen command is running, it won't re-fit — needs a resize signal delivered to the running command (a `SIGWINCH`-style hook on `CommandContext`).
 
 ---
 
