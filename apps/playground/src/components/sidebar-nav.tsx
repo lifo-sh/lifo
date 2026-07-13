@@ -24,12 +24,13 @@ export function SidebarNav({ activeId, onSelect, onCollapse }: SidebarNavProps) 
       return next;
     });
 
-  const itemButton = (e: { id: string; label: string }) => (
+  const itemButton = (e: { id: string; label: string }, indented = false) => (
     <button
       key={e.id}
       onClick={() => onSelect(e.id)}
       className={cn(
-        'block w-full px-4 py-2 border-none text-[13px] text-left cursor-pointer transition-colors',
+        'block w-full py-2 border-none text-[13px] text-left cursor-pointer transition-colors',
+        indented ? 'pl-9 pr-4' : 'px-4',
         e.id === activeId
           ? 'bg-tokyo-active text-tokyo-blue font-medium'
           : 'bg-transparent text-tokyo-muted hover:bg-tokyo-hover hover:text-tokyo-fg-bright',
@@ -81,7 +82,7 @@ export function SidebarNav({ activeId, onSelect, onCollapse }: SidebarNavProps) 
             </button>
 
             {groupOpen && sections.map(({ subgroup, items }) => {
-              if (subgroup === '') return <div key="_none">{items.map(itemButton)}</div>;
+              if (subgroup === '') return <div key="_none">{items.map((e) => itemButton(e))}</div>;
               const key = `${group}::${subgroup}`;
               const subOpen = !isCollapsed(key);
               return (
@@ -93,7 +94,7 @@ export function SidebarNav({ activeId, onSelect, onCollapse }: SidebarNavProps) 
                     {subOpen ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
                     <span>{subgroup}</span>
                   </button>
-                  {subOpen && items.map(itemButton)}
+                  {subOpen && items.map((e) => itemButton(e, true))}
                 </div>
               );
             })}
