@@ -81,8 +81,10 @@ export function shimScript(port: number): string {
     var method=(init&&init.method)||'GET'; var body=init&&init.body; var bytes=null;
     if(typeof body==='string')bytes=new TextEncoder().encode(body);
     return vmreq(method,url,(init&&init.headers)||{},bytes).then(function(m){
-      var buf=m.bodyBuffer||(m.body?b64dec(m.body).buffer:new ArrayBuffer(0));
-      return new Response(buf,{status:m.statusCode||200,headers:m.headers||{}}); }); };
+      var st=m.statusCode||200; var buf=m.bodyBuffer||(m.body?b64dec(m.body).buffer:new ArrayBuffer(0));
+      // 204/205/304 are null-body statuses — Response throws if given a body.
+      var nb=st===204||st===205||st===304;
+      return new Response(nb?null:buf,{status:st,headers:m.headers||{}}); }); };
   // --- image asset interceptor ---
   // RNW builds /assets/… URLs at RENDER time; the browser would load them from
   // the blob origin (no server, no SW) and 404. Route via the (shimmed) fetch →

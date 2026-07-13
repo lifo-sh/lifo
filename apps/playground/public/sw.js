@@ -389,7 +389,10 @@ async function serveFromVm(event, boxId, port, path) {
 		return new Response(html, { status: res.statusCode || 200, headers });
 	}
 
-	return new Response(bodyBuf, { status: res.statusCode || 200, headers });
+	// 204/205/304 are null-body statuses — the Response constructor throws if
+	// given a body (even an empty buffer), which rejected e.g. DELETE → 204.
+	const nullBody = res.statusCode === 204 || res.statusCode === 205 || res.statusCode === 304;
+	return new Response(nullBody ? null : bodyBuf, { status: res.statusCode || 200, headers });
 }
 
 async function boxForRequest(event) {
