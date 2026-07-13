@@ -43,6 +43,7 @@
   },
   "dependencies": {
     "acorn": "^8.17.0",
+    "browser-metro": "1.0.31",
     "ws": "^8.19.0"
   },
   "peerDependencies": {

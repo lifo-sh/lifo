@@ -1,11 +1,12 @@
 import { type ReactNode, useRef, useState } from 'react';
 import { PanelTopOpen, PanelTopClose } from 'lucide-react';
 import { Panel as RawPanel, type ImperativePanelHandle } from 'react-resizable-panels';
-import { Sandbox, ServiceWorkerBridge } from '@lifo-sh/core';
+import { Sandbox, ServiceWorkerBridge, pruneExpoModules } from '@lifo-sh/core';
 import gitCommand from 'lifo-pkg-git';
 import type { Terminal } from '@lifo-sh/ui';
 import { ExamplePanel } from '@/components/example-panel';
 import { PreviewTabs, type PreviewTab } from '@/components/preview-tabs';
+import { NoSwPreview } from '@/components/nosw-preview';
 import { TerminalArea } from '@/components/terminal-area';
 import { bootShell } from '@/lib/shell';
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable';
@@ -22,6 +23,9 @@ export interface ProjectExampleProps {
   previews?: PreviewTab[];
   /** Extra env for the sandbox (e.g. Expo-friendly defaults for a stock scaffold). */
   env?: Record<string, string>;
+  /** Offer "Prune node_modules" in the box menu (Expo projects) — shrinks the
+   *  box to just what Metro needs before snapshotting. */
+  pruneable?: boolean;
 }
 
 /**
@@ -30,7 +34,7 @@ export interface ProjectExampleProps {
  * preview, split by a resizable handle. The SW bridge serves /_sw/<boxId>/<port>/
  * so each example routes to its own VM.
  */
-export function ProjectExample({ title, subtitle, files, cwd, previewPort, previews, env }: ProjectExampleProps) {
+export function ProjectExample({ title, subtitle, files, cwd, previewPort, previews, env, pruneable }: ProjectExampleProps) {
   const hasPreview = !!(previews?.length || previewPort);
   // Always present the preview as Chrome-like tabs, even for a single port.
   const previewTabs: PreviewTab[] = previews?.length
@@ -54,6 +58,8 @@ export function ProjectExample({ title, subtitle, files, cwd, previewPort, previ
   // *collapsed* (size 0), never unmounted, so the box/kernel/scrollback survive.
   const termPanelRef = useRef<ImperativePanelHandle>(null);
   const [terminalFolded, setTerminalFolded] = useState(false);
+  // Preview transport: 'sw' (service worker) or 'postmessage' (SW-free blob iframe).
+  const [previewEngine, setPreviewEngine] = useState<'sw' | 'postmessage'>('sw');
 
   // The first terminal creates the Sandbox + SW bridge; extra terminals attach
   // a shell onto the shared kernel.
@@ -115,19 +121,44 @@ export function ProjectExample({ title, subtitle, files, cwd, previewPort, previ
         else void bootFirstTerminal(term);
       }}
       onRestart={restart}
+      onPrune={
+        pruneable
+          ? async () => {
+              const sb = sandboxRef.current;
+              if (!sb) return;
+              try {
+                const r = await pruneExpoModules(sb, { onLog: (s) => console.log('[prune]', s) });
+                console.log(`[prune] done — kept ${r.after}/${r.before} node_modules files (~${(r.freedBytes / 1048576).toFixed(0)} MB freed). Snapshot now.`);
+                alert(`Pruned: kept ${r.after} of ${r.before} node_modules files (~${(r.freedBytes / 1048576).toFixed(0)} MB freed). Snapshot now.`);
+              } catch (e) {
+                const msg = e instanceof Error ? e.message : String(e);
+                console.error('[prune] FAILED:', msg);
+                alert(`Prune failed: ${msg}\n\nThe snapshot will be full-size. Make sure the app's web dev server can start (expo start --web).`);
+              }
+            }
+          : undefined
+      }
     />
   );
 
-  // Fold/unfold the terminal panel — lives in the example header (one button
-  // toggles the whole terminal row).
+  // Header actions: a preview-engine switch (SW ⇄ postMessage) + the fold toggle.
   const foldToggle = hasPreview ? (
-    <button
-      onClick={() => (terminalFolded ? termPanelRef.current?.expand() : termPanelRef.current?.collapse())}
-      title={terminalFolded ? 'Show terminal' : 'Hide terminal'}
-      className="w-6 h-6 grid place-items-center rounded bg-transparent border-none cursor-pointer text-tokyo-comment hover:text-tokyo-fg-bright hover:bg-tokyo-hover"
-    >
-      {terminalFolded ? <PanelTopOpen size={14} /> : <PanelTopClose size={14} />}
-    </button>
+    <div className="flex items-center gap-2">
+      <button
+        onClick={() => setPreviewEngine((e) => (e === 'sw' ? 'postmessage' : 'sw'))}
+        title="Switch preview transport (service worker ⇄ SW-free postMessage)"
+        className="h-6 px-2 grid place-items-center rounded bg-tokyo-bg-dark border border-tokyo-border cursor-pointer text-[10px] font-mono text-tokyo-comment hover:text-tokyo-fg-bright"
+      >
+        preview: {previewEngine === 'sw' ? 'SW' : 'postMessage'}
+      </button>
+      <button
+        onClick={() => (terminalFolded ? termPanelRef.current?.expand() : termPanelRef.current?.collapse())}
+        title={terminalFolded ? 'Show terminal' : 'Hide terminal'}
+        className="w-6 h-6 grid place-items-center rounded bg-transparent border-none cursor-pointer text-tokyo-comment hover:text-tokyo-fg-bright hover:bg-tokyo-hover"
+      >
+        {terminalFolded ? <PanelTopOpen size={14} /> : <PanelTopClose size={14} />}
+      </button>
+    </div>
   ) : undefined;
 
   return (
@@ -152,7 +183,13 @@ export function ProjectExample({ title, subtitle, files, cwd, previewPort, previ
           </RawPanel>
           <ResizableHandle className={terminalFolded ? 'hidden' : 'my-0.5'} />
           <ResizablePanel defaultSize={55} minSize={20}>
-            {swReady === null ? (
+            {previewEngine === 'postmessage' ? (
+              sandbox ? (
+                <NoSwPreview kernel={sandbox.kernel} port={previewTabs[0]?.port ?? previewPort ?? 8081} />
+              ) : (
+                <div className="flex-1 h-full grid place-items-center text-[12px] text-tokyo-comment">Booting box…</div>
+              )
+            ) : swReady === null ? (
               <div className="flex-1 h-full grid place-items-center text-[12px] text-tokyo-comment">
                 Starting preview…
               </div>
@@ -160,8 +197,8 @@ export function ProjectExample({ title, subtitle, files, cwd, previewPort, previ
               <PreviewTabs boxId={boxId} tabs={previewTabs} />
             ) : (
               <div className="flex-1 h-full grid place-items-center text-[12px] text-tokyo-comment text-center px-4">
-                Service worker unavailable in this browser — run the tunnel relay and open
-                http://localhost:3005 instead.
+                Service worker unavailable in this browser — switch preview to postMessage (top-right),
+                or run the tunnel relay at http://localhost:3005.
               </div>
             )}
           </ResizablePanel>

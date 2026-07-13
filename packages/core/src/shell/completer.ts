@@ -139,30 +139,54 @@ function completeDirectory(word: string, ctx: CompletionContext): string[] {
   return listEntries(word, ctx, true);
 }
 
+// Characters the lexer treats as special outside quotes. They must be
+// backslash-escaped in a completion, or the completed command won't parse
+// (e.g. a dir named "(archive)" -> `cd \(archive\)/`). '/' and '~' are left
+// alone so path separators and the tilde prefix keep working.
+const SHELL_SPECIAL = /[\s()|;&<>#$`"'\\*?!{}[\]]/g;
+
+function shellEscape(s: string): string {
+  return s.replace(SHELL_SPECIAL, (c) => '\\' + c);
+}
+
+// Strip shell quoting/escaping from a typed word so it matches real filenames.
+function shellUnescape(word: string): string {
+  if (word.startsWith("'")) {
+    // single quotes are literal; drop the (possibly unclosed) quotes
+    return word.replace(/'/g, '');
+  }
+  let s = word;
+  if (s.startsWith('"')) s = s.slice(1).replace(/"$/, '');
+  return s.replace(/\\(.)/g, '$1');
+}
+
 function listEntries(word: string, ctx: CompletionContext, dirsOnly: boolean): string[] {
+  // Work on the unescaped/unquoted form for matching; re-escape on output.
+  const logical = shellUnescape(word);
+
   // Handle tilde
-  let expandedWord = word;
-  let tildePrefix = '';
-  if (word.startsWith('~/')) {
+  let expandedWord = logical;
+  if (logical.startsWith('~/')) {
     const home = ctx.env['HOME'] ?? '/home/user';
-    expandedWord = home + word.slice(1);
-    tildePrefix = '~/';
-  } else if (word === '~') {
+    expandedWord = home + logical.slice(1);
+  } else if (logical === '~') {
     const home = ctx.env['HOME'] ?? '/home/user';
     expandedWord = home;
-    tildePrefix = '~';
   }
 
   let dir: string;
   let prefix: string;
+  let logicalPathPrefix: string; // the dir portion of the typed word, unescaped
 
   if (expandedWord.includes('/')) {
     const lastSlash = expandedWord.lastIndexOf('/');
     dir = resolve(ctx.cwd, expandedWord.slice(0, lastSlash + 1));
     prefix = expandedWord.slice(lastSlash + 1);
+    logicalPathPrefix = logical.slice(0, logical.lastIndexOf('/') + 1);
   } else {
     dir = ctx.cwd;
     prefix = expandedWord;
+    logicalPathPrefix = '';
   }
 
   try {
@@ -174,15 +198,11 @@ function listEntries(word: string, ctx: CompletionContext, dirsOnly: boolean): s
     }
 
     return filtered.map((e) => {
-      const pathPrefix = word.includes('/') ? word.slice(0, word.lastIndexOf('/') + 1) : '';
       const suffix = e.type === 'directory' ? '/' : '';
-
-      // Use tilde prefix if applicable
-      if (tildePrefix && pathPrefix.startsWith(tildePrefix)) {
-        return pathPrefix + e.name + suffix;
-      }
-
-      return pathPrefix + e.name + suffix;
+      // Keep the leading ~ (tilde prefix) unescaped so it still expands.
+      const tilde = logicalPathPrefix.startsWith('~') ? '~' : '';
+      const restPrefix = tilde ? logicalPathPrefix.slice(1) : logicalPathPrefix;
+      return tilde + shellEscape(restPrefix) + shellEscape(e.name) + suffix;
     }).sort();
   } catch {
     return [];

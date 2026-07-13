@@ -64,6 +64,8 @@ export type { VfsChange, SyncOptions } from './kernel/vfs/sync.js';
 
 // VFS snapshot (tar.gz), operable on any VFS — non-blocking (yields)
 export { exportVfsSnapshot, importVfsSnapshot } from './kernel/vfs/snapshot.js';
+export { pruneExpoModules } from './sandbox/prune.js';
+export type { PruneOptions, PruneResult } from './sandbox/prune.js';
 export type { VfsSnapshotOptions } from './kernel/vfs/snapshot.js';
 
 // Blob storage & content store
