@@ -110,7 +110,7 @@ Turn the playground's building blocks into reusable components so anyone can emb
 - [ ] Browser chrome — tabs, history (*low priority*, after the core views).
 - [ ] Migrate the playground to consume the packaged components (dogfood).
 - [x] Example: a **Node/Express server with the preview browser** bound to its port — a full backend + live preview in one box, alongside the existing Vite/Expo examples. **← current focus #1**
-- [ ] **Supabase (tinbase) fidelity:** ship a real `supabase/` folder (migrations, `config.toml`, `seed.sql`) in the example and apply it like a real Supabase project, instead of creating migrations dynamically — so the example replicates an actual Supabase workflow.
+- [x] **Supabase (tinbase) fidelity:** the example ships a real `supabase/` folder (`config.toml`, `migrations/*.sql`, `seed.sql`); `server.mjs` reads and applies it like `supabase db reset`, instead of hard-coding the migration — replicating an actual Supabase workflow.
 
 ### 8. Package manager & WASM runtimes — *planned*
 

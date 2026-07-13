@@ -410,6 +410,12 @@ const CODE_TINBASE = `\
 <span class="code-fn">npm</span> run backend &   <span class="code-comment"># tinbase on :54321 (like supabase start)</span>
 <span class="code-fn">npm</span> run dev &       <span class="code-comment"># vite + react on :5173</span>
 
+<span class="code-comment"># real supabase/ layout — server.mjs reads it, like</span>
+<span class="code-comment"># \`supabase db reset\` applies migrations + seed:</span>
+<span class="code-comment">#   supabase/config.toml</span>
+<span class="code-comment">#   supabase/migrations/20240101000000_create_todos.sql</span>
+<span class="code-comment">#   supabase/seed.sql</span>
+
 <span class="code-comment"># .env — just like a real Supabase project:</span>
 <span class="code-comment">#   VITE_SUPABASE_URL=/_sw/54321</span>
 <span class="code-comment">#   VITE_SUPABASE_ANON_KEY=eyJhbGci...</span>

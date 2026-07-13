@@ -32,23 +32,39 @@ export function tinbaseTodoAppFiles(root: string): Record<string, string> {
 	// inside the VM on port 54321. The database is @tinbase/pg-mem — a pure-JS
 	// Postgres engine (PL/pgSQL, triggers, RLS) — so boot is instant and no
 	// wasm loads; only JSON crosses the service worker.
+	//
+	// Schema + seed come from the standard `supabase/` folder (migrations +
+	// seed.sql), read from disk exactly like `supabase db reset` applies them —
+	// not hard-coded here. Edit supabase/migrations/*.sql and restart the backend.
 	files[`${root}/server.mjs`] = `import { createBackend, createPgmemEngine } from 'tinbase'
 import http from 'node:http'
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
+const dir = path.dirname(fileURLToPath(import.meta.url))
+const migrationsDir = path.join(dir, 'supabase', 'migrations')
+const seedPath = path.join(dir, 'supabase', 'seed.sql')
+
+// Read supabase/migrations/*.sql in filename order — the same files, same order,
+// that \`supabase db reset\` / \`supabase migration up\` apply.
+const migrations = fs.readdirSync(migrationsDir)
+  .filter((f) => f.endsWith('.sql'))
+  .sort()
+  .map((f) => ({ name: f.replace(/\\.sql$/, ''), sql: fs.readFileSync(path.join(migrationsDir, f), 'utf8') }))
+
+const engine = await createPgmemEngine()
 const backend = await createBackend({
   // pg-mem engine: pure-JS Postgres (no wasm) — instant boot. Drop this line
   // to use the default PGlite (Postgres/wasm) engine instead.
-  engine: await createPgmemEngine(),
-  migrations: [{
-    name: '20240101000000_todos',
-    sql: \`create table if not exists todos (
-      id bigint generated always as identity primary key,
-      title text not null,
-      done boolean not null default false,
-      created_at timestamptz not null default now()
-    );\`,
-  }],
+  engine,
+  migrations,
 })
+
+// Apply supabase/seed.sql after migrations, like \`supabase db reset\` does.
+if (fs.existsSync(seedPath)) {
+  await engine.exec(fs.readFileSync(seedPath, 'utf8'))
+}
 
 // tinbase is a (Request) => Response handler; expose it over HTTP.
 const server = http.createServer((req, res) => {
@@ -212,6 +228,50 @@ export function App() {
     </>
   )
 }
+`;
+
+	// ── supabase/ — a real Supabase project layout (config + migrations + seed) ──
+	// server.mjs reads migrations/ and seed.sql from here, mirroring how the
+	// Supabase CLI applies them. Edit these files to evolve the schema.
+
+	files[`${root}/supabase/config.toml`] = `# Supabase project config — https://supabase.com/docs/guides/cli/config
+# In Lifo the tinbase server (server.mjs) reads supabase/migrations + seed.sql
+# and serves the Supabase-compatible API + Studio together on port 54321.
+project_id = "tinbase-todo"
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+port = 54322
+major_version = 15
+
+[studio]
+enabled = true
+port = 54323
+
+[auth]
+enabled = true
+site_url = "http://localhost:5173"
+`;
+
+	files[`${root}/supabase/migrations/20240101000000_create_todos.sql`] = `-- Create the todos table.
+create table if not exists todos (
+  id bigint generated always as identity primary key,
+  title text not null,
+  done boolean not null default false,
+  created_at timestamptz not null default now()
+);
+`;
+
+	files[`${root}/supabase/seed.sql`] = `-- Seed data, applied after migrations (like \`supabase db reset\`).
+insert into todos (title, done) values
+  ('Edit supabase/migrations to change the schema', false),
+  ('Add seed rows in supabase/seed.sql', true);
 `;
 
 	return files;
