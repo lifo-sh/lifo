@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Terminal } from '@lifo-sh/ui';
-import { MoreVertical, Plus, Activity, Square, RotateCcw, Download, Upload, X, FileText } from 'lucide-react';
+import { MoreVertical, Plus, Activity, Square, RotateCcw, Download, Upload, X, FileText, Scissors } from 'lucide-react';
 import { downloadSnapshot, pickAndRestoreSnapshot } from '@/lib/box-snapshot';
 import { cn } from '@/lib/utils';
 import { TerminalView } from '@/components/terminal-view';
@@ -24,6 +24,9 @@ interface TerminalAreaProps {
   /** Restart the box — only shown when provided (project examples). Snapshot &
    *  restore are always offered whenever a box exists. */
   onRestart?: () => void;
+  /** Prune the Expo project's node_modules for a small snapshot — only shown
+   *  when provided (Expo examples). Runs before the user snapshots. */
+  onPrune?: () => Promise<void>;
 }
 
 type Tab =
@@ -39,7 +42,7 @@ const README_ID = -1;
  * restart, snapshot, restore — the latter three only when handlers are given).
  * Every tab is closable; the box menu reopens Processes if it was closed.
  */
-export function TerminalArea({ bootTab, box, initialLabels, canAdd = true, onRestart }: TerminalAreaProps) {
+export function TerminalArea({ bootTab, box, initialLabels, canAdd = true, onRestart, onPrune }: TerminalAreaProps) {
   const labels = initialLabels?.length ? initialLabels : ['Terminal 1'];
   // The example's code sample, captured at mount, shown as a README.md tab.
   const chrome = useOutputChrome();
@@ -163,6 +166,8 @@ export function TerminalArea({ bootTab, box, initialLabels, canAdd = true, onRes
     { label: 'Process manager', icon: Activity, onClick: openProcesses },
     { label: 'Stop all', icon: Square, onClick: () => void stopAll() },
     ...(onRestart ? [{ label: 'Restart box', icon: RotateCcw, onClick: () => { setMenuOpen(false); onRestart(); } }] : []),
+    // Prune node_modules (Expo examples) — shrinks the box before snapshotting.
+    ...(onPrune ? [{ label: 'Prune node_modules', icon: Scissors, onClick: run('Pruning node_modules (~15s)…', onPrune) }] : []),
     // Snapshot & restore work off any box's VFS, so every example gets them.
     ...(box ? [
       { label: 'Snapshot (download)', icon: Download, onClick: run('Snapshotting…', () => downloadSnapshot(box.kernel.vfs)) },

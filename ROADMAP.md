@@ -115,6 +115,15 @@ Turn the playground's building blocks into reusable components so anyone can emb
 - [ ] Extend the Node compatibility layer toward serverless handlers.
 - [ ] Cover more of the ecosystem unmodified.
 
+## Known bugs
+
+- [ ] **Expo in the Node environment (headless / CLI).** Running Expo in a box under Node (not the browser) has rough edges:
+  - `npx create-expo-app` / `npx expo …` leak the *host* cwd into the VM, so a relative project path resolves against the host and `expo start/export` fail with `Invalid project root` / `ConfigError: expected package.json … does not exist`. Workarounds today: pass an **absolute** VM path to `create-expo-app`, and invoke the installed CLI directly (`node <app>/node_modules/@expo/cli/build/bin/cli …`) with the project root as a positional, not via `npx`. Fix the npx/cwd propagation so `npx expo` works unmodified.
+  - `expo start` fatally errors on the Expo version endpoint (`CommandError: … Bad Gateway`) unless `EXPO_OFFLINE=1` is set; investigate the CORS-proxy path for `api.expo.dev` under Node.
+  - `expo export --platform web` bundles fine but **crashes after bundling** with `TypeError: this.on is not a function` (an EventEmitter/stream shim gap in the export writer), so it never writes `dist/`. Blocks producing a real web export in-VM.
+  - `expo start` logs `An unknown error occurred while installing React Native DevTools … node_modules/fb-dotslash/index.js: Cannot read properties of undefined (reading 'wasm')` — a `fb-dotslash`/WASM shim gap. Non-fatal (Metro continues) but noisy.
+  - Repro harnesses: `bench/prune-trace.mjs`, `bench/gen-keepset.mjs`.
+
 ---
 
 Priorities shift with real usage. Have a use case? Open an issue.

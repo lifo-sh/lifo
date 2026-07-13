@@ -19,6 +19,7 @@ export default function CreateExpoAppExample() {
       files={{}}
       cwd="/home/user"
       previewPort={8081}
+      pruneable
       // Defaults a stock project doesn't set for itself, so `expo start` behaves
       // in the VM. NOTE: do NOT set EXPO_OFFLINE — create-expo-app needs the
       // network to download the template tarball (offline → "Could not find npm
