@@ -19,7 +19,7 @@
  * expo-router synthetic entry.
  */
 import {
-  Bundler,
+  IncrementalBundler,
   VirtualFS,
   typescriptTransformer,
   createReactRefreshTransformer,
@@ -27,7 +27,7 @@ import {
   createExpoWebShimsPlugin,
   createUnsupportedWebPackagesPlugin,
 } from 'browser-metro';
-import type { FileMap, BundlerConfig, BundlerPlugin } from 'browser-metro';
+import type { FileMap, BundlerConfig, BundlerPlugin, FileChange } from 'browser-metro';
 import type { Command } from '../types.js';
 import type { Kernel, VirtualRequest, VirtualResponse } from '../../kernel/index.js';
 import { resolve } from '../../utils/path.js';
@@ -175,13 +175,18 @@ function publicEnv(env: Record<string, string>): Record<string, string> {
   return out;
 }
 
-function pageHtml(): string {
+// The HMR client: polls /__bmhmr and either reloads (a rebuild that can't be
+// hot-applied) or forwards each hot update to the bundle's in-iframe HMR runtime
+// via window.postMessage({type:'hmr-update', …}) — which does React Refresh.
+function pageHtml(bundleVersion: number, hmrSeq: number): string {
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <style>html,body{height:100%;margin:0}body{overflow:hidden}#root{display:flex;height:100%;flex:1}</style>
 <script src="https://cdn.tailwindcss.com"></script>
-<script>(function(){var v;function p(){fetch('/__bmver',{cache:'no-store'}).then(function(r){return r.text();}).then(function(t){if(v===undefined)v=t;else if(t!==v)location.reload();setTimeout(p,1000);}).catch(function(){setTimeout(p,1500);});}p();})();</script>
+<script>(function(){var B=${bundleVersion},H=${hmrSeq};function p(){fetch('/__bmhmr?b='+B+'&h='+H,{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){if(d.reload){location.reload();return;}if(d.updates){for(var i=0;i<d.updates.length;i++){var u=d.updates[i];window.postMessage({type:'hmr-update',updatedModules:u.update.updatedModules,removedModules:u.update.removedModules,reverseDepsMap:u.update.reverseDepsMap},'*');H=u.seq;}}setTimeout(p,300);}).catch(function(){setTimeout(p,800);});}p();})();</script>
 </head><body><div id="root"></div><script src="/index.bundle"></script></body></html>`;
 }
+
+interface HmrEntry { seq: number; update: { updatedModules: Record<string, string>; removedModules: string[]; reverseDepsMap?: Record<string, string[]> } }
 
 export function createBrowserMetroCommand(kernel: Kernel): Command {
   return async (ctx) => {
@@ -200,97 +205,143 @@ export function createBrowserMetroCommand(kernel: Kernel): Command {
       resolver: { sourceExts: SOURCE_EXTS },
       transformer: createReactRefreshTransformer(typescriptTransformer),
       server: { packageServerUrl: PACKAGE_SERVER },
+      hmr: { enabled: true, reactRefresh: true },
       plugins: [createDataBxPathPlugin(), makeExpoWebPlugin(), createExpoWebShimsPlugin(), createUnsupportedWebPackagesPlugin()],
       routerShim: true,
       assetPublicPath: ASSET_PREFIX,
       env: publicEnv(ctx.env),
     };
 
-    let currentBundle = '';
-    let version = 0;
-    let building = false;
-
-    // Assets live in the VFS (not on any HTTP origin like RapidNative's Supabase
-    // Storage), so we can't just point assetPublicPath at a URL. In the browser
-    // we read the bytes and materialize each asset as a blob: URL, then rewrite
-    // the bundle's `${ASSET_PREFIX}/…` URIs to those blobs — the preview iframe
-    // (same-origin) uses them directly, no per-request serving. In Node (no
-    // createObjectURL) we keep the paths and serve bytes via the port route.
+    // Assets live in the VFS (not on an HTTP origin like RapidNative's Supabase
+    // Storage), so we read the bytes and materialize each as a blob: URL, then
+    // rewrite the bundle's `${ASSET_PREFIX}/…` URIs (in the full bundle AND in
+    // hot-update module code) to those blobs — the same-origin preview iframe
+    // uses them directly. In Node (no createObjectURL) we keep the paths and
+    // serve bytes via the port route as a fallback.
     const canBlob = typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function' && typeof Blob !== 'undefined';
-    let assetBlobs: string[] = [];
-    const revokeAssetBlobs = () => { for (const u of assetBlobs) { try { URL.revokeObjectURL(u); } catch { /* ignore */ } } assetBlobs = []; };
+    const assetBlobs = new Map<string, string>(); // uri -> blob URL
+    const revokeAssetBlobs = () => { for (const u of assetBlobs.values()) { try { URL.revokeObjectURL(u); } catch { /* ignore */ } } assetBlobs.clear(); };
     const ASSET_URI_RE = new RegExp(ASSET_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '/[^"\'`\\s)]+', 'g');
-    const materializeAssets = (bundle: string): string => {
-      if (!canBlob) return bundle;
-      revokeAssetBlobs();
-      const uris = new Set(bundle.match(ASSET_URI_RE) || []);
-      for (const uri of uris) {
-        const full = dir + uri.slice(ASSET_PREFIX.length);
-        try {
-          const bytes = kernel.vfs.readFile(full) as Uint8Array;
-          const blobUrl = URL.createObjectURL(new Blob([bytes as BlobPart], { type: mimeOf(uri) }));
-          assetBlobs.push(blobUrl);
-          bundle = bundle.split(uri).join(blobUrl);
-        } catch { /* leave the path; port route serves it as a fallback */ }
+    const materializeAssets = (code: string): string => {
+      if (!canBlob) return code;
+      for (const uri of new Set(code.match(ASSET_URI_RE) || [])) {
+        let blobUrl = assetBlobs.get(uri);
+        if (!blobUrl) {
+          try {
+            const bytes = kernel.vfs.readFile(dir + uri.slice(ASSET_PREFIX.length)) as Uint8Array;
+            blobUrl = URL.createObjectURL(new Blob([bytes as BlobPart], { type: mimeOf(uri) }));
+            assetBlobs.set(uri, blobUrl);
+          } catch { continue; }
+        }
+        code = code.split(uri).join(blobUrl);
       }
-      return bundle;
+      return code;
     };
 
-    const rebuild = async (): Promise<boolean> => {
-      const vfs = new VirtualFS(readFileMap(kernel.vfs, dir));
-      const entry = ensureEntry(vfs);
-      if (!entry) { ctx.stderr.write('browser-metro: no entry file (index/App or expo-router/entry) found\n'); return false; }
-      const bundle = await new Bundler(vfs, config).bundle(entry);
-      currentBundle = materializeAssets(bundle);
-      version++;
-      return true;
-    };
+    // ── incremental bundler over a persistent VFS ────────────────────────────
+    const bvfs = new VirtualFS(readFileMap(kernel.vfs, dir));
+    const entry = ensureEntry(bvfs);
+    if (!entry) { ctx.stderr.write('browser-metro: no entry file (index/App or expo-router/entry) found\n'); return 1; }
+    const bundler = new IncrementalBundler(bvfs, config);
+
+    let currentBundle = '';   // latest full bundle (for fresh loads / reloads)
+    let bundleVersion = 1;    // bumped when a rebuild can't be hot-applied → clients reload
+    let hmrSeq = 0;           // bumped per hot update
+    let hmrLog: HmrEntry[] = [];
 
     ctx.stdout.write(`browser-metro: bundling ${dir} (packages from ${PACKAGE_SERVER})…\n`);
     const t0 = Date.now();
     try {
-      if (!(await rebuild())) return 1;
+      const r = await bundler.build(entry);
+      currentBundle = materializeAssets(r.bundle);
     } catch (e) {
       ctx.stderr.write(`browser-metro: bundle failed: ${e instanceof Error ? e.message : String(e)}\n`);
       return 1;
     }
-    ctx.stdout.write(`browser-metro: bundled in ${((Date.now() - t0) / 1000).toFixed(1)}s (${(currentBundle.length / 1048576).toFixed(2)} MB). Serving on port ${port}.\n`);
+    ctx.stdout.write(`browser-metro: bundled in ${((Date.now() - t0) / 1000).toFixed(1)}s (${(currentBundle.length / 1048576).toFixed(2)} MB). Serving on port ${port} (HMR on).\n`);
 
     const handler = (req: VirtualRequest, res: VirtualResponse): void => {
-      const path = req.url.split('?')[0];
+      const [path, query] = req.url.split('?');
       if (path === '/index.bundle' || path.endsWith('/index.bundle')) {
         res.statusCode = 200; res.headers['content-type'] = 'application/javascript; charset=utf-8'; res.body = currentBundle;
-      } else if (path === '/__bmver') {
-        res.statusCode = 200; res.headers['content-type'] = 'text/plain'; res.body = String(version);
+      } else if (path === '/__bmhmr') {
+        const q = new URLSearchParams(query || '');
+        const cb = Number(q.get('b') || 0), ch = Number(q.get('h') || 0);
+        res.statusCode = 200; res.headers['content-type'] = 'application/json';
+        res.body = cb < bundleVersion
+          ? JSON.stringify({ reload: true, bundleVersion })
+          : JSON.stringify({ reload: false, bundleVersion, hmrSeq, updates: hmrLog.filter((u) => u.seq > ch) });
       } else if (path.startsWith(ASSET_PREFIX + '/')) {
-        // Serve an external asset's raw bytes from the VFS (binary-safe).
         const full = dir + path.slice(ASSET_PREFIX.length);
         try {
-          const bytes = kernel.vfs.readFile(full) as Uint8Array;
-          res.statusCode = 200;
-          res.headers['content-type'] = mimeOf(path);
-          res.headers['cache-control'] = 'no-cache';
-          res.bodyBytes = bytes;
+          res.statusCode = 200; res.headers['content-type'] = mimeOf(path); res.headers['cache-control'] = 'no-cache';
+          res.bodyBytes = kernel.vfs.readFile(full) as Uint8Array;
         } catch {
           res.statusCode = 404; res.headers['content-type'] = 'text/plain'; res.body = `asset not found: ${path}`;
         }
       } else {
-        res.statusCode = 200; res.headers['content-type'] = 'text/html; charset=utf-8'; res.body = pageHtml();
+        res.statusCode = 200; res.headers['content-type'] = 'text/html; charset=utf-8'; res.body = pageHtml(bundleVersion, hmrSeq);
       }
     };
     kernel.portRegistry.set(port, handler);
 
-    // Rebuild on file change (debounced), full reload via the version poller.
+    // ── file-watch → incremental rebuild → HMR (or reload) ───────────────────
+    const decoder = new TextDecoder();
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const unwatch = kernel.vfs.watch(() => {
-      if (building) return;
+    let building = false;
+    let pending = new Set<string>();
+
+    const flush = async (): Promise<void> => {
+      if (building) return;                 // a rebuild is running; the timer will re-fire
+      const paths = [...pending]; pending = new Set();
+      const changes: FileChange[] = [];
+      let routeStructureChanged = false;
+      for (const abs of paths) {
+        const rel = abs.slice(dir.length);
+        if (!rel.startsWith('/') || SKIP_SEG.test(rel)) continue;
+        if (!kernel.vfs.exists(abs)) {
+          if (bvfs.exists(rel)) { bvfs.delete(rel); changes.push({ path: rel, type: 'delete' }); if (rel.startsWith('/app/')) routeStructureChanged = true; }
+          continue;
+        }
+        if (ASSET_EXT.test(rel)) { assetBlobs.delete(ASSET_PREFIX + rel); continue; }
+        const existed = bvfs.exists(rel);
+        try { bvfs.write(rel, decoder.decode(kernel.vfs.readFile(abs) as Uint8Array)); } catch { continue; }
+        changes.push({ path: rel, type: existed ? 'update' : 'create' });
+        if (!existed && rel.startsWith('/app/')) routeStructureChanged = true;
+      }
+      if (changes.length === 0) return;
+      // expo-router: adding/removing a route file regenerates the route context.
+      if (routeStructureChanged && bvfs.getPackageMain() === 'expo-router/entry') {
+        bvfs.write('/__expo_ctx.js', buildExpoRouteContext(bvfs));
+        changes.push({ path: '/__expo_ctx.js', type: 'update' });
+      }
+      building = true;
+      try {
+        const r = await bundler.rebuild(changes);
+        if (r.type === 'full' || !r.hmrUpdate || r.hmrUpdate.requiresReload) {
+          currentBundle = materializeAssets(r.bundle); bundleVersion++; hmrLog = [];
+          ctx.stdout.write(`browser-metro: full rebuild → reload (v${bundleVersion}).\n`);
+        } else {
+          currentBundle = materializeAssets(r.bundle);
+          const updatedModules: Record<string, string> = {};
+          for (const [k, v] of Object.entries(r.hmrUpdate.updatedModules)) updatedModules[k] = materializeAssets(v);
+          hmrLog.push({ seq: ++hmrSeq, update: { updatedModules, removedModules: r.hmrUpdate.removedModules, reverseDepsMap: r.hmrUpdate.reverseDepsMap } });
+          if (hmrLog.length > 300) hmrLog = hmrLog.slice(-300);
+          ctx.stdout.write(`browser-metro: hot update (${Object.keys(updatedModules).length} module(s)).\n`);
+        }
+      } catch (e) {
+        ctx.stderr.write(`browser-metro: rebuild failed: ${e instanceof Error ? e.message : String(e)}\n`);
+      } finally {
+        building = false;
+        if (pending.size) { clearTimeout(timer); timer = setTimeout(() => { void flush(); }, 50); }
+      }
+    };
+
+    const unwatch = kernel.vfs.watch((event: { path?: string; oldPath?: string }) => {
+      if (event.path) pending.add(event.path);
+      if (event.oldPath) pending.add(event.oldPath);
       clearTimeout(timer);
-      timer = setTimeout(async () => {
-        building = true;
-        try { await rebuild(); ctx.stdout.write(`browser-metro: rebuilt (v${version}).\n`); }
-        catch (e) { ctx.stderr.write(`browser-metro: rebuild failed: ${e instanceof Error ? e.message : String(e)}\n`); }
-        finally { building = false; }
-      }, 250);
+      timer = setTimeout(() => { void flush(); }, 200);
     });
 
     // Run until the command is aborted (Ctrl-C / kill).
