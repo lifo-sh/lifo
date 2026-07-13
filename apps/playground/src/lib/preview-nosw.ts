@@ -49,7 +49,7 @@ function vmFetch(kernel: Kernel, port: number, url: string, timeoutMs = 120000):
  * so it runs first. Tunnels the app's runtime fetch/XHR/WebSocket to the parent
  * over window.postMessage. `__LIFO_PORT` is stamped in by the host.
  */
-function shimScript(port: number): string {
+export function shimScript(port: number): string {
   return `(function(){
   var PORT=${port};
   var parentWin=window.parent, seq=0, pending=new Map(), wsConns=new Map();
@@ -139,13 +139,21 @@ function shimScript(port: number): string {
   window.XMLHttpRequest=ShimXHR;
   // --- WebSocket shim (HMR / React Refresh) ---
   var OrigWS=window.WebSocket;
-  function LifoWS(url,protocols){ var u; try{u=new URL(url,location.href);}catch(_){return new OrigWS(url,protocols);}
-    var sameHost=(u.host==='localhost:'+PORT||u.host===location.host)&&(u.protocol==='ws:'||u.protocol==='wss:');
-    if(!sameHost)return new OrigWS(url,protocols); var self=this;
-    this.url=u.href; this.readyState=0; this.bufferedAmount=0; this.protocol=Array.isArray(protocols)?(protocols[0]||''):(protocols||''); this.binaryType='blob';
+  function LifoWS(url,protocols){
+    var raw=String(url), pathSearch=null;
+    // Metro in a blob: iframe builds ws:///hot and ws:///message — window.location.host
+    // is '' in a blob document, so the URL has an empty authority (three slashes).
+    // Host detection is unreliable there (Node reads the path as the host; browsers
+    // vary), so match the raw string and tunnel to the preview PORT.
+    if(/^wss?:\\/\\/\\//i.test(raw)){ pathSearch=raw.replace(/^wss?:\\/\\//i,''); if(pathSearch.charAt(0)!=='/')pathSearch='/'+pathSearch; }
+    else { var u=null; try{u=new URL(raw,location.href);}catch(_){}
+      if(u&&(u.protocol==='ws:'||u.protocol==='wss:')&&(u.host==='localhost:'+PORT||u.host===location.host))pathSearch=u.pathname+u.search;
+      else return new OrigWS(url,protocols); }
+    var self=this;
+    this.url=raw; this.readyState=0; this.bufferedAmount=0; this.protocol=Array.isArray(protocols)?(protocols[0]||''):(protocols||''); this.binaryType='blob';
     this.onopen=null;this.onmessage=null;this.onclose=null;this.onerror=null; this._l={open:[],message:[],close:[],error:[]};
     this.connId='ws'+(seq++); wsConns.set(this.connId,this);
-    parentWin.postMessage({type:'ws-open',connId:this.connId,port:PORT,url:u.pathname+u.search,protocol:this.protocol},'*');
+    parentWin.postMessage({type:'ws-open',connId:this.connId,port:PORT,url:pathSearch,protocol:this.protocol},'*');
     this.__open=function(){self.readyState=1;self.__emit('open',{});};
     this.__msg=function(b64,binary){var data;if(binary){var buf=b64dec(b64).buffer;data=self.binaryType==='arraybuffer'?buf:new Blob([buf]);}else{data=new TextDecoder().decode(b64dec(b64));}self.__emit('message',{data:data});};
     this.__close=function(code,reason){if(self.readyState===3)return;self.readyState=3;self.__emit('close',{code:code||1000,reason:reason||'',wasClean:code===1000});};
@@ -168,8 +176,10 @@ function shimScript(port: number): string {
  * constructor, and the History stack, carrying the real route in location.hash
  * so the router reads a clean "/" path. Runs before the bundle.
  */
-function routerShim(): string {
+export function routerShim(bundleBlob: string, realBundlePath: string): string {
   return `(function() {
+  var BUNDLE_BLOB = ${JSON.stringify(bundleBlob)};
+  var BUNDLE_PATH = ${JSON.stringify(realBundlePath)};
   var rawHash = location.hash.slice(1) || '/';
   var hashIdx = rawHash.indexOf('#');
   var virtualHash = '';
@@ -183,7 +193,12 @@ function routerShim(): string {
   var virtualHref = virtualOrigin + virtualPathname + virtualSearch + virtualHash;
   try { Object.defineProperty(Document.prototype, 'URL', { get: function() { return virtualHref; }, configurable: true }); } catch(e) {}
   var OrigURL = URL;
-  var _URL = function(url, base) { var u = String(url); if (u.indexOf('blob:') === 0) u = virtualHref; if (arguments.length > 1) return new OrigURL(u, base); return new OrigURL(u); };
+  var _URL = function(url, base) { var u = String(url);
+    // Metro reads document.currentScript.src (our bundle blob) to build its HMR
+    // entry point — map that blob back to the real bundle URL so register-entrypoints
+    // matches the in-VM graph. Other blob: URLs are the virtual document route.
+    if (BUNDLE_BLOB && u === BUNDLE_BLOB) return new OrigURL(virtualOrigin + BUNDLE_PATH);
+    if (u.indexOf('blob:') === 0) u = virtualHref; if (arguments.length > 1) return new OrigURL(u, base); return new OrigURL(u); };
   _URL.prototype = OrigURL.prototype;
   _URL.createObjectURL = OrigURL.createObjectURL; _URL.revokeObjectURL = OrigURL.revokeObjectURL; _URL.canParse = OrigURL.canParse;
   window.URL = _URL;
@@ -243,20 +258,27 @@ export async function mountNoSwPreview(iframe: HTMLIFrameElement, kernel: Kernel
   let html = new TextDecoder().decode(htmlRes.body);
 
   // 2. Find the bundle <script src>, fetch it, rewrite static asset URLs to blobs.
+  //    We load the bundle from a blob: URL, so `document.currentScript.src` becomes
+  //    that blob. Metro derives its HMR entry point from currentScript.src
+  //    (getFullBundlerUrl), so we remember the REAL bundle path and map the blob
+  //    back to it in the router shim — otherwise register-entrypoints sends a blob:
+  //    URL Metro can't match and no HMR updates are ever pushed.
+  let bundleBlob = '';
+  let realBundlePath = '';
   const scriptMatch = html.match(/<script\s+src=["']([^"']+\.bundle[^"']*)["']/i);
   if (scriptMatch) {
-    const bundleUrl = scriptMatch[1].startsWith('/') ? scriptMatch[1] : '/' + scriptMatch[1];
-    const bundleRes = await vmFetch(kernel, port, bundleUrl);
+    realBundlePath = scriptMatch[1].startsWith('/') ? scriptMatch[1] : '/' + scriptMatch[1];
+    const bundleRes = await vmFetch(kernel, port, realBundlePath);
     // Assets are handled at RUNTIME (img.src / FontFace interceptors in the
     // shim) — RN builds /assets/ URLs at render time from registry metadata, so
     // static bundle-string rewriting would only catch fragments.
-    const bundleBlob = mkBlob(bundleRes.body, 'application/javascript');
+    bundleBlob = mkBlob(bundleRes.body, 'application/javascript');
     html = html.replace(scriptMatch[0], `<script src="${bundleBlob}"`);
   }
 
   // 3. Inject the router shim (URL virtualization) then the transport shim,
   //    both before the bundle so they run first.
-  html = html.replace(/<head(\s[^>]*)?>/i, (h) => `${h}\n<script>${routerShim()}</script>\n<script>${shimScript(port)}</script>`);
+  html = html.replace(/<head(\s[^>]*)?>/i, (h) => `${h}\n<script>${routerShim(bundleBlob, realBundlePath)}</script>\n<script>${shimScript(port)}</script>`);
 
   // 4. Serve the HTML as a blob and point the iframe at it.
   const htmlBlob = mkBlob(new TextEncoder().encode(html), 'text/html');
