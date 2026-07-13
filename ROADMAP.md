@@ -150,8 +150,8 @@ Boot a Lifo box from a `Dockerfile`, and orchestrate several boxes from a `docke
 
 Snapshots are ~90MB, too big for phones. Two prototypes exist: `pruneExpoModules` (trim `node_modules` to Metro's read set → keeps the real toolchain, ~8-13% of `node_modules`) and a `browser-metro` engine (offloads package bundling to a hosted pre-bundler, `esm.reactnative.run` → ~2MB, no toolchain on device; switchable with real Metro).
 
-- [ ] Decide per-stack: **prune** (keep the real toolchain in a smaller snapshot) vs **hosted pre-bundle** (tiny download, no on-device toolchain).
-- [ ] Does **Vite** need a prune command like Expo, or can a Vite example fetch pre-bundled deps from `esm.reactnative.run` (or similar) to cut in-browser load? Investigate — measure a Vite example's snapshot/bundle both ways. **← current focus #2**
+- [ ] Decide per-stack: **prune** (keep the real toolchain in a smaller snapshot) vs **hosted pre-bundle** (tiny download, no on-device toolchain). Finding so far: the heavy-snapshot problem is **Metro / React-Native-specific**; Vite is already light (see below).
+- [x] **Vite investigated** (measured, `bench/measure-vite.mjs`) — **no prune or hosted pre-bundle needed.** A Vite + React app is ~21 MB `node_modules` → a **4.5 MB full gzipped snapshot** (smaller than a *pruned* Expo app, ~8 MB). esbuild runs as wasm-from-CDN, so no native binary is in the read path. A generic prune *would* shave it to ~1.7 MB (Vite reads only ~16% of files), but the ROI is low and read-trace prune is fragile (misses dynamic requires). And `esm.reactnative.run` doesn't fit Vite: Metro's win was offloading on-device *app bundling*, but Vite serves ESM on demand and pre-bundles only deps (esbuild-wasm) — the dev toolchain (vite + rollup + babel ≈ 10 MB) must run in the VM regardless and can't be moved to a CDN.
 - [ ] Turn prune into a one-shot pre-snapshot command per stack; document snapshot sizes.
 - [ ] Full-screen commands (`nano`/`less`) don't re-fit on live terminal resize — they read `LINES`/`COLUMNS` once at launch (the shell now sets them to the real size, but a mid-run resize needs a `SIGWINCH`-style hook on `CommandContext`).
 
