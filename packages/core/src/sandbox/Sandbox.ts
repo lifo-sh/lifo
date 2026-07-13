@@ -11,6 +11,7 @@ import { createHelpCommand } from '../commands/system/help.js';
 import { createNodeCommand } from '../commands/system/node.js';
 import { createCurlCommand } from '../commands/net/curl.js';
 import { createTunnelCommandV2 } from '../commands/net/tunnel-v2.js';
+import { createBrowserMetroCommand } from '../commands/system/browser-metro.js';
 import { createIfconfigCommand } from '../commands/net/ifconfig.js';
 import { createRouteCommand } from '../commands/net/route.js';
 import { createNetstatCommand } from '../commands/net/netstat.js';
@@ -130,6 +131,7 @@ export class Sandbox {
 		registry.register('node', createNodeCommand(kernel));
 		registry.register('curl', createCurlCommand(kernel));
 		registry.register('tunnel', createTunnelCommandV2(kernel));
+		registry.register('browser-metro', createBrowserMetroCommand(kernel));
 
 		// Register network commands
 		registry.register('ifconfig', createIfconfigCommand(kernel));

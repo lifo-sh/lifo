@@ -484,6 +484,21 @@ const CODE_CREATE_EXPO_APP = `\
 <span class="code-comment"># which needs the relay as a CORS proxy:</span>
 <span class="code-comment">#   node apps/tunnel-server/server.js   (on your machine)</span>`;
 
+const CODE_BROWSER_METRO = `\
+<span class="code-comment"># browser-metro: a light Metro REPLACEMENT inside Lifo.</span>
+<span class="code-comment"># No node_modules, no real Metro/Babel in the VM — your</span>
+<span class="code-comment"># files are sucrase-transformed and npm packages come</span>
+<span class="code-comment"># pre-built from esm.reactnative.run (~2 MB bundle).</span>
+
+<span class="code-fn">browser-metro</span>            <span class="code-comment"># bundles + serves on :8081</span>
+
+<span class="code-comment"># edit App.tsx and save → the preview reloads.</span>
+<span class="code-comment"># assets become blob: URLs from the VFS; icon fonts</span>
+<span class="code-comment"># come inlined from the package server.</span>
+
+<span class="code-comment"># it's a switchable option — for full-fidelity real Metro:</span>
+<span class="code-fn">npx</span> expo start --web    <span class="code-comment"># heavier; installs node_modules</span>`;
+
 const CODE_EXPO_SUPABASE = `\
 <span class="code-comment"># Expo Router + Supabase, both entirely in the VM: a React</span>
 <span class="code-comment"># Native web app (Metro + Fast Refresh) talking supabase-js</span>
@@ -525,5 +540,6 @@ export const codeSnippets: Record<string, string> = {
 	expo: CODE_EXPO,
 	'expo-router': CODE_EXPO_ROUTER,
 	'create-expo-app': CODE_CREATE_EXPO_APP,
+	'browser-metro': CODE_BROWSER_METRO,
 	'expo-supabase': CODE_EXPO_SUPABASE,
 };
