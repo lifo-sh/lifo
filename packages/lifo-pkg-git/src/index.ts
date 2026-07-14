@@ -233,11 +233,14 @@ async function gitClone(git: Git, ctx: CommandContext, fs: GitFs): Promise<numbe
     await git.clone({
       fs,
       http: createHttpClient(),
+      // Route through a git CORS proxy in the browser (git hosts don't send CORS
+      // headers). Set by the playground to a dedicated proxy so heavy pack data
+      // never hits our own /_cors. Undefined in Node → direct fetch.
+      corsProxy: ctx.env.LIFO_GIT_CORS_PROXY || undefined,
       dir,
       url,
       singleBranch: true,
       depth: 1,
-      corsProxy: undefined,
     });
     ctx.stdout.write('done.\n');
     return 0;
@@ -645,6 +648,7 @@ async function gitPush(git: Git, ctx: CommandContext, fs: GitFs): Promise<number
     const result = await git.push({
       fs,
       http: createHttpClient(),
+      corsProxy: ctx.env.LIFO_GIT_CORS_PROXY || undefined,
       dir,
       remote,
       ref,
@@ -720,6 +724,7 @@ async function gitPull(git: Git, ctx: CommandContext, fs: GitFs): Promise<number
     await git.pull({
       fs,
       http: createHttpClient(),
+      corsProxy: ctx.env.LIFO_GIT_CORS_PROXY || undefined,
       dir,
       remote: remoteName,
       ref: ref || currentBranch,
@@ -781,6 +786,7 @@ async function gitFetch(git: Git, ctx: CommandContext, fs: GitFs): Promise<numbe
     const result = await git.fetch({
       fs,
       http: createHttpClient(),
+      corsProxy: ctx.env.LIFO_GIT_CORS_PROXY || undefined,
       dir,
       remote: remoteName,
       ref,

@@ -454,4 +454,38 @@ describe('git', () => {
       expect(ctx.out).toContain('Fetching from origin');
     });
   });
+
+  describe('CORS proxy', () => {
+    // Capture the URL git's HTTP client actually fetches, without a network.
+    async function captureCloneFetch(env: Record<string, string>): Promise<string> {
+      const calls: string[] = [];
+      const realFetch = globalThis.fetch;
+      globalThis.fetch = (async (input: unknown) => {
+        calls.push(typeof input === 'string' ? input : (input as { url: string }).url);
+        return new Response(new Uint8Array(), { status: 500 });
+      }) as typeof fetch;
+      try {
+        const ctx = makeCtx(vfs, ['clone', 'https://github.com/foo/bar.git', '/out']);
+        Object.assign(ctx.env, env);
+        await gitCommand(ctx);
+      } finally {
+        globalThis.fetch = realFetch;
+      }
+      expect(calls.length).toBeGreaterThan(0);
+      return calls[0];
+    }
+
+    it('routes remote requests through LIFO_GIT_CORS_PROXY when set', async () => {
+      const first = await captureCloneFetch({ LIFO_GIT_CORS_PROXY: 'https://proxy.test' });
+      // isomorphic-git corsProxy uses path format with the protocol stripped:
+      // `${proxy}/${host}${path}` (which cors.isomorphic-git.org reconstructs).
+      expect(first).toContain('https://proxy.test/github.com/foo/bar.git');
+    });
+
+    it('fetches directly when no proxy is set', async () => {
+      const first = await captureCloneFetch({});
+      expect(first).toContain('https://github.com/foo/bar.git');
+      expect(first).not.toContain('proxy.test');
+    });
+  });
 });
