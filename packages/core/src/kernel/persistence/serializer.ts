@@ -21,10 +21,20 @@ export interface SerializedNode {
 
 const EXCLUDED_PREFIXES = ['proc', 'dev', 'mnt'];
 
+// Regenerable dependency trees are NEVER persisted, at any depth. A single
+// `npm install` / `git clone` can add tens of thousands of files; serializing
+// that whole tree into IndexedDB on every debounced save (and re-reading it on
+// boot) froze the main thread for seconds. Reinstall after reload, or snapshot
+// explicitly to keep them. Match by directory name anywhere in the tree.
+const EXCLUDED_DIR_NAMES = new Set(['node_modules']);
+
+// Chunked base64 — encoding megabytes one byte at a time (String.fromCharCode
+// per byte) is pathologically slow; process 32 KB at a time instead.
 function toBase64(bytes: Uint8Array): string {
   let binary = '';
-  for (let i = 0; i < bytes.length; i++) {
-    binary += String.fromCharCode(bytes[i]);
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK) as unknown as number[]);
   }
   return btoa(binary);
 }
@@ -73,6 +83,8 @@ function serializeNode(node: INode, isRoot: boolean): SerializedNode {
   for (const [name, child] of node.children) {
     // Exclude virtual filesystem directories at root level
     if (isRoot && EXCLUDED_PREFIXES.includes(name)) continue;
+    // Never persist regenerable dependency trees (node_modules), at any depth.
+    if (child.type === 'directory' && EXCLUDED_DIR_NAMES.has(name)) continue;
     children.push(serializeNode(child, false));
   }
 
