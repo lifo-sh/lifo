@@ -1,6 +1,5 @@
-import type { Command, CommandOutputStream } from '../types.js';
-import { resolve } from '../../utils/path.js';
-import { VFSError } from '../../kernel/vfs/index.js';
+import type { Command, CommandOutputStream } from '@lifo-sh/core';
+import { resolve, VFSError } from '@lifo-sh/core';
 
 // ─── ANSI ───
 

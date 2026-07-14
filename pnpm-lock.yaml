@@ -70,6 +70,12 @@ importers:
       clsx:
         specifier: ^2.1.1
         version: 2.1.1
+      lifo-pkg-bc:
+        specifier: workspace:*
+        version: link:../../packages/lifo-pkg-bc
+      lifo-pkg-cal:
+        specifier: workspace:*
+        version: link:../../packages/lifo-pkg-cal
       lifo-pkg-fastfetch:
         specifier: workspace:*
         version: link:../../packages/lifo-pkg-fastfetch
@@ -79,6 +85,18 @@ importers:
       lifo-pkg-git:
         specifier: workspace:*
         version: link:../../packages/lifo-pkg-git
+      lifo-pkg-less:
+        specifier: workspace:*
+        version: link:../../packages/lifo-pkg-less
+      lifo-pkg-man:
+        specifier: workspace:*
+        version: link:../../packages/lifo-pkg-man
+      lifo-pkg-nano:
+        specifier: workspace:*
+        version: link:../../packages/lifo-pkg-nano
+      lifo-pkg-vi:
+        specifier: workspace:*
+        version: link:../../packages/lifo-pkg-vi
       lucide-react:
         specifier: ^0.575.0
         version: 0.575.0(react@19.2.3)
@@ -210,6 +228,42 @@ importers:
         specifier: ^5.7.0
         version: 5.9.3
 
+  packages/lifo-pkg-bc:
+    devDependencies:
+      '@lifo-sh/core':
+        specifier: workspace:*
+        version: link:../core
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      vite:
+        specifier: ^6.0.0
+        version: 6.4.1(@types/node@22.19.11)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)
+      vite-plugin-dts:
+        specifier: ^4.5.0
+        version: 4.5.4(@types/node@22.19.11)(rollup@4.59.0)(typescript@5.9.3)(vite@6.4.1(@types/node@22.19.11)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0))
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.4(@types/node@22.19.11)(jiti@2.6.1)(lightningcss@1.31.1)(msw@2.14.6(@types/node@22.19.11)(typescript@5.9.3))(tsx@4.21.0)
+
+  packages/lifo-pkg-cal:
+    devDependencies:
+      '@lifo-sh/core':
+        specifier: workspace:*
+        version: link:../core
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      vite:
+        specifier: ^6.0.0
+        version: 6.4.1(@types/node@22.19.11)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)
+      vite-plugin-dts:
+        specifier: ^4.5.0
+        version: 4.5.4(@types/node@22.19.11)(rollup@4.59.0)(typescript@5.9.3)(vite@6.4.1(@types/node@22.19.11)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0))
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.4(@types/node@22.19.11)(jiti@2.6.1)(lightningcss@1.31.1)(msw@2.14.6(@types/node@22.19.11)(typescript@5.9.3))(tsx@4.21.0)
+
   packages/lifo-pkg-fastfetch:
     devDependencies:
       '@lifo-sh/core':
@@ -254,6 +308,78 @@ importers:
       isomorphic-git:
         specifier: ^1.37.2
         version: 1.37.2
+    devDependencies:
+      '@lifo-sh/core':
+        specifier: workspace:*
+        version: link:../core
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      vite:
+        specifier: ^6.0.0
+        version: 6.4.1(@types/node@22.19.11)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)
+      vite-plugin-dts:
+        specifier: ^4.5.0
+        version: 4.5.4(@types/node@22.19.11)(rollup@4.59.0)(typescript@5.9.3)(vite@6.4.1(@types/node@22.19.11)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0))
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.4(@types/node@22.19.11)(jiti@2.6.1)(lightningcss@1.31.1)(msw@2.14.6(@types/node@22.19.11)(typescript@5.9.3))(tsx@4.21.0)
+
+  packages/lifo-pkg-less:
+    devDependencies:
+      '@lifo-sh/core':
+        specifier: workspace:*
+        version: link:../core
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      vite:
+        specifier: ^6.0.0
+        version: 6.4.1(@types/node@22.19.11)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)
+      vite-plugin-dts:
+        specifier: ^4.5.0
+        version: 4.5.4(@types/node@22.19.11)(rollup@4.59.0)(typescript@5.9.3)(vite@6.4.1(@types/node@22.19.11)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0))
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.4(@types/node@22.19.11)(jiti@2.6.1)(lightningcss@1.31.1)(msw@2.14.6(@types/node@22.19.11)(typescript@5.9.3))(tsx@4.21.0)
+
+  packages/lifo-pkg-man:
+    devDependencies:
+      '@lifo-sh/core':
+        specifier: workspace:*
+        version: link:../core
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      vite:
+        specifier: ^6.0.0
+        version: 6.4.1(@types/node@22.19.11)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)
+      vite-plugin-dts:
+        specifier: ^4.5.0
+        version: 4.5.4(@types/node@22.19.11)(rollup@4.59.0)(typescript@5.9.3)(vite@6.4.1(@types/node@22.19.11)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0))
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.4(@types/node@22.19.11)(jiti@2.6.1)(lightningcss@1.31.1)(msw@2.14.6(@types/node@22.19.11)(typescript@5.9.3))(tsx@4.21.0)
+
+  packages/lifo-pkg-nano:
+    devDependencies:
+      '@lifo-sh/core':
+        specifier: workspace:*
+        version: link:../core
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      vite:
+        specifier: ^6.0.0
+        version: 6.4.1(@types/node@22.19.11)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)
+      vite-plugin-dts:
+        specifier: ^4.5.0
+        version: 4.5.4(@types/node@22.19.11)(rollup@4.59.0)(typescript@5.9.3)(vite@6.4.1(@types/node@22.19.11)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0))
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.4(@types/node@22.19.11)(jiti@2.6.1)(lightningcss@1.31.1)(msw@2.14.6(@types/node@22.19.11)(typescript@5.9.3))(tsx@4.21.0)
+
+  packages/lifo-pkg-vi:
     devDependencies:
       '@lifo-sh/core':
         specifier: workspace:*

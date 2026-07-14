@@ -1,6 +1,5 @@
-import type { Command, CommandContext } from '../types.js';
-import { resolve } from '../../utils/path.js';
-import { VFSError } from '../../kernel/vfs/index.js';
+import type { Command, CommandContext } from '@lifo-sh/core';
+import { resolve, VFSError } from '@lifo-sh/core';
 
 /**
  * vi — a modal text editor (a usable subset of vi/vim), built on the same

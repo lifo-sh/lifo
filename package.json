@@ -2,7 +2,7 @@
   "name": "rapidos",
   "private": true,
   "scripts": {
-    "build": "pnpm --filter @lifo-sh/core build && pnpm --filter lifo-pkg-git build && pnpm --filter lifo-pkg-ffmpeg build && pnpm --filter lifo-pkg-fastfetch build && pnpm --filter @lifo-sh/ui build && pnpm --filter lifo-sh build && pnpm --filter create-lifo-pkg build",
+    "build": "pnpm --filter @lifo-sh/core build && pnpm --filter lifo-pkg-git build && pnpm --filter lifo-pkg-ffmpeg build && pnpm --filter lifo-pkg-fastfetch build && pnpm --filter lifo-pkg-nano build && pnpm --filter lifo-pkg-less build && pnpm --filter lifo-pkg-vi build && pnpm --filter lifo-pkg-cal build && pnpm --filter lifo-pkg-bc build && pnpm --filter lifo-pkg-man build && pnpm --filter @lifo-sh/ui build && pnpm --filter lifo-sh build && pnpm --filter create-lifo-pkg build",
     "build:core": "pnpm --filter @lifo-sh/core build",
     "build:ui": "pnpm --filter @lifo-sh/ui build",
     "build:cli": "pnpm --filter lifo-sh build",
