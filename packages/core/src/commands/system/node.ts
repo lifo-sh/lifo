@@ -61,6 +61,7 @@ function makeNodeGlobal(overrides: Record<string, unknown>): Record<string, unkn
 }
 
 import { makeProxyingFetch } from '../../node-compat/proxy-fetch.js';
+import { createOxideScanner } from '../../node-compat/tailwind-oxide.js';
 import * as nodeTimers from '../../node-compat/timers.js';
 
 /**
@@ -1033,6 +1034,11 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 		// makeFetchNodeshim. Built per-run so it uses this run's proxying fetch.
 		const fetchNodeshim = typeof nodeFetch === 'function' ? makeFetchNodeshim(nodeFetch) : undefined;
 
+		// @tailwindcss/oxide (Tailwind v4's native Rust Scanner) — served as a JS
+		// shim over the VFS. Its native + threaded-wasm bindings can't load in the
+		// browser VM. See createOxideScanner.
+		const oxideModule = { Scanner: createOxideScanner(ctx.vfs) };
+
 		// process.exit() handling. While the main script is still executing
 		// synchronously, exit() must throw (to abort it). Once we're purely
 		// event-driven (a long-running server is up and we're just awaiting it),
@@ -1128,6 +1134,8 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			// resolution, since it IS installed (its index.js would load a missing
 			// .node binary). See lightningcssStub.
 			if (name === 'lightningcss') return lightningcssStub;
+			// @tailwindcss/oxide — JS Scanner shim (see oxideModule / createOxideScanner).
+			if (name === '@tailwindcss/oxide') return oxideModule;
 			// fetch-nodeshim: serve the native fetch stack (see makeFetchNodeshim) —
 			// intercept BEFORE node_modules resolution since the package IS installed.
 			if (name === 'fetch-nodeshim' && fetchNodeshim) return fetchNodeshim;
@@ -1585,6 +1593,8 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			// resolution, since it IS installed (its index.js would load a missing
 			// .node binary). See lightningcssStub.
 			if (name === 'lightningcss') return lightningcssStub;
+			// @tailwindcss/oxide — JS Scanner shim (see oxideModule / createOxideScanner).
+			if (name === '@tailwindcss/oxide') return oxideModule;
 			// fetch-nodeshim: serve the native fetch stack (see makeFetchNodeshim) —
 			// intercept BEFORE node_modules resolution since the package IS installed.
 			if (name === 'fetch-nodeshim' && fetchNodeshim) return fetchNodeshim;
