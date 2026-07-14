@@ -15,6 +15,7 @@
     "release": "pnpm build && pnpm changeset publish"
   },
   "devDependencies": {
-    "@changesets/cli": "^2.29.8"
+    "@changesets/cli": "^2.29.8",
+    "playwright": "^1.61.1"
   }
 }

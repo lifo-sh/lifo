@@ -27,3 +27,4 @@ Thumbs.db
 .cursor/rules/todo2.mdc
 .cursor/mcp.json
 .todo2/
+bench/dist/
