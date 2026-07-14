@@ -155,6 +155,15 @@ Snapshots are ~90MB, too big for phones. Two prototypes exist: `pruneExpoModules
 - [ ] Turn prune into a one-shot pre-snapshot command per stack; document snapshot sizes.
 - [ ] Full-screen commands (`nano`/`less`) don't re-fit on live terminal resize — they read `LINES`/`COLUMNS` once at launch (the shell now sets them to the real size, but a mid-run resize needs a `SIGWINCH`-style hook on `CommandContext`).
 
+### 13. Users, permissions & Linux fidelity — *exploring*
+
+Today the box boots as `user` (`user@lifo`). A Linux-like VM should default to **`root`** (like a fresh container), so the prompt reads `root@lifo:~#` — with `#` for root and `$` for a normal user.
+
+- [ ] Default the box to the `root` user; prompt shows `root@lifo:~#` (`#` root / `$` non-root). Update `whoami`/`id`/`$USER`/`$HOME` (`/root`), the motd, examples, docs, and snapshots accordingly.
+- [ ] Linux-standard user management, backed by `/etc/passwd`, `/etc/group`, `/etc/shadow`: `useradd`/`adduser`, `userdel`, `usermod`, `groupadd`/`groupdel`, `passwd`, `id`, `groups`, `su`, `sudo`.
+- [ ] A real current-user model in the shell/kernel so those commands (and `whoami`/`id`) reflect the active user; `su`/`sudo` switch it and adjust `HOME`/`USER`/`PWD`.
+- [ ] Wire it to file ownership/permissions: `chown`/`chmod` already exist — enforce them against the current user (ties into phase 3 persistence). Keep it honest — it's a believable POSIX-ish model, not a security boundary.
+
 ---
 
 Priorities shift with real usage. Have a use case? Open an issue.
