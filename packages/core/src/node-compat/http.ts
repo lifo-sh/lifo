@@ -99,6 +99,26 @@ class IncomingMessage extends EventEmitter {
   setTimeout(_ms: number, _cb?: () => void): this {
     return this;
   }
+
+  // Node's IncomingMessage is a Readable, so it's async-iterable — servers read
+  // the request body with `for await (const chunk of req)` or pass `req` as a
+  // fetch/undici Request body. Bridge our EventEmitter 'data'/'end' events to an
+  // async iterator (the body is emitted in a microtask AFTER the request handler
+  // runs, so listeners attached here on first next() are always in place).
+  async *[Symbol.asyncIterator](): AsyncGenerator<Uint8Array | string> {
+    const queue: (Uint8Array | string)[] = [];
+    let ended = false;
+    let notify: (() => void) | null = null;
+    const wake = () => { if (notify) { const n = notify; notify = null; n(); } };
+    this.on('data', (c: Uint8Array | string) => { queue.push(c); wake(); });
+    this.on('end', () => { ended = true; wake(); });
+    this.on('error', () => { ended = true; wake(); });
+    while (true) {
+      while (queue.length) yield queue.shift() as Uint8Array | string;
+      if (ended || this.complete) return;
+      await new Promise<void>((resolve) => { notify = resolve; });
+    }
+  }
 }
 
 class ClientRequest extends EventEmitter {

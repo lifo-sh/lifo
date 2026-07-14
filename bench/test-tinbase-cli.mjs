@@ -37,11 +37,16 @@ const bodyOf = (v) => (v.bodyBytes ? new TextDecoder().decode(v.bodyBytes) : v.b
 const list = await req('GET', '/rest/v1/todos?select=*&order=id');
 const listBody = bodyOf(list);
 console.log('\nGET /rest/v1/todos ->', list.statusCode, listBody.slice(0, 260));
+// POST exercises request-body reading (the CLI reads it via async iteration).
+const ins = await req('POST', '/rest/v1/todos', JSON.stringify({ title: 'from REST' }));
+console.log('POST /rest/v1/todos ->', ins.statusCode, bodyOf(ins).slice(0, 160));
 const studio = await req('GET', '/_/');
 console.log('GET /_/ (Studio) ->', studio.statusCode, '(', bodyOf(studio).length, 'bytes )');
 
 let rows = []; try { rows = JSON.parse(listBody); } catch { /* */ }
-const ok = list.statusCode === 200 && Array.isArray(rows) && rows.length === 2 && rows.some((r) => r.title.includes('seed rows')) && studio.statusCode === 200;
-console.log('\n' + (ok ? '✅ PASS — npx tinbase --engine pgmem reads supabase/ folder; REST + Studio work (no server.mjs)' : '❌ FAIL'));
+const ok = list.statusCode === 200 && Array.isArray(rows) && rows.length === 2 && rows.some((r) => r.title.includes('seed rows'))
+  && (ins.statusCode === 201 || ins.statusCode === 200) && bodyOf(ins).includes('from REST')
+  && studio.statusCode === 200;
+console.log('\n' + (ok ? '✅ PASS — npx tinbase --engine pgmem: supabase/ folder + REST GET/POST + Studio (no server.mjs)' : '❌ FAIL'));
 server.close();
 process.exit(ok ? 0 : 1);

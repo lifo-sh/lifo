@@ -69,6 +69,25 @@ describe('http compat — request body is delivered as bytes (express.json)', ()
   });
 });
 
+describe('http compat — request is async-iterable (for await…of req)', () => {
+  it('streams the request body via Symbol.asyncIterator', async () => {
+    const portRegistry = new Map<number, VirtualRequestHandler>();
+    const http = createHttp(portRegistry);
+    const server = http.createServer(async (req: any, res: any) => {
+      let body = '';
+      for await (const chunk of req) body += new TextDecoder().decode(chunk as Uint8Array);
+      res.end('got:' + body);
+    });
+    server.listen(3102);
+    const handler = portRegistry.get(3102)!;
+    const vRes: any = { statusCode: 200, headers: {}, body: '' };
+    handler({ method: 'POST', url: '/', headers: { 'content-length': '5' }, body: 'hello' } as any, vRes);
+    await vRes._donePromise;
+    const out = vRes.bodyBytes ? new TextDecoder().decode(vRes.bodyBytes) : vRes.body;
+    expect(out).toBe('got:hello');
+  });
+});
+
 describe('string_decoder — callable without new (iconv-lite / raw-body)', () => {
   it('works with new, and via legacy prototype inheritance (iconv-lite style)', () => {
     const bytes = new TextEncoder().encode('héllo');
