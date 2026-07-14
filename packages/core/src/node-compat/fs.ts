@@ -477,8 +477,19 @@ export function createFs(vfs: VFS, cwd: string) {
   }
 
   function readlinkSync(path: string | URL): string {
-    // Return the path itself since we have no symlinks
-    return resolvePath(cwd, path);
+    // The VFS has no symlinks. Node's readlink throws ENOENT on a missing path
+    // and EINVAL on a non-symlink — returning the path itself (as before) made
+    // resolvers like enhanced-resolve treat every file as a self-symlink and
+    // fail. Mirror Node so those resolvers correctly skip symlink handling.
+    const abs = resolvePath(cwd, path);
+    if (!vfs.exists(abs)) {
+      throw Object.assign(new Error(`ENOENT: no such file or directory, readlink '${abs}'`), {
+        code: 'ENOENT', errno: -2, syscall: 'readlink', path: abs,
+      });
+    }
+    throw Object.assign(new Error(`EINVAL: invalid argument, readlink '${abs}'`), {
+      code: 'EINVAL', errno: -22, syscall: 'readlink', path: abs,
+    });
   }
 
   // ─── Callback API ───

@@ -25,6 +25,7 @@ import * as diagnosticsChannelModule from './diagnostics_channel.js';
 import * as asyncHooksModule from './async_hooks.js';
 import { createRimraf } from './rimraf.js';
 import { createEsbuild } from './esbuild.js';
+import { createVm } from './vm.js';
 
 // Fake ephemeral port source for net/tls Server stubs (no real TCP in the VM).
 let __fakeEphemeralPort = 49152;
@@ -550,6 +551,7 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
   // npm package shims
   map.rimraf = () => createRimraf(ctx.vfs, ctx.cwd);
   map.esbuild = () => createEsbuild({ vfs: ctx.vfs, cwd: ctx.cwd });
+  map.vm = () => createVm();
 
   return map;
 }
