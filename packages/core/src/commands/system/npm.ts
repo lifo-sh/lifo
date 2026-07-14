@@ -55,13 +55,18 @@ function getRegistry(env: Record<string, string>): string {
 	return env.NPM_REGISTRY || DEFAULT_REGISTRY;
 }
 
-function parsePackageSpec(spec: string): { name: string; version: string | null } {
+export function parsePackageSpec(spec: string): { name: string; version: string | null } {
+	// A package name can't contain '@', so the FIRST '@' after the name is the
+	// version separator — NOT the last. lastIndexOf broke alias specs whose
+	// version itself contains '@', e.g. `pg-mem@npm:@tinbase/pg-mem@^3.2.0`
+	// (name `pg-mem`, version `npm:@tinbase/pg-mem@^3.2.0`).
+
 	// Scoped: @scope/name@version
 	if (spec.startsWith('@')) {
 		const slashIdx = spec.indexOf('/');
 		if (slashIdx === -1) return { name: spec, version: null };
 		const rest = spec.slice(slashIdx + 1);
-		const atIdx = rest.lastIndexOf('@');
+		const atIdx = rest.indexOf('@');
 		if (atIdx > 0) {
 			return {
 				name: spec.slice(0, slashIdx + 1 + atIdx),
@@ -72,7 +77,7 @@ function parsePackageSpec(spec: string): { name: string; version: string | null 
 	}
 
 	// Regular: name@version
-	const atIdx = spec.lastIndexOf('@');
+	const atIdx = spec.indexOf('@');
 	if (atIdx > 0) {
 		return { name: spec.slice(0, atIdx), version: spec.slice(atIdx + 1) };
 	}
