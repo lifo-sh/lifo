@@ -11,21 +11,27 @@ WebContainers is the closest peer — a VM that runs in a browser tab. Measured 
 the same headless Chromium (`bench/suite/browser.mjs` for Lifo,
 `bench/suite/compare-webcontainers.mjs` for WebContainers):
 
+Both give you `node` + `npm` by default, so we spawn both on each side rather
+than comparing a bare boot.
+
 | | Lifo (browser) | WebContainers (browser) |
 |---|---|---|
 | cold start to a ready box | **~27 ms** (26 ms load + 0.7 ms boot) | **~6.6 s** (1.0 s import + 5.6 s boot) |
 | first command | included above | ~0.7 s |
-| download footprint | **~0.3 MB** (gzipped core) | **~5.8 MB** runtime |
+| runtime footprint (node + npm) | **~0.3 MB** (gzipped core) | **~75-85 MB** (wasm Node engine) |
 | cross-origin isolation (COOP/COEP) | **not required** | **required** (SharedArrayBuffer) |
 | also runs server-side (Node) | **yes — same VM** | no (browser only) |
 | license | open source, self-host | proprietary, commercial license |
 | Node fidelity | compat layer (heavy bits via wasm/pkgs) | **higher** — closer to real Node |
 
-**Read honestly:** Lifo is ~250× faster to boot and ~19× smaller to download,
-needs no special headers, and runs identically in Node. (Download footprint is
-the actual transferred bytes — Playwright `request.sizes().responseBodySize`
-summed over every request, so chunked/streamed responses that omit
-`Content-Length` are counted too.) WebContainers gives you
+**Read honestly:** Lifo is ~250× faster to boot and ~250× smaller, needs no
+special headers, and runs identically in Node. WebContainers ships a real-er
+Node — a wasm build of the actual Node engine — which is why its runtime is
+~75-85 MB on boot. (That footprint can't be captured from the page: WebContainers
+streams its engine into a **Web Worker**, invisible to Playwright's
+`request.sizes()` and to a page-scoped CDP Network session — both bottom out
+around 0.01 MB of resources here. The ~75-85 MB is StackBlitz's documented
+runtime weight; our script reports the main-thread lower bound alongside it.) WebContainers gives you
 **fuller Node fidelity** (a real-er Node in the browser). Pick Lifo when boot
 time, size, header-freedom, and client+server parity matter; pick WebContainers
 when you need maximum Node compatibility in the browser and can absorb the
