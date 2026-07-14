@@ -49,10 +49,10 @@ Each item ships independently and keeps the test suite green.
 
 Reproducible numbers behind the claims, so "~0 ms boot, $0 infra" is backed by data.
 
-- [ ] Node harness: boot time, command throughput, FS read/write, memory (`bench/`).
-- [ ] Browser harness: same metrics in a headless Chrome page.
+- [x] **Unified harness across all environments** (`bench/suite/`, one shared workload): in-process Node, a single self-contained binary (bun `--compile`), and headless-Chromium browser. Measured — boot **~0.5 ms** (Node & browser), single-binary cold start **~41 ms** (spawn→box→command→exit), ~200–350K command ops/s, core **0.3 MB** gzipped. `node bench/suite/run-all.mjs` → [`bench/RESULTS.md`](bench/RESULTS.md).
+- [x] **Head-to-head vs WebContainers** (`bench/suite/compare-webcontainers.mjs`): Lifo boots a browser box in ~27 ms / 0.3 MB vs WebContainers ~8 s / 3.7 MB (they trade it for fuller Node fidelity). Plus cloud-microVM (Vercel Sandbox / e2b) positioning — [`bench/COMPARISON.md`](bench/COMPARISON.md).
 - [ ] Dev-server cold-start (Vite) measured end to end.
-- [ ] Publish a report + keep the harness in CI so regressions show up.
+- [ ] Keep the harness in CI so regressions show up; surface the stats on the website.
 
 ### 2. The `lifo` CLI — *planned*
 
