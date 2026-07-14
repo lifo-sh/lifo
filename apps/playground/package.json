@@ -15,6 +15,7 @@
     "@xterm/xterm": "^5.5.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "lifo-pkg-fastfetch": "workspace:*",
     "lifo-pkg-ffmpeg": "workspace:*",
     "lifo-pkg-git": "workspace:*",
     "lucide-react": "^0.575.0",

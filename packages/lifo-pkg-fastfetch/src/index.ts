@@ -1,5 +1,4 @@
-import type { Command } from '../types.js';
-import type { VFS } from '../../kernel/vfs/index.js';
+import type { Command, VFS } from '@lifo-sh/core';
 
 // ─── ANSI helpers ───
 
