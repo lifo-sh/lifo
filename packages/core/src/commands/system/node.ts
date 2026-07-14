@@ -1847,13 +1847,33 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 		// long-lived server race below would never notice and the run would hang.
 		let signalExit: () => void = () => {};
 		const exitPromise = new Promise<void>((r) => { signalExit = r; });
+		// Turn a rejection reason into something useful. Plain objects and errors
+		// that carry codes but no message/stack (e.g. Emscripten `ErrnoError`
+		// {name, errno} from PGlite/wasm) otherwise stringify to "[object Object]"
+		// or an empty stack.
+		const describeRejection = (reason: unknown): string => {
+			const r = reason as Record<string, unknown> | null;
+			if (r && typeof r === 'object') {
+				const extra: string[] = [];
+				for (const k of ['code', 'errno', 'syscall', 'path']) {
+					if (r[k] != null) extra.push(`${k}=${String(r[k])}`);
+				}
+				const tag = extra.length ? ` (${extra.join(', ')})` : '';
+				if (typeof r.stack === 'string' && r.stack) return r.stack + tag;
+				if (r.message != null) return `${String(r.name ?? 'Error')}: ${String(r.message)}${tag}`;
+				if (r.name != null || extra.length) return `${String(r.name ?? 'Error')}${tag}`;
+				try { return JSON.stringify(reason); } catch { /* circular */ }
+			}
+			return String(reason);
+		};
+
 		const rejectionHandler = (event: PromiseRejectionEvent) => {
 			pendingRejection = event.reason;
 			event.preventDefault(); // prevent browser default logging
 			if (event.reason instanceof ProcessExitError) {
 				signalExit();
 			} else {
-				ctx.stderr.write(`[unhandledRejection] ${event.reason instanceof Error ? event.reason.stack || event.reason.message : String(event.reason)}\n`);
+				ctx.stderr.write(`[unhandledRejection] ${describeRejection(event.reason)}\n`);
 			}
 		};
 		if (typeof globalThis.addEventListener === 'function') {

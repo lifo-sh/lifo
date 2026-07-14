@@ -299,8 +299,11 @@ Then open the preview tabs:
 The backend
 -----------
 \`npx tinbase\` is the Supabase-compatible backend CLI (REST, auth, realtime,
-Studio). \`--engine pgmem\` uses a pure-JS Postgres engine (instant boot, no wasm);
-drop it for the default PGlite (Postgres/wasm) engine.
+Studio). Engine choices in Lifo:
+  --engine pgmem           pure-JS Postgres — instant, recommended (used here)
+  --engine wasm --memory   real Postgres (PGlite/wasm), in-memory
+\`--engine wasm\` with on-disk persistence isn't supported in the VM yet (it
+preallocates Postgres files the in-memory filesystem can't back).
 
 Schema + seed live in a standard supabase/ folder, applied like \`supabase db reset\`:
   supabase/config.toml   — project config
