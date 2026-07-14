@@ -7,8 +7,9 @@ is about **fit**, not a scoreboard.
 
 > **Reads like Linux, isn't Linux.** Lifo is a clean-room reimplementation of the
 > OS and Node.js APIs in TypeScript — not a Linux distribution or a VM. It
-> behaves like a Unix box for a wide range of work (shells, npm/pnpm, dev
-> servers, previews, agent code, CI), but it doesn't run native Linux binaries
+> behaves like a Unix box for a wide range of work (shells, git, npm/pnpm, dev
+> servers, previews, WASM packages like ffmpeg, agent code, CI), but it doesn't
+> run native Linux binaries
 > and its isolation is JS-level, not a security boundary. Several rows below span
 > categories — treat them as fit-for-use, not like-for-like.
 
