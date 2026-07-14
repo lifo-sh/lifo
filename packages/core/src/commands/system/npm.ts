@@ -4,6 +4,7 @@ import type { VFS } from '../../kernel/vfs/index.js';
 import type { Kernel } from '../../kernel/index.js';
 import { resolve, join } from '../../utils/path.js';
 import { decompressGzip, parseTar } from '../../utils/archive.js';
+import { suggestForPackage, npxRedirect } from '../../shell/command-suggestions.js';
 
 const GLOBAL_MODULES = '/usr/lib/node_modules';
 const GLOBAL_BIN = '/usr/bin';
@@ -616,6 +617,14 @@ async function npmInstall(ctx: CommandContext, registry: CommandRegistry, kernel
 		} else if (!arg.startsWith('-')) {
 			packages.push(arg);
 		}
+	}
+
+	// Nudge toward the Lifo way for packages Lifo can't run natively (e.g. the
+	// `supabase` CLI → tinbase). Guarded so the legit `@supabase/supabase-js`
+	// client library never trips it.
+	for (const p of packages) {
+		const hint = suggestForPackage(p);
+		if (hint) { ctx.stderr.write(hint + '\n'); break; }
 	}
 
 	const npmRegistry = getRegistry(ctx.env);
@@ -1253,7 +1262,10 @@ export function createNpxCommand(
 		// Everything after the spec is passthrough args
 		passthrough.push(...rawArgs.slice(i + 1));
 
-		const { name: parsedName, version } = parsePackageSpec(explicitPkg || spec);
+		let { name: parsedName, version } = parsePackageSpec(explicitPkg || spec);
+		// npx <tool Lifo can't run> → the in-VM equivalent (e.g. supabase → tinbase).
+		const nr = npxRedirect(parsedName);
+		if (nr) { ctx.stderr.write(nr.message + '\n'); parsedName = nr.to; version = null; }
 		// The bin name to look for: if --package was used, spec is the bin name; otherwise derive from package name
 		const binName = explicitPkg ? spec : parsedName.split('/').pop()!;
 

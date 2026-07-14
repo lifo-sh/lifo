@@ -21,6 +21,7 @@ import type {
 } from '../commands/types.js';
 import { lex } from './lexer.js';
 import { parse } from './parser.js';
+import { commandRedirect } from './command-suggestions.js';
 import { expandWords, expandWord, type ExpandContext } from './expander.js';
 import { PipeChannel } from './pipe.js';
 import { JobTable } from './jobs.js';
@@ -468,7 +469,17 @@ export class Interpreter {
       return 0;
     }
 
-    const [name, ...args] = expandedArgs;
+    // Lifo command redirect: run the in-VM equivalent for a tool Lifo can't run
+    // natively (e.g. `supabase …` → `npx tinbase …`). Skipped when the user has
+    // their own alias for the name. The note is printed to stderr below (so
+    // `2>/dev/null` suppresses it), once the streams are set up.
+    const userAliased = this.config.aliases?.get(expandedArgs[0]) !== undefined;
+    const redirect = userAliased ? null : commandRedirect(expandedArgs[0]);
+    const effectiveArgs = redirect?.runAs
+      ? [...redirect.runAs, ...expandedArgs.slice(1)]
+      : expandedArgs;
+
+    const [name, ...args] = effectiveArgs;
 
     // Check alias expansion
     const aliases = this.config.aliases;
@@ -547,6 +558,9 @@ export class Interpreter {
       stdin = terminalStdin;
     }
 
+    // Note the redirect now that stderr (with any redirections) is set up.
+    if (redirect?.runAs) stderr.write(redirect.message + '\n');
+
     let exitCode: number;
 
     try {
@@ -580,6 +594,9 @@ export class Interpreter {
             // To stderr (not the terminal directly) so `2>&1` / `2>/dev/null`
             // apply to it, as in bash.
             stderr.write(`${name}: command not found\n`);
+            // Note-only redirects (no in-VM equivalent to run, e.g. docker).
+            const note = commandRedirect(name);
+            if (note) stderr.write(note.message + '\n');
             exitCode = 127;
           } else {
             // Only register if NOT part of a background job (which has its own registration)
