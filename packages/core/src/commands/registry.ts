@@ -119,20 +119,16 @@ export function createDefaultRegistry(): CommandRegistry {
   registry.registerLazy('diff', () => import('./text/diff.js'));
   registry.registerLazy('nl', () => import('./text/nl.js'));
   registry.registerLazy('rev', () => import('./text/rev.js'));
-  registry.registerLazy('nano', () => import('./text/nano.js'));
-  registry.registerLazy('less', () => import('./text/less.js'));
-  registry.registerLazy('vi', () => import('./text/vi.js'));
-  registry.registerLazy('vim', () => import('./text/vi.js'));
   registry.registerLazy('tac', () => import('./text/tac.js'));
   registry.registerLazy('seq', () => import('./text/seq.js'));
   registry.registerLazy('base64', () => import('./text/base64.js'));
   registry.registerLazy('strings', () => import('./text/strings.js'));
 
   // System (continued)
-  registry.registerLazy('cal', () => import('./system/cal.js'));
-  registry.registerLazy('bc', () => import('./system/bc.js'));
-  registry.registerLazy('man', () => import('./system/man.js'));
   registry.registerLazy('sha256sum', () => import('./system/sha256sum.js'));
+  // nano/less/vi/vim, cal, bc, man moved to installable lifo-pkg-* packages
+  // (keep-core-light). Install with `lifo install <name>`, or register when
+  // embedding (see each package's README).
   registry.registerLazy('sl', () => import('./system/sl.js'));
   // fastfetch/neofetch live in the installable `lifo-pkg-fastfetch` package
   // (keep-core-light). Install with `lifo install fastfetch`, or register it

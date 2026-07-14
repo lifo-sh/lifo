@@ -1,4 +1,4 @@
-import type { Command } from '../types.js';
+import type { Command } from '@lifo-sh/core';
 
 const PAGES: Record<string, { synopsis: string; description: string }> = {
   // Shell builtins

@@ -1,4 +1,4 @@
-import type { Command } from '../types.js';
+import type { Command } from '@lifo-sh/core';
 
 const MONTH_NAMES = [
   'January', 'February', 'March', 'April', 'May', 'June',

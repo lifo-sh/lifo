@@ -1,4 +1,4 @@
-import type { Command } from '../types.js';
+import type { Command } from '@lifo-sh/core';
 
 // Token types for the calculator
 type TokenType = 'number' | 'ident' | '+' | '-' | '*' | '/' | '%' | '^' | '(' | ')' | '=' | 'newline' | 'eof';

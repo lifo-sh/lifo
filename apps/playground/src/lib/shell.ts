@@ -30,6 +30,12 @@ import type { ITerminal } from '@lifo-sh/core';
 import gitCommand from 'lifo-pkg-git';
 import ffmpegCommand from 'lifo-pkg-ffmpeg';
 import fastfetchCommand from 'lifo-pkg-fastfetch';
+import nanoCommand from 'lifo-pkg-nano';
+import lessCommand from 'lifo-pkg-less';
+import viCommand from 'lifo-pkg-vi';
+import calCommand from 'lifo-pkg-cal';
+import bcCommand from 'lifo-pkg-bc';
+import manCommand from 'lifo-pkg-man';
 
 export interface BootShellOptions {
   /** Extra installable-package commands to register. git is always
@@ -76,6 +82,15 @@ export async function bootShell(
   // available in the playground shells for the demo.
   registry.register('fastfetch', fastfetchCommand);
   registry.register('neofetch', fastfetchCommand);
+  // Editors/pagers + cal/bc/man moved to installable lifo-pkg-* packages
+  // (keep-core-light); keep them available in the playground shells.
+  registry.register('nano', nanoCommand);
+  registry.register('less', lessCommand);
+  registry.register('vi', viCommand);
+  registry.register('vim', viCommand);
+  registry.register('cal', calCommand);
+  registry.register('bc', bcCommand);
+  registry.register('man', manCommand);
   if (opts.pkgs?.includes('ffmpeg')) registry.register('ffmpeg', ffmpegCommand);
   bootLifoPackages(kernel.vfs, registry);
 
