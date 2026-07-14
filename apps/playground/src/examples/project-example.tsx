@@ -8,7 +8,7 @@ import { ExamplePanel } from '@/components/example-panel';
 import { PreviewTabs, type PreviewTab } from '@/components/preview-tabs';
 import { NoSwPreview } from '@/components/nosw-preview';
 import { TerminalArea } from '@/components/terminal-area';
-import { bootShell } from '@/lib/shell';
+import { bootShell, browserCorsEnv } from '@/lib/shell';
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable';
 
 export interface ProjectExampleProps {
@@ -64,14 +64,13 @@ export function ProjectExample({ title, subtitle, files, cwd, previewPort, previ
   // The first terminal creates the Sandbox + SW bridge; extra terminals attach
   // a shell onto the shared kernel.
   const bootFirstTerminal = async (term: Terminal) => {
-    // Point the VM's fetch CORS-proxy at this same origin — a /_cors endpoint
-    // served by the Vite dev middleware locally and by the Next.js site in
-    // production. Caller env wins if it sets LIFO_CORS_PROXY.
+    // Every box gets the same CORS proxies (expo /_cors + git proxy) so git
+    // clone / expo / etc. behave the same in all terminals. Caller env wins.
     const sb = await Sandbox.create({
       terminal: term,
       files,
       cwd,
-      env: { LIFO_CORS_PROXY: `${location.origin}/_cors?url=`, ...env },
+      env: { ...browserCorsEnv(), ...env },
     });
     sb.commands.register('git', gitCommand);
     sandboxRef.current = sb;
@@ -92,7 +91,7 @@ export function ProjectExample({ title, subtitle, files, cwd, previewPort, previ
       network: true,
       pkgs: ['git'],
       cwd,
-      env: { LIFO_CORS_PROXY: `${location.origin}/_cors?url=`, ...env },
+      env: { ...browserCorsEnv(), ...env },
     });
   };
 

@@ -1,8 +1,7 @@
 import { useRef, useState } from 'react';
 import { Kernel } from '@lifo-sh/core';
 import type { Terminal } from '@lifo-sh/ui';
-import { ExamplePanel } from '@/components/example-panel';
-import { TerminalArea } from '@/components/terminal-area';
+import { ShellExample } from '@/components/shell-example';
 import { bootShell } from '@/lib/shell';
 
 export default function GitExample() {
@@ -24,16 +23,17 @@ export default function GitExample() {
   const box = kernel ? { kernel, env: kernel.getDefaultEnv() } : null;
 
   return (
-    <ExamplePanel
+    <ShellExample
       title="Git"
       subtitle={
         <>
-          Git via <code>lifo-pkg-git</code> — powered by isomorphic-git. Try <code>git init</code>,{' '}
-          <code>git add</code>, <code>git commit</code>, branching, and more.
+          Git via <code>lifo-pkg-git</code> — powered by isomorphic-git. Try <code>git clone</code>,{' '}
+          <code>git init</code>, <code>git commit</code>, branching, and more. Clone a repo, run it,
+          then open Browser to preview.
         </>
       }
-    >
-      <TerminalArea box={box} bootTab={(t) => void bootTab(t)} />
-    </ExamplePanel>
+      box={box}
+      bootTab={(t) => void bootTab(t)}
+    />
   );
 }

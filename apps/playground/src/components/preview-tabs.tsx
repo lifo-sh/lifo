@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { cn } from '@/lib/utils';
-import { PreviewBrowser } from '@/components/preview-browser';
+import { UiPreviewBrowser } from '@/components/ui-preview-browser';
 
 export interface PreviewTab {
   /** Tab label, e.g. "App" or "Studio". */
@@ -49,7 +49,7 @@ export function PreviewTabs({ boxId, tabs }: PreviewTabsProps) {
             className="absolute inset-0"
             style={{ display: i === active ? 'block' : 'none' }}
           >
-            <PreviewBrowser boxId={boxId} port={tab.port} initialPath={tab.path} />
+            <UiPreviewBrowser boxId={boxId} port={tab.port} path={tab.path} />
           </div>
         ))}
       </div>
