@@ -407,8 +407,14 @@ const CODE_TINBASE = `\
 <span class="code-comment"># Vite + React + TS app talks to it via supabase-js.</span>
 
 <span class="code-fn">npm</span> install
-<span class="code-fn">npm</span> run backend &   <span class="code-comment"># tinbase on :54321 (like supabase start)</span>
-<span class="code-fn">npm</span> run dev &       <span class="code-comment"># vite + react on :5173</span>
+<span class="code-fn">npx</span> tinbase --engine pgmem &   <span class="code-comment"># backend :54321 (like supabase start)</span>
+<span class="code-fn">npm</span> run dev &                  <span class="code-comment"># vite + react on :5173</span>
+
+<span class="code-comment"># real supabase/ layout — server.mjs reads it, like</span>
+<span class="code-comment"># \`supabase db reset\` applies migrations + seed:</span>
+<span class="code-comment">#   supabase/config.toml</span>
+<span class="code-comment">#   supabase/migrations/20240101000000_create_todos.sql</span>
+<span class="code-comment">#   supabase/seed.sql</span>
 
 <span class="code-comment"># .env — just like a real Supabase project:</span>
 <span class="code-comment">#   VITE_SUPABASE_URL=/_sw/54321</span>
@@ -506,9 +512,12 @@ const CODE_EXPO_SUPABASE = `\
 <span class="code-comment"># to a tinbase backend (pure-JS Postgres via pg-mem).</span>
 
 <span class="code-fn">npm</span> install
-<span class="code-fn">npm</span> run backend &   <span class="code-comment"># tinbase :54321 — prints anon +</span>
-                    <span class="code-comment"># service_role keys (like supabase start)</span>
-<span class="code-fn">npm</span> start           <span class="code-comment"># Metro dev server :8083</span>
+<span class="code-fn">npx</span> tinbase --engine pgmem &   <span class="code-comment"># backend :54321 — prints anon +</span>
+                              <span class="code-comment"># service_role keys (like supabase start)</span>
+<span class="code-fn">npm</span> start                     <span class="code-comment"># Metro dev server :8083</span>
+
+<span class="code-comment"># schema + seed: a real supabase/ folder</span>
+<span class="code-comment">#   supabase/migrations/*.sql  ·  supabase/seed.sql</span>
 
 <span class="code-comment"># App tab: the todo app. Studio tab: tinbase's dashboard</span>
 <span class="code-comment"># at /_/ — paste the service_role key from the terminal</span>

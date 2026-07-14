@@ -10,7 +10,6 @@ export function expoSupabaseAppFiles(root: string): Record<string, string> {
 		version: '1.0.0',
 		main: 'index.js',
 		scripts: {
-			backend: 'node server.mjs',
 			start: 'node start.mjs',
 		},
 		dependencies: {
@@ -27,9 +26,11 @@ export function expoSupabaseAppFiles(root: string): Record<string, string> {
 			'react-native-safe-area-context': '~5.6.0',
 			'react-native-screens': '~4.16.0',
 			'@supabase/supabase-js': '^2.110.0',
+		},
+		devDependencies: {
+			// The backend is the tinbase CLI (`npx tinbase`) — Supabase-compatible,
+			// no server code. pg-mem is its pure-JS Postgres engine (--engine pgmem).
 			tinbase: '^0.8.1',
-			// JS-based Postgres engine (@tinbase/pg-mem fork: PL/pgSQL, triggers,
-			// RLS). tinbase's createPgmemEngine imports it as `pg-mem`.
 			'pg-mem': 'npm:@tinbase/pg-mem@^3.2.0',
 		},
 	}, null, 2);
@@ -67,63 +68,6 @@ if (require('os').platform() === 'lifo') {
 }
 
 module.exports = config;
-`;
-
-	// The backend: tinbase's fetch handler wrapped in a node http server, run
-	// inside the VM on port 54321. The database is @tinbase/pg-mem — a pure-JS
-	// Postgres engine — so boot is instant; only JSON crosses the service worker.
-	files[`${root}/server.mjs`] = `import { createBackend, createPgmemEngine } from 'tinbase'
-import http from 'node:http'
-
-const backend = await createBackend({
-  // pg-mem engine: pure-JS Postgres (no wasm) — instant boot. Drop this line
-  // to use the default PGlite (Postgres/wasm) engine instead.
-  engine: await createPgmemEngine(),
-  migrations: [{
-    name: '20240101000000_todos',
-    sql: \`create table if not exists todos (
-      id bigint generated always as identity primary key,
-      title text not null,
-      done boolean not null default false,
-      created_at timestamptz not null default now()
-    );\`,
-  }],
-})
-
-// tinbase is a (Request) => Response handler; expose it over HTTP.
-const server = http.createServer((req, res) => {
-  let body = ''
-  req.on('data', (c) => { body += c })
-  req.on('end', async () => {
-    try {
-      const url = 'http://localhost:54321' + req.url
-      const hasBody = req.method !== 'GET' && req.method !== 'HEAD' && body.length > 0
-      const request = new Request(url, { method: req.method, headers: req.headers, body: hasBody ? body : undefined })
-      const response = await backend.fetch(request)
-      const buf = new Uint8Array(await response.arrayBuffer())
-      const headers = {}
-      response.headers.forEach((v, k) => { headers[k] = v })
-      res.writeHead(response.status, headers)
-      res.end(buf)
-    } catch (e) {
-      res.writeHead(500, { 'content-type': 'text/plain' })
-      res.end('server error: ' + (e && e.message))
-    }
-  })
-})
-
-server.listen(54321, () => {
-  // Print the connection details like \`supabase start\` does — Studio's login
-  // asks for the service_role key.
-  console.log('tinbase running on port 54321 (like supabase start)')
-  console.log('')
-  console.log('         API URL: http://localhost:54321')
-  console.log('      Studio URL: http://localhost:54321/_/  (the Studio preview tab)')
-  console.log('        anon key: ' + backend.anonKey)
-  console.log('service_role key: ' + backend.serviceRoleKey)
-  console.log('')
-  console.log('data persists while this server is running')
-})
 `;
 
 	// Standard Supabase config lives in .env, exactly like a real Expo project —
@@ -174,7 +118,7 @@ export default function Todos() {
   async function refresh() {
     const { data, error } = await supabase.from('todos').select('*').order('id');
     if (error) {
-      setStatus('Cannot reach backend: ' + error.message + ' — did you run "npm run backend &"?');
+      setStatus('Cannot reach backend: ' + error.message + ' — did you run "npx tinbase --engine pgmem &"?');
       return;
     }
     setTodos(data ?? []);
@@ -290,6 +234,87 @@ const { expoStart } = await import('@expo/cli/build/src/start/index.js');
 await expoStart([process.cwd(), '--web', '--port', '8083']);
 console.log('\\nMetro dev server on http://localhost:8083 — open the App preview tab.');
 await new Promise(() => {}); // keep the dev server alive
+`;
+
+	// ── supabase/ — a real Supabase project layout (config + migrations + seed) ──
+	// `npx tinbase` reads migrations/ and seed.sql from here, mirroring how the
+	// Supabase CLI applies them. Edit these files to evolve the schema.
+
+	files[`${root}/supabase/config.toml`] = `# Supabase project config — https://supabase.com/docs/guides/cli/config
+# In Lifo the tinbase CLI (\`npx tinbase\`) reads supabase/migrations + seed.sql
+# and serves the Supabase-compatible API + Studio together on port 54321.
+project_id = "expo-supabase-todo"
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+port = 54322
+major_version = 15
+
+[studio]
+enabled = true
+port = 54323
+
+[auth]
+enabled = true
+`;
+
+	files[`${root}/supabase/migrations/20240101000000_create_todos.sql`] = `-- Create the todos table.
+create table if not exists todos (
+  id bigint generated always as identity primary key,
+  title text not null,
+  done boolean not null default false,
+  created_at timestamptz not null default now()
+);
+`;
+
+	files[`${root}/supabase/seed.sql`] = `-- Seed data, applied after migrations (like \`supabase db reset\`).
+insert into todos (title, done) values
+  ('Edit supabase/migrations to change the schema', false),
+  ('Add seed rows in supabase/seed.sql', true);
+`;
+
+	files[`${root}/README.txt`] = `Expo Router + Supabase (tinbase) — full-stack mobile, entirely in the Lifo VM
+============================================================================
+
+An Expo Router (React Native for Web) app on a live Metro dev server, talking to
+a real Supabase-compatible backend (tinbase) over supabase-js — no Docker, no
+cloud, nothing outside your browser.
+
+Getting started
+---------------
+  npm install
+  npx tinbase --engine pgmem &   # backend on :54321 (like \`supabase start\`)
+  npm start                      # Expo/Metro dev server on :8083
+
+Then open the preview tabs:
+  - App     — the todo app (Metro, port 8083, with Fast Refresh)
+  - Studio  — tinbase's admin dashboard at /_/ (table editor, SQL, auth, logs)
+
+The backend
+-----------
+\`npx tinbase\` is the Supabase-compatible backend CLI (REST, auth, realtime,
+Studio). \`--engine pgmem\` uses a pure-JS Postgres engine (instant boot, no wasm);
+drop it for the default PGlite (Postgres/wasm) engine.
+
+Schema + seed live in a standard supabase/ folder, applied like \`supabase db reset\`:
+  supabase/config.toml   — project config
+  supabase/migrations/   — *.sql, applied in filename order
+  supabase/seed.sql      — rows inserted after migrations
+Edit the SQL and restart the backend to re-apply.
+
+The app
+-------
+lib/supabase.js creates the supabase-js client from .env — exactly like a real
+Expo project (EXPO_PUBLIC_* vars are inlined by Metro). The only Lifo-specific
+bit is the URL:
+  EXPO_PUBLIC_SUPABASE_URL=/_sw/54321
+which the service worker routes to the in-VM backend.
 `;
 
 	return files;
