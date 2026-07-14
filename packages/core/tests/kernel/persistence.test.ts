@@ -98,4 +98,33 @@ describe('Serializer', () => {
     expect(vfs2.stat('/file').mode).toBe(0o644);
     expect(vfs2.stat('/dir').mode).toBe(0o755);
   });
+
+  it('excludes node_modules from persistence at any depth', () => {
+    const vfs = new VFS();
+    vfs.mkdir('/home/user/project/node_modules/left-pad', { recursive: true });
+    vfs.writeFile('/home/user/project/node_modules/left-pad/index.js', 'module.exports=1');
+    vfs.writeFile('/home/user/project/package.json', '{"name":"app"}');
+    vfs.mkdir('/node_modules', { recursive: true });
+    vfs.writeFile('/node_modules/root-dep.js', 'x');
+
+    const vfs2 = new VFS();
+    vfs2.loadFromSerialized(deserialize(serialize(vfs.getRoot())));
+
+    // User files survive…
+    expect(vfs2.readFileString('/home/user/project/package.json')).toBe('{"name":"app"}');
+    // …but node_modules (nested and root) is dropped.
+    expect(vfs2.exists('/home/user/project/node_modules')).toBe(false);
+    expect(vfs2.exists('/node_modules')).toBe(false);
+  });
+
+  it('round-trips a larger binary file (chunked base64)', () => {
+    const vfs = new VFS();
+    const big = new Uint8Array(200_000);
+    for (let i = 0; i < big.length; i++) big[i] = i % 256;
+    vfs.writeFile('/blob.bin', big);
+
+    const vfs2 = new VFS();
+    vfs2.loadFromSerialized(deserialize(serialize(vfs.getRoot())));
+    expect(vfs2.readFile('/blob.bin')).toEqual(big);
+  });
 });
