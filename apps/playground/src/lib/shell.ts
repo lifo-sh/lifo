@@ -94,7 +94,21 @@ export async function bootShell(
   if (opts.pkgs?.includes('ffmpeg')) registry.register('ffmpeg', ffmpegCommand);
   bootLifoPackages(kernel.vfs, registry);
 
-  const env = { ...kernel.getDefaultEnv(), ...opts.env };
+  // Browser shells can't fetch hosts that don't send CORS headers, so route them
+  // through proxies. Two separate targets on purpose (caller env still wins):
+  //   - LIFO_CORS_PROXY     → api.expo.dev etc. (tiny JSON) via our same-origin
+  //     /_cors; cheap, keeps expo working with no relay.
+  //   - LIFO_GIT_CORS_PROXY → git pack data (potentially tens of MB per clone)
+  //     via a dedicated public git proxy, so heavy traffic never hits our own
+  //     function bandwidth. Override to self-host (e.g. a Cloudflare Worker).
+  const corsDefault =
+    typeof location !== 'undefined'
+      ? {
+          LIFO_CORS_PROXY: `${location.origin}/_cors?url=`,
+          LIFO_GIT_CORS_PROXY: 'https://cors.isomorphic-git.org',
+        }
+      : {};
+  const env = { ...kernel.getDefaultEnv(), ...corsDefault, ...opts.env };
   if (opts.cwd) env.PWD = opts.cwd;
   const shell = new Shell(terminal, kernel.vfs, registry, env, kernel.processRegistry);
   const processRegistry = shell.getProcessRegistry();
