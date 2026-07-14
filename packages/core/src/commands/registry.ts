@@ -121,6 +121,8 @@ export function createDefaultRegistry(): CommandRegistry {
   registry.registerLazy('rev', () => import('./text/rev.js'));
   registry.registerLazy('nano', () => import('./text/nano.js'));
   registry.registerLazy('less', () => import('./text/less.js'));
+  registry.registerLazy('vi', () => import('./text/vi.js'));
+  registry.registerLazy('vim', () => import('./text/vi.js'));
   registry.registerLazy('tac', () => import('./text/tac.js'));
   registry.registerLazy('seq', () => import('./text/seq.js'));
   registry.registerLazy('base64', () => import('./text/base64.js'));
