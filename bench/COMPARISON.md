@@ -5,6 +5,13 @@ options. Numbers we measured ourselves are reproducible from `bench/`; see
 methodology at the bottom. Competitor products trade different things, so this
 is about **fit**, not a scoreboard.
 
+> **Reads like Linux, isn't Linux.** Lifo is a clean-room reimplementation of the
+> OS and Node.js APIs in TypeScript — not a Linux distribution or a VM. It
+> behaves like a Unix box for a wide range of work (shells, npm/pnpm, dev
+> servers, previews, agent code, CI), but it doesn't run native Linux binaries
+> and its isolation is JS-level, not a security boundary. Several rows below span
+> categories — treat them as fit-for-use, not like-for-like.
+
 ## Browser: Lifo vs WebContainers (StackBlitz)
 
 WebContainers is the closest peer — a VM that runs in a browser tab. Measured in
@@ -54,9 +61,11 @@ Published cold-start figures for the microVM family (server-side, *excludes* you
 network round-trip; these are vendors' / typical published numbers, **not**
 measured in our harness):
 
-| sandbox | runs where | cold start (published) | isolation | client download |
+| sandbox | runs where | cold start (published) | isolation | footprint |
 |---|---|---|---|---|
-| Lifo (browser) | browser tab / Node | ~27 ms (measured) | JS-level | 0.3 MB |
+| Lifo (Node) | your Node process | ~0.5 ms (measured) | JS-level | 0.3 MB |
+| Lifo (browser) | browser tab | ~27 ms (measured) | JS-level | 0.3 MB |
+| Lifo (binary) | any host, single file | ~41 ms (measured) | JS-level | 59 MB |
 | Firecracker microVM | server host | ~125 ms (VM boot only) | microVM (real) | — |
 | E2B | cloud (Firecracker) | ~150-300 ms | microVM (real) | — |
 | Fly.io Machines | cloud (Firecracker) | ~0.3-3 s (from stopped) | microVM (real) | — |
