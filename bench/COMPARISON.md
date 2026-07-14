@@ -11,18 +11,21 @@ WebContainers is the closest peer — a VM that runs in a browser tab. Measured 
 the same headless Chromium (`bench/suite/browser.mjs` for Lifo,
 `bench/suite/compare-webcontainers.mjs` for WebContainers):
 
-| | Lifo | WebContainers |
+| | Lifo (browser) | WebContainers (browser) |
 |---|---|---|
-| cold start to a ready box | **~27 ms** (26 ms load + 0.7 ms boot) | **~8 s** (1.1 s import + 6.8 s boot) |
-| first command | included above | ~0.5 s |
-| download footprint | **~0.3 MB** (gzipped core) | **~3.7 MB** runtime |
+| cold start to a ready box | **~27 ms** (26 ms load + 0.7 ms boot) | **~6.6 s** (1.0 s import + 5.6 s boot) |
+| first command | included above | ~0.7 s |
+| download footprint | **~0.3 MB** (gzipped core) | **~5.8 MB** runtime |
 | cross-origin isolation (COOP/COEP) | **not required** | **required** (SharedArrayBuffer) |
 | also runs server-side (Node) | **yes — same VM** | no (browser only) |
 | license | open source, self-host | proprietary, commercial license |
 | Node fidelity | compat layer (heavy bits via wasm/pkgs) | **higher** — closer to real Node |
 
-**Read honestly:** Lifo is ~250× faster to boot and ~12× smaller to download,
-needs no special headers, and runs identically in Node. WebContainers gives you
+**Read honestly:** Lifo is ~250× faster to boot and ~19× smaller to download,
+needs no special headers, and runs identically in Node. (Download footprint is
+the actual transferred bytes — Playwright `request.sizes().responseBodySize`
+summed over every request, so chunked/streamed responses that omit
+`Content-Length` are counted too.) WebContainers gives you
 **fuller Node fidelity** (a real-er Node in the browser). Pick Lifo when boot
 time, size, header-freedom, and client+server parity matter; pick WebContainers
 when you need maximum Node compatibility in the browser and can absorb the

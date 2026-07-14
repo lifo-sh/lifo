@@ -43,17 +43,18 @@ async function main() {
   const { server, port } = await serve();
   const browser = await chromium.launch();
   let bytes = 0;
+  const pending = [];
   try {
     const page = await browser.newPage();
-    page.on('response', async (resp) => {
-      try {
-        const h = resp.headers();
-        const len = +(h['content-length'] || 0);
-        if (len) bytes += len;
-      } catch { /* */ }
+    // Accurate transfer size (encoded body + headers), including chunked /
+    // streamed responses that omit Content-Length — summed on requestfinished.
+    page.on('requestfinished', (req) => {
+      pending.push(req.sizes().then((s) => { bytes += (s.responseBodySize || 0) + (s.responseHeadersSize || 0); }).catch(() => {}));
     });
     await page.goto(`http://localhost:${port}/`);
     await page.waitForFunction(() => window.__wc !== undefined, null, { timeout: 90000 }).catch(() => {});
+    await page.waitForTimeout(2000); // let trailing runtime chunks settle
+    await Promise.all(pending);
     const wc = await page.evaluate(() => window.__wc);
     console.log(JSON.stringify({ ...wc, downloadBytes: bytes, downloadMB: +(bytes / 1048576).toFixed(2) }, null, 2));
   } finally {
