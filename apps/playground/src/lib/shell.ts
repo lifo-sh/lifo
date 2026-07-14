@@ -37,6 +37,25 @@ import calCommand from 'lifo-pkg-cal';
 import bcCommand from 'lifo-pkg-bc';
 import manCommand from 'lifo-pkg-man';
 
+/**
+ * CORS-proxy env for every browser box (git clone, expo, etc. can't reach
+ * non-CORS hosts directly). TWO separate targets on purpose:
+ *   - LIFO_CORS_PROXY     → api.expo.dev etc. (tiny JSON) via our same-origin
+ *     /_cors; cheap, keeps expo working with no relay.
+ *   - LIFO_GIT_CORS_PROXY → git pack data (tens of MB per clone) via a dedicated
+ *     public git proxy, so heavy traffic never hits our own function bandwidth.
+ *     Override to self-host (e.g. a Cloudflare Worker).
+ * Use this for EVERY box (bootShell shells AND Sandbox.create) so CORS behaves
+ * the same in all terminals. Guarded for headless/SSR (no `location`).
+ */
+export function browserCorsEnv(): Record<string, string> {
+  if (typeof location === 'undefined') return {};
+  return {
+    LIFO_CORS_PROXY: `${location.origin}/_cors?url=`,
+    LIFO_GIT_CORS_PROXY: 'https://cors.isomorphic-git.org',
+  };
+}
+
 export interface BootShellOptions {
   /** Extra installable-package commands to register. git is always
    *  registered ('git' entries are accepted for back-compat). */
@@ -94,21 +113,7 @@ export async function bootShell(
   if (opts.pkgs?.includes('ffmpeg')) registry.register('ffmpeg', ffmpegCommand);
   bootLifoPackages(kernel.vfs, registry);
 
-  // Browser shells can't fetch hosts that don't send CORS headers, so route them
-  // through proxies. Two separate targets on purpose (caller env still wins):
-  //   - LIFO_CORS_PROXY     → api.expo.dev etc. (tiny JSON) via our same-origin
-  //     /_cors; cheap, keeps expo working with no relay.
-  //   - LIFO_GIT_CORS_PROXY → git pack data (potentially tens of MB per clone)
-  //     via a dedicated public git proxy, so heavy traffic never hits our own
-  //     function bandwidth. Override to self-host (e.g. a Cloudflare Worker).
-  const corsDefault =
-    typeof location !== 'undefined'
-      ? {
-          LIFO_CORS_PROXY: `${location.origin}/_cors?url=`,
-          LIFO_GIT_CORS_PROXY: 'https://cors.isomorphic-git.org',
-        }
-      : {};
-  const env = { ...kernel.getDefaultEnv(), ...corsDefault, ...opts.env };
+  const env = { ...kernel.getDefaultEnv(), ...browserCorsEnv(), ...opts.env };
   if (opts.cwd) env.PWD = opts.cwd;
   const shell = new Shell(terminal, kernel.vfs, registry, env, kernel.processRegistry);
   const processRegistry = shell.getProcessRegistry();

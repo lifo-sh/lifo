@@ -1,9 +1,8 @@
 import { useRef, useState } from 'react';
 import { Sandbox } from '@lifo-sh/core';
 import type { Terminal } from '@lifo-sh/ui';
-import { ExamplePanel } from '@/components/example-panel';
-import { TerminalArea } from '@/components/terminal-area';
-import { bootShell } from '@/lib/shell';
+import { ShellExample } from '@/components/shell-example';
+import { bootShell, browserCorsEnv } from '@/lib/shell';
 import type { InspectableBox } from '@/lib/process-inspector';
 
 export default function NpmExample() {
@@ -15,13 +14,13 @@ export default function NpmExample() {
       void bootShell(term, sandboxRef.current.kernel, { network: true, pkgs: ['git'] });
       return;
     }
-    const sb = await Sandbox.create({ terminal: term });
+    const sb = await Sandbox.create({ terminal: term, env: browserCorsEnv() });
     sandboxRef.current = sb;
     setBox({ kernel: sb.kernel, env: sb.env });
   };
 
   return (
-    <ExamplePanel
+    <ShellExample
       title="npm"
       subtitle={
         <>
@@ -29,8 +28,8 @@ export default function NpmExample() {
           <code>npm install cowsay -g &amp;&amp; cowsay hello</code>
         </>
       }
-    >
-      <TerminalArea box={box} bootTab={(t) => void bootTab(t)} />
-    </ExamplePanel>
+      box={box}
+      bootTab={(t) => void bootTab(t)}
+    />
   );
 }

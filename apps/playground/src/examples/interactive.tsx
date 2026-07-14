@@ -1,8 +1,7 @@
 import { useMemo, useRef, useState } from 'react';
 import { Kernel } from '@lifo-sh/core';
 import type { Terminal } from '@lifo-sh/ui';
-import { ExamplePanel } from '@/components/example-panel';
-import { TerminalArea } from '@/components/terminal-area';
+import { ShellExample } from '@/components/shell-example';
 import { bootShell } from '@/lib/shell';
 import { seedInteractive } from '@/examples/interactive-seed';
 
@@ -31,8 +30,11 @@ export default function InteractiveExample() {
   const box = kernel ? { kernel, env: kernel.getDefaultEnv() } : null;
 
   return (
-    <ExamplePanel title="Interactive Shell" subtitle="Full interactive terminal with persistence">
-      <TerminalArea box={box} bootTab={bootTab} />
-    </ExamplePanel>
+    <ShellExample
+      title="Interactive Shell"
+      subtitle="Full interactive terminal with persistence. Clone a repo, run a dev server, then open Browser to preview it."
+      box={box}
+      bootTab={bootTab}
+    />
   );
 }

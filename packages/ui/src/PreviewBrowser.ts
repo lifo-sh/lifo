@@ -24,8 +24,10 @@ const STYLES = `
 .lf-pv-btn { flex-shrink: 0; width: 28px; height: 28px; display: grid; place-items: center; border-radius: 9999px; background: transparent; border: none; color: var(--tk-comment, #565f89); cursor: pointer; padding: 0; }
 .lf-pv-btn:hover { color: var(--tk-fg-bright, #c0caf5); background: var(--tk-hover, #1e2030); }
 .lf-pv-addr { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 12px; margin: 0 4px; border-radius: 9999px; background: var(--tk-bg, #1a1b26); }
+.lf-pv-addr:focus-within { box-shadow: inset 0 0 0 1px var(--tk-blue, #7aa2f7); }
 .lf-pv-addr svg { flex-shrink: 0; color: var(--tk-comment, #565f89); }
-.lf-pv-url { font-size: 12.5px; color: var(--tk-fg, #a9b1d6); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lf-pv-url { flex: 1; min-width: 0; font-size: 12.5px; color: var(--tk-fg, #a9b1d6); background: transparent; border: none; outline: none; padding: 0; font-family: inherit; }
+.lf-pv-url:focus { color: var(--tk-fg-bright, #c0caf5); }
 .lf-pv-frame { flex: 1; min-height: 0; width: 100%; display: block; background: #fff; border: none; }
 .lf-pv-link { text-decoration: none; }
 `;
@@ -66,7 +68,7 @@ function injectStyles(): void {
 export class PreviewBrowser {
   private root!: HTMLDivElement;
   private iframe: HTMLIFrameElement;
-  private urlEl: HTMLSpanElement | null = null;
+  private urlEl: HTMLInputElement | null = null;
   private openLink: HTMLAnchorElement | null = null;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private nonce = 0;
@@ -129,10 +131,23 @@ export class PreviewBrowser {
     const addr = document.createElement('div');
     addr.className = 'lf-pv-addr';
     addr.innerHTML = ICONS.info;
-    this.urlEl = document.createElement('span');
-    this.urlEl.className = 'lf-pv-url';
-    this.urlEl.textContent = `localhost:${this.port}`;
-    addr.appendChild(this.urlEl);
+    const input = document.createElement('input');
+    input.className = 'lf-pv-url';
+    input.spellcheck = false;
+    input.setAttribute('aria-label', 'Address');
+    input.value = `localhost:${this.port}`;
+    // Editable address bar: type `localhost:5173`, `5173`, `5173/path`, or a
+    // bare `/path`, and Enter navigates the preview there.
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        this.applyAddress(input.value);
+        input.blur();
+      }
+    });
+    input.addEventListener('focus', () => input.select());
+    this.urlEl = input;
+    addr.appendChild(input);
     bar.appendChild(addr);
 
     this.openLink = document.createElement('a');
@@ -180,8 +195,30 @@ export class PreviewBrowser {
     } catch {
       // keep defaults
     }
-    this.urlEl.textContent = friendly;
+    // Don't clobber what the user is typing.
+    if (document.activeElement !== this.urlEl) this.urlEl.value = friendly;
     if (this.openLink) this.openLink.href = open;
+  }
+
+  /**
+   * Parse an address the user typed and navigate the preview there. Accepts
+   * `localhost:5173`, `5173`, `5173/some/path`, `/some/path`, or a full
+   * `http://localhost:5173/...` — the `/_sw/<boxId>/` plumbing is added back.
+   */
+  private applyAddress(raw: string): void {
+    let v = raw.trim().replace(/^https?:\/\//i, '').replace(/^(localhost|127\.0\.0\.1):/i, '');
+    const m = v.match(/^(\d+)(\/.*)?$/);
+    if (m) {
+      this.port = parseInt(m[1], 10);
+      this.path = m[2] && m[2] !== '' ? m[2] : '/';
+    } else {
+      // No port → treat the whole thing as a path on the current port.
+      this.path = v === '' ? '/' : v.startsWith('/') ? v : '/' + v;
+    }
+    this.nonce++;
+    this.iframe.src = this.route();
+    this.currentUrl = '';
+    this.updateAddress();
   }
 
   back(): void {
