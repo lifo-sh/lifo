@@ -50,6 +50,18 @@ provision on someone's cloud:
 | isolation | JS-level (not a security boundary) | **real** (microVM / hardware) |
 | runtime | Node-compat subset | **full Linux**, native binaries |
 
+Published cold-start figures for the microVM family (server-side, *excludes* your
+network round-trip; these are vendors' / typical published numbers, **not**
+measured in our harness):
+
+| sandbox | runs where | cold start (published) | isolation | client download |
+|---|---|---|---|---|
+| Lifo (browser) | browser tab / Node | ~27 ms (measured) | JS-level | 0.3 MB |
+| Firecracker microVM | server host | ~125 ms (VM boot only) | microVM (real) | — |
+| E2B | cloud (Firecracker) | ~150-300 ms | microVM (real) | — |
+| Fly.io Machines | cloud (Firecracker) | ~0.3-3 s (from stopped) | microVM (real) | — |
+| Vercel Sandbox | cloud microVM | ~hundreds ms – s | microVM (real) | — |
+
 Think of it as a spectrum, not a competition:
 
 > **client preview** (Lifo in the browser) → **cheap in-process server sandbox**
