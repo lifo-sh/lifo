@@ -10,6 +10,25 @@ export default defineConfig(({ command }) => ({
   plugins: [react(), tailwindcss(), portBridgePlugin(), corsProxyPlugin()],
   server: {
     port: 5173,
+    // Pre-transform the entry + example modules at startup so the first time you
+    // open an example it isn't a cold on-demand transform stall. Dev only.
+    warmup: {
+      clientFiles: ['./src/main.tsx', './src/components/app-shell.tsx', './src/examples/*.tsx'],
+    },
+  },
+  // Lock the heavy browser deps into the pre-bundle so Vite never discovers one
+  // mid-session and triggers a full-page reload to re-optimize.
+  optimizeDeps: {
+    include: [
+      'react',
+      'react-dom',
+      'react-dom/client',
+      'monaco-editor',
+      '@xterm/xterm',
+      '@xterm/addon-fit',
+      '@xterm/addon-webgl',
+      'isomorphic-git',
+    ],
   },
   build: {
     rollupOptions: {
