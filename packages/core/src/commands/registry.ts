@@ -134,8 +134,9 @@ export function createDefaultRegistry(): CommandRegistry {
   registry.registerLazy('man', () => import('./system/man.js'));
   registry.registerLazy('sha256sum', () => import('./system/sha256sum.js'));
   registry.registerLazy('sl', () => import('./system/sl.js'));
-  registry.registerLazy('fastfetch', () => import('./system/fastfetch.js'));
-  registry.registerLazy('neofetch', () => import('./system/fastfetch.js'));
+  // fastfetch/neofetch live in the installable `lifo-pkg-fastfetch` package
+  // (keep-core-light). Install with `lifo install fastfetch`, or register it
+  // when embedding (see the package README).
 
   return registry;
 }

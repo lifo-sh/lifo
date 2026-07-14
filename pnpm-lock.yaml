@@ -70,6 +70,9 @@ importers:
       clsx:
         specifier: ^2.1.1
         version: 2.1.1
+      lifo-pkg-fastfetch:
+        specifier: workspace:*
+        version: link:../../packages/lifo-pkg-fastfetch
       lifo-pkg-ffmpeg:
         specifier: workspace:*
         version: link:../../packages/lifo-pkg-ffmpeg
@@ -206,6 +209,24 @@ importers:
       typescript:
         specifier: ^5.7.0
         version: 5.9.3
+
+  packages/lifo-pkg-fastfetch:
+    devDependencies:
+      '@lifo-sh/core':
+        specifier: workspace:*
+        version: link:../core
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      vite:
+        specifier: ^6.0.0
+        version: 6.4.1(@types/node@22.19.11)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)
+      vite-plugin-dts:
+        specifier: ^4.5.0
+        version: 4.5.4(@types/node@22.19.11)(rollup@4.59.0)(typescript@5.9.3)(vite@6.4.1(@types/node@22.19.11)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0))
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.4(@types/node@22.19.11)(jiti@2.6.1)(lightningcss@1.31.1)(msw@2.14.6(@types/node@22.19.11)(typescript@5.9.3))(tsx@4.21.0)
 
   packages/lifo-pkg-ffmpeg:
     devDependencies:

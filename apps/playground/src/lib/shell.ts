@@ -29,6 +29,7 @@ import {
 import type { ITerminal } from '@lifo-sh/core';
 import gitCommand from 'lifo-pkg-git';
 import ffmpegCommand from 'lifo-pkg-ffmpeg';
+import fastfetchCommand from 'lifo-pkg-fastfetch';
 
 export interface BootShellOptions {
   /** Extra installable-package commands to register. git is always
@@ -71,6 +72,10 @@ export async function bootShell(
   // git in every shell — it's statically imported anyway, and users expect
   // `git init`/`git status` to work in all examples.
   registry.register('git', gitCommand);
+  // fastfetch/neofetch moved to lifo-pkg-fastfetch (keep-core-light); keep them
+  // available in the playground shells for the demo.
+  registry.register('fastfetch', fastfetchCommand);
+  registry.register('neofetch', fastfetchCommand);
   if (opts.pkgs?.includes('ffmpeg')) registry.register('ffmpeg', ffmpegCommand);
   bootLifoPackages(kernel.vfs, registry);
 
