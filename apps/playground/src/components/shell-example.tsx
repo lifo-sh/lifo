@@ -6,6 +6,7 @@ import type { Terminal } from '@lifo-sh/ui';
 import { ExamplePanel } from '@/components/example-panel';
 import { TerminalArea } from '@/components/terminal-area';
 import { UiPreviewBrowser } from '@/components/ui-preview-browser';
+import { NoSwPreview } from '@/components/nosw-preview';
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable';
 import type { InspectableBox } from '@/lib/process-inspector';
 
@@ -16,29 +17,33 @@ interface ShellExampleProps {
   box: InspectableBox | null;
   bootTab: (term: Terminal) => void;
   onRestart?: () => void;
-  /** Port the preview address bar starts on (editable). Default 5173 (Vite). */
+  /** Port the preview address bar starts on (editable in SW mode). Default 5173. */
   defaultPreviewPort?: number;
+  /** Initial terminal tab labels, passed through to TerminalArea. */
+  initialLabels?: string[];
 }
 
 /**
  * A shell example with an on-demand preview browser — for the cases where you
  * clone/scaffold a project and run a dev server, then want to SEE it (e.g. the
- * Interactive Shell: `git clone … && npm i && npm run dev`). Click "Browser" to
- * reveal a preview pane; the address bar is editable, so point it at whatever
- * port your server picked.
+ * Interactive Shell, or HTTP Server). Click "Browser" to reveal a preview pane;
+ * the SW-backed browser has an editable address bar, and a SW ⇄ postMessage
+ * switch lets you fall back to the SW-free transport (for browsers with
+ * incomplete service-worker support, e.g. some iOS).
  *
  * The terminal panel stays mounted at all times (the preview panel is what
- * collapses), so toggling the browser never resets the shell/scrollback. The
- * ServiceWorkerBridge is created lazily on first open.
+ * collapses), so toggling the browser never resets the shell/scrollback.
  */
-export function ShellExample({ title, subtitle, box, bootTab, onRestart, defaultPreviewPort = 5173 }: ShellExampleProps) {
+export function ShellExample({ title, subtitle, box, bootTab, onRestart, defaultPreviewPort = 5173, initialLabels }: ShellExampleProps) {
   const [open, setOpen] = useState(false);
   const [boxId, setBoxId] = useState('');
   // null = connecting, true = ready, false = SW unavailable
   const [swReady, setSwReady] = useState<boolean | null>(null);
+  const [engine, setEngine] = useState<'sw' | 'postmessage'>('sw');
   const bridgeRef = useRef<ServiceWorkerBridge | null>(null);
   const previewPanelRef = useRef<ImperativePanelHandle>(null);
 
+  // The SW bridge is only needed for the 'sw' engine; create it lazily.
   const initBridge = async () => {
     if (bridgeRef.current || !box) return;
     const bridge = new ServiceWorkerBridge(box.kernel.portRegistry);
@@ -53,32 +58,51 @@ export function ShellExample({ title, subtitle, box, bootTab, onRestart, default
       previewPanelRef.current?.collapse();
     } else {
       previewPanelRef.current?.expand();
-      void initBridge();
+      if (engine === 'sw') void initBridge();
     }
   };
 
-  const browserBtn = (
-    <button
-      onClick={toggle}
-      disabled={!box}
-      title={box ? (open ? 'Hide browser' : 'Open browser') : 'Boot a terminal first'}
-      className={
-        'flex items-center gap-1.5 h-6 px-2 rounded text-[11px] border cursor-pointer ' +
-        (open
-          ? 'bg-tokyo-bg border-tokyo-blue/50 text-tokyo-blue'
-          : 'bg-tokyo-bg-dark border-tokyo-border text-tokyo-comment hover:text-tokyo-fg-bright') +
-        (box ? '' : ' opacity-40 cursor-not-allowed')
-      }
-    >
-      <Globe size={13} />
-      <span>Browser</span>
-    </button>
+  const switchEngine = () => {
+    setEngine((e) => {
+      const next = e === 'sw' ? 'postmessage' : 'sw';
+      if (next === 'sw') void initBridge();
+      return next;
+    });
+  };
+
+  const headerActions = (
+    <div className="flex items-center gap-2">
+      {open && (
+        <button
+          onClick={switchEngine}
+          title="Switch preview transport (service worker ⇄ SW-free postMessage)"
+          className="h-6 px-2 grid place-items-center rounded bg-tokyo-bg-dark border border-tokyo-border cursor-pointer text-[10px] font-mono text-tokyo-comment hover:text-tokyo-fg-bright"
+        >
+          preview: {engine === 'sw' ? 'SW' : 'postMessage'}
+        </button>
+      )}
+      <button
+        onClick={toggle}
+        disabled={!box}
+        title={box ? (open ? 'Hide browser' : 'Open browser') : 'Boot a terminal first'}
+        className={
+          'flex items-center gap-1.5 h-6 px-2 rounded text-[11px] border cursor-pointer ' +
+          (open
+            ? 'bg-tokyo-bg border-tokyo-blue/50 text-tokyo-blue'
+            : 'bg-tokyo-bg-dark border-tokyo-border text-tokyo-comment hover:text-tokyo-fg-bright') +
+          (box ? '' : ' opacity-40 cursor-not-allowed')
+        }
+      >
+        <Globe size={13} />
+        <span>Browser</span>
+      </button>
+    </div>
   );
 
-  const terminalArea = <TerminalArea box={box} bootTab={bootTab} onRestart={onRestart} />;
+  const terminalArea = <TerminalArea box={box} bootTab={bootTab} onRestart={onRestart} initialLabels={initialLabels} />;
 
   return (
-    <ExamplePanel title={title} subtitle={subtitle} headerAction={browserBtn}>
+    <ExamplePanel title={title} subtitle={subtitle} headerAction={headerActions}>
       <ResizablePanelGroup direction="vertical" autoSaveId={`pg-shell-${title}-split`} className="relative flex-1 min-h-0">
         <ResizablePanel defaultSize={100} minSize={20}>
           {terminalArea}
@@ -94,10 +118,16 @@ export function ShellExample({ title, subtitle, box, bootTab, onRestart, default
           onCollapse={() => setOpen(false)}
           onExpand={() => setOpen(true)}
         >
-          {swReady === false ? (
+          {engine === 'postmessage' ? (
+            box ? (
+              <NoSwPreview kernel={box.kernel} port={defaultPreviewPort} />
+            ) : (
+              <div className="flex-1 h-full grid place-items-center text-[12px] text-tokyo-comment">Booting box…</div>
+            )
+          ) : swReady === false ? (
             <div className="flex-1 h-full grid place-items-center text-center px-4 text-[12px] text-tokyo-comment">
-              Service worker unavailable in this browser — previews need it. Try a
-              Chromium-based browser.
+              Service worker unavailable in this browser — switch preview to
+              postMessage (top-right).
             </div>
           ) : boxId ? (
             <UiPreviewBrowser boxId={boxId} port={defaultPreviewPort} />

@@ -1,8 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Kernel } from '@lifo-sh/core';
 import type { Terminal } from '@lifo-sh/ui';
-import { ExamplePanel } from '@/components/example-panel';
-import { TerminalArea } from '@/components/terminal-area';
+import { ShellExample } from '@/components/shell-example';
 import { bootShell } from '@/lib/shell';
 import { seedHttp } from '@/examples/http-seed';
 
@@ -30,16 +29,18 @@ export default function HttpExample() {
   const box = kernel ? { kernel, env: kernel.getDefaultEnv() } : null;
 
   return (
-    <ExamplePanel
+    <ShellExample
       title="HTTP Server"
       subtitle={
         <>
           Virtual HTTP servers on in-VM ports — run <code>node server.js</code>, then{' '}
-          <code>curl localhost:3000</code> (or <code>ports</code>) from another tab.
+          <code>curl localhost:3000</code> (or <code>ports</code>), or open Browser to preview it.
         </>
       }
-    >
-      <TerminalArea box={box} bootTab={bootTab} initialLabels={TAB_NAMES} />
-    </ExamplePanel>
+      box={box}
+      bootTab={bootTab}
+      initialLabels={TAB_NAMES}
+      defaultPreviewPort={3000}
+    />
   );
 }
