@@ -33,7 +33,11 @@ export function TerminalView({ className, onReady }: TerminalViewProps) {
       theme: xtermTheme(mode),
     });
     termRef.current = term;
-    void onReady?.(term);
+    // Focus the terminal once its shell is wired up so you can type immediately.
+    // Desktop only — auto-focusing on a phone would pop the on-screen keyboard.
+    void Promise.resolve(onReady?.(term)).then(() => {
+      if (!isMobile) term.focus();
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

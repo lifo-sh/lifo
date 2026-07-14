@@ -1,9 +1,34 @@
 import { useState } from 'react';
-import { Moon, Sun, PanelLeftClose, ChevronDown, ChevronRight } from 'lucide-react';
+import { Moon, Sun, MoreVertical, Trash2, PanelLeftClose, ChevronDown, ChevronRight } from 'lucide-react';
 import { exampleGroups, sectionsFor } from '@/examples/registry';
 import { cn } from '@/lib/utils';
 import { useTheme } from '@/lib/theme';
 import { LifoLogo } from '@/components/logo';
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+} from '@/components/ui/dropdown-menu';
+
+/** Delete the box's persisted IndexedDB stores (filesystem + content blobs), then reload. */
+async function cleanOfflineStorage(): Promise<void> {
+  const ok = window.confirm(
+    'Clear this box’s offline storage? Saved files and installed packages will be removed, then the page reloads.',
+  );
+  if (!ok) return;
+  const drop = (name: string) =>
+    new Promise<void>((resolve) => {
+      const req = indexedDB.deleteDatabase(name);
+      req.onsuccess = req.onerror = req.onblocked = () => resolve();
+    });
+  try {
+    await Promise.all([drop('lifo'), drop('lifo-blobs')]);
+  } finally {
+    location.reload();
+  }
+}
 
 interface SidebarNavProps {
   activeId: string;
@@ -47,13 +72,27 @@ export function SidebarNav({ activeId, onSelect, onCollapse }: SidebarNavProps) 
           <LifoLogo className="size-[22px] shrink-0" />
           <h1 className="text-lg font-bold text-tokyo-fg-bright tracking-tight">Lifo</h1>
           <div className="ml-auto flex items-center gap-0.5">
-            <button
-              onClick={toggle}
-              title={mode === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
-              className="w-7 h-7 grid place-items-center rounded-md bg-transparent border-none text-tokyo-comment hover:text-tokyo-fg-bright hover:bg-tokyo-hover cursor-pointer"
-            >
-              {mode === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
-            </button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  title="Menu"
+                  className="w-7 h-7 grid place-items-center rounded-md bg-transparent border-none text-tokyo-comment hover:text-tokyo-fg-bright hover:bg-tokyo-hover cursor-pointer outline-none"
+                >
+                  <MoreVertical size={15} />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onSelect={() => toggle()}>
+                  {mode === 'dark' ? <Sun size={14} /> : <Moon size={14} />}
+                  <span>{mode === 'dark' ? 'Light theme' : 'Dark theme'}</span>
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onSelect={() => void cleanOfflineStorage()}>
+                  <Trash2 size={14} />
+                  <span>Clean up offline storage</span>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
             {onCollapse && (
               <button
                 onClick={onCollapse}
