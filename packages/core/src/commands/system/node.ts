@@ -251,15 +251,18 @@ function cjsDecl(name: string): string {
  * triggers the template parser), hence scan-then-validate instead of
  * dropping the weak preceders.
  */
-function isRegexStart(src: string, i: number): 'strong' | 'weak' | false {
-	let k = i - 1;
-	while (k >= 0 && (src[k] === ' ' || src[k] === '\t' || src[k] === '\n' || src[k] === '\r')) k--;
-	const prev = k >= 0 ? src[k] : '\0';
-	if ('\0=([{,;!&|^~?:+-*%<>/'.includes(prev) ||
-		(k >= 1 && /\b(?:return|typeof|void|delete|throw|new|case|of|in|yield|await)\s*$/.test(src.slice(Math.max(0, k - 11), k + 1)))) {
+// `prevChar` is the previous SIGNIFICANT char (see maskStringLiterals' tracking):
+// comments are transparent, and a string/regex value is reported as 'x'. This
+// avoids scanning backward across comments — a regex on its own line after a
+// `// comment` used to see the comment's last char and get misread as division,
+// desyncing the whole masker (prettier's `.replace(\n // …\n /re/)`).
+function isRegexStart(prevChar: string, prevIdx: number, src: string): 'strong' | 'weak' | false {
+	if ('\0=([{,;!&|^~?:+-*%<>/'.includes(prevChar) ||
+		(prevIdx >= 0 && /[A-Za-z_$]/.test(prevChar) &&
+			/\b(?:return|typeof|void|delete|throw|new|case|of|in|yield|await)$/.test(src.slice(Math.max(0, prevIdx - 11), prevIdx + 1)))) {
 		return 'strong';
 	}
-	if (')]}'.includes(prev)) return 'weak';
+	if (')]}'.includes(prevChar)) return 'weak';
 	return false;
 }
 
@@ -268,9 +271,13 @@ function isPlausibleRegex(candidate: string): boolean {
 	const lastSlash = candidate.lastIndexOf('/');
 	if (lastSlash <= 0) return false;
 	const body = candidate.slice(1, lastSlash);
-	if (body.length === 0 || body.length > 500 || body.includes('\n')) return false;
+	// Validate WITH the actual flags — a regex like /[\p{L}]/u is only valid with
+	// `u`, so validating the body flagless wrongly rejected it, left it unmasked,
+	// and its inner quotes desynced the whole masker (prettier is full of these).
+	const flags = candidate.slice(lastSlash + 1);
+	if (body.length === 0 || body.length > 2000 || body.includes('\n')) return false;
 	try {
-		new RegExp(body);
+		new RegExp(body, /^[gimsuyvd]*$/.test(flags) ? flags : '');
 		return true;
 	} catch {
 		return false;
@@ -370,6 +377,10 @@ function maskStringLiterals(src: string): { masked: string; literals: string[] }
 	const literals: string[] = [];
 	let masked = '';
 	let i = 0;
+	// Previous significant char for regex/division disambiguation. Comments are
+	// transparent (don't update it); a string/regex literal is a value → 'x'.
+	let prevChar = '\0';
+	let prevIdx = -1;
 
 	while (i < src.length) {
 		const ch = src[i];
@@ -398,11 +409,12 @@ function maskStringLiterals(src: string): { masked: string; literals: string[] }
 
 		// Regex literals — skip to avoid confusing backticks inside /regex/ with templates
 		if (ch === '/') {
-			const kind = isRegexStart(src, i);
+			const kind = isRegexStart(prevChar, prevIdx, src);
 			if (kind) {
 				const end = scanRegexLiteral(src, i);
 				if (kind === 'strong' || isPlausibleRegex(src.slice(i, end))) {
 					masked += src.slice(i, end);
+					prevChar = 'x'; prevIdx = -1; // a regex literal is a value
 					i = end;
 					continue;
 				}
@@ -421,10 +433,12 @@ function maskStringLiterals(src: string): { masked: string; literals: string[] }
 			// Placeholder uses same quote style so import regexes that capture
 			// ['"][^'"]+['"] still work (they see e.g. "__LIFO_S0__").
 			masked += ch + '__LIFO_S' + idx + '__' + ch;
+			prevChar = 'x'; prevIdx = -1; // a string/template literal is a value
 			continue;
 		}
 
 		masked += ch;
+		if (ch !== ' ' && ch !== '\t' && ch !== '\n' && ch !== '\r') { prevChar = ch; prevIdx = i; }
 		i++;
 	}
 
