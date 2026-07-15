@@ -62,6 +62,8 @@ function makeNodeGlobal(overrides: Record<string, unknown>): Record<string, unkn
 
 import { makeProxyingFetch } from '../../node-compat/proxy-fetch.js';
 import { createOxideScanner } from '../../node-compat/tailwind-oxide.js';
+import { createSwcCore } from '../../node-compat/swc.js';
+import { createEsbuild } from '../../node-compat/esbuild.js';
 import * as nodeTimers from '../../node-compat/timers.js';
 
 /**
@@ -1039,6 +1041,10 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 		// browser VM. See createOxideScanner.
 		const oxideModule = { Scanner: createOxideScanner(ctx.vfs) };
 
+		// @swc/core (native Rust binding) — backed by the wasm esbuild shim, so
+		// @vitejs/plugin-react-swc runs unmodified. See createSwcCore.
+		const swcModule = createSwcCore({ vfs: ctx.vfs, cwd: ctx.cwd }, createEsbuild);
+
 		// process.exit() handling. While the main script is still executing
 		// synchronously, exit() must throw (to abort it). Once we're purely
 		// event-driven (a long-running server is up and we're just awaiting it),
@@ -1136,6 +1142,8 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			if (name === 'lightningcss') return lightningcssStub;
 			// @tailwindcss/oxide — JS Scanner shim (see oxideModule / createOxideScanner).
 			if (name === '@tailwindcss/oxide') return oxideModule;
+			// @swc/core — wasm-esbuild-backed shim (see swcModule / createSwcCore).
+			if (name === '@swc/core') return swcModule;
 			// fetch-nodeshim: serve the native fetch stack (see makeFetchNodeshim) —
 			// intercept BEFORE node_modules resolution since the package IS installed.
 			if (name === 'fetch-nodeshim' && fetchNodeshim) return fetchNodeshim;
@@ -1595,6 +1603,8 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			if (name === 'lightningcss') return lightningcssStub;
 			// @tailwindcss/oxide — JS Scanner shim (see oxideModule / createOxideScanner).
 			if (name === '@tailwindcss/oxide') return oxideModule;
+			// @swc/core — wasm-esbuild-backed shim (see swcModule / createSwcCore).
+			if (name === '@swc/core') return swcModule;
 			// fetch-nodeshim: serve the native fetch stack (see makeFetchNodeshim) —
 			// intercept BEFORE node_modules resolution since the package IS installed.
 			if (name === 'fetch-nodeshim' && fetchNodeshim) return fetchNodeshim;
