@@ -1,6 +1,6 @@
 {
   "name": "lifo-pkg-fastfetch",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "fastfetch / neofetch system-info command for Lifo",
   "license": "MIT",
   "author": "Sanket Sahu",
