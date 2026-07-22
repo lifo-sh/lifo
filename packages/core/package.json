@@ -1,6 +1,6 @@
 {
   "name": "@lifo-sh/core",
-  "version": "0.6.2",
+  "version": "0.6.3-alpha.4",
   "description": "Linux-like OS engine for JavaScript -- kernel, shell, VFS, and 60+ commands",
   "license": "MIT",
   "repository": {

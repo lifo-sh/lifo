@@ -67,7 +67,7 @@ function createLifoAPI(ctx: CommandContext): LifoAPI {
       const cached = esmCache.get(url);
       if (cached) return cached;
 
-      const mod = await import(/* @vite-ignore */ url);
+      const mod = await import(/* @vite-ignore */ /* webpackIgnore: true */ url);
       esmCache.set(url, mod);
       return mod;
     },
@@ -179,7 +179,7 @@ async function ensureHttpsLoader(): Promise<void> {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const modId = 'node:' + 'module'; // prevent static analysis
     const nodeModule: { register?: (specifier: string) => void } =
-      await import(/* @vite-ignore */ modId);
+      await import(/* @vite-ignore */ /* webpackIgnore: true */ modId);
     if (typeof nodeModule.register !== 'function') {
       // Node.js < 20.6 -- module.register() not available
       return;
@@ -249,7 +249,7 @@ async function executeEsmCommand(
   }
 
   try {
-    const mod = await import(/* @vite-ignore */ url);
+    const mod = await import(/* @vite-ignore */ /* webpackIgnore: true */ url);
     const handler = mod.default;
 
     if (typeof handler !== 'function') {

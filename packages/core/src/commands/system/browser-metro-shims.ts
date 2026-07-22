@@ -121,6 +121,21 @@ function _applyStyleKey(el, key, value) {
   try { el.style[key] = value; } catch (e) {}
 }
 
+// Remap className props used by RN list components (FlatList, ScrollView)
+// to their corresponding style props with $$css objects.
+var _REMAP_CLASSNAME = {
+  contentContainerClassName: "contentContainerStyle",
+  columnWrapperClassName: "columnWrapperStyle",
+  ListHeaderComponentClassName: "ListHeaderComponentStyle",
+  ListFooterComponentClassName: "ListFooterComponentStyle",
+};
+
+function _classNameToCss(cn) {
+  var obj = { $$css: true };
+  cn.split(/\\s+/).forEach(function(c) { if (c) obj[c] = c; });
+  return obj;
+}
+
 React.createElement = function() {
   var args = Array.prototype.slice.call(arguments);
   var type = args[0];
@@ -133,11 +148,31 @@ React.createElement = function() {
   var className = (typeof props.className === "string" && props.className) ? props.className : null;
   var cssVars = _extractCssVars(props.style);
 
-  if (!className && !cssVars) {
+  var remapKeys = null;
+  for (var _rk in _REMAP_CLASSNAME) {
+    if (typeof props[_rk] === "string" && props[_rk]) {
+      (remapKeys || (remapKeys = [])).push(_rk);
+    }
+  }
+
+  if (!className && !cssVars && !remapKeys) {
     return _orig.apply(this, args);
   }
 
   props = Object.assign({}, props);
+
+  if (remapKeys) {
+    for (var _ri = 0; _ri < remapKeys.length; _ri++) {
+      var _rkey = remapKeys[_ri];
+      var _skey = _REMAP_CLASSNAME[_rkey];
+      var _rcss = _classNameToCss(props[_rkey]);
+      var _existing = props[_skey];
+      if (Array.isArray(_existing)) props[_skey] = [_rcss].concat(_existing);
+      else if (_existing) props[_skey] = [_rcss, _existing];
+      else props[_skey] = _rcss;
+      delete props[_rkey];
+    }
+  }
   var cleanedStyle = _stripUndefined(_cleanStyle(props.style));
 
   // Build the $$css class object from className tokens.
@@ -862,6 +897,488 @@ exports.__esModule = true;
  * dependency batch hash used for package prefetching, since react-native-webview
  * ships in the default scaffold package.json.
  */
+/**
+ * Shim for react-native-gesture-handler.
+ * Provides GestureHandlerRootView (passthrough View), Gesture factories,
+ * GestureDetector, Swipeable, and all commonly imported gesture types/hooks
+ * so projects using gesture-handler don't crash in the browser preview.
+ */
+export const GESTURE_HANDLER_SHIM = `
+var React = require("react");
+var RN = require("react-native");
+
+// GestureHandlerRootView — just a plain View wrapper
+var GestureHandlerRootView = React.forwardRef(function(props, ref) {
+  return React.createElement(RN.View, Object.assign({}, props, { ref: ref }));
+});
+GestureHandlerRootView.displayName = "GestureHandlerRootView";
+
+// Gesture factories — return chainable builder objects
+function makeGestureBuilder() {
+  var g = {
+    enabled: function() { return g; },
+    minDistance: function() { return g; },
+    minPointers: function() { return g; },
+    maxPointers: function() { return g; },
+    minVelocity: function() { return g; },
+    minVelocityX: function() { return g; },
+    minVelocityY: function() { return g; },
+    activeOffsetX: function() { return g; },
+    activeOffsetY: function() { return g; },
+    failOffsetX: function() { return g; },
+    failOffsetY: function() { return g; },
+    numberOfTaps: function() { return g; },
+    maxDuration: function() { return g; },
+    maxDelay: function() { return g; },
+    maxDist: function() { return g; },
+    minDurationMs: function() { return g; },
+    shouldCancelWhenOutside: function() { return g; },
+    hitSlop: function() { return g; },
+    simultaneousWithExternalGesture: function() { return g; },
+    requireExternalGestureToFail: function() { return g; },
+    blocksExternalGesture: function() { return g; },
+    withRef: function() { return g; },
+    withTestId: function() { return g; },
+    runOnJS: function() { return g; },
+    onBegin: function() { return g; },
+    onStart: function() { return g; },
+    onUpdate: function() { return g; },
+    onChange: function() { return g; },
+    onEnd: function() { return g; },
+    onFinalize: function() { return g; },
+    onTouchesDown: function() { return g; },
+    onTouchesMove: function() { return g; },
+    onTouchesUp: function() { return g; },
+    onTouchesCancelled: function() { return g; },
+    initialize: function() { return g; },
+    toGestureArray: function() { return [g]; },
+    prepare: function() {},
+  };
+  return g;
+}
+
+var Gesture = {
+  Tap: function() { return makeGestureBuilder(); },
+  Pan: function() { return makeGestureBuilder(); },
+  Pinch: function() { return makeGestureBuilder(); },
+  Rotation: function() { return makeGestureBuilder(); },
+  Fling: function() { return makeGestureBuilder(); },
+  LongPress: function() { return makeGestureBuilder(); },
+  ForceTouch: function() { return makeGestureBuilder(); },
+  Native: function() { return makeGestureBuilder(); },
+  Manual: function() { return makeGestureBuilder(); },
+  Hover: function() { return makeGestureBuilder(); },
+  Race: function() { return makeGestureBuilder(); },
+  Simultaneous: function() { return makeGestureBuilder(); },
+  Exclusive: function() { return makeGestureBuilder(); },
+};
+
+// GestureDetector — renders children as-is (gestures are no-ops in preview)
+function GestureDetector(props) {
+  return props.children || null;
+}
+GestureDetector.displayName = "GestureDetector";
+
+// Legacy gesture handler components (class-based API)
+function makeGestureComponent(name) {
+  var C = React.forwardRef(function(props, ref) {
+    return React.createElement(RN.View, Object.assign({}, props, { ref: ref }));
+  });
+  C.displayName = name;
+  return C;
+}
+
+var TapGestureHandler = makeGestureComponent("TapGestureHandler");
+var PanGestureHandler = makeGestureComponent("PanGestureHandler");
+var PinchGestureHandler = makeGestureComponent("PinchGestureHandler");
+var RotationGestureHandler = makeGestureComponent("RotationGestureHandler");
+var FlingGestureHandler = makeGestureComponent("FlingGestureHandler");
+var LongPressGestureHandler = makeGestureComponent("LongPressGestureHandler");
+var ForceTouchGestureHandler = makeGestureComponent("ForceTouchGestureHandler");
+var NativeViewGestureHandler = makeGestureComponent("NativeViewGestureHandler");
+
+// Swipeable component — renders children, passes through swipe actions
+var Swipeable = React.forwardRef(function(props, ref) {
+  return React.createElement(RN.View, { ref: ref, style: props.containerStyle },
+    props.children
+  );
+});
+Swipeable.displayName = "Swipeable";
+
+// DrawerLayout — renders children
+var DrawerLayout = React.forwardRef(function(props, ref) {
+  return React.createElement(RN.View, { ref: ref, style: { flex: 1 } },
+    props.children
+  );
+});
+DrawerLayout.displayName = "DrawerLayout";
+
+// RN component wrappers (pass-through)
+var ScrollView = RN.ScrollView;
+var FlatList = RN.FlatList;
+var Switch = RN.Switch;
+var TextInput = RN.TextInput;
+var TouchableOpacity = RN.TouchableOpacity;
+var TouchableHighlight = RN.TouchableHighlight;
+var TouchableWithoutFeedback = RN.TouchableWithoutFeedback;
+var TouchableNativeFeedback = RN.TouchableOpacity;
+
+// State enum
+var State = { UNDETERMINED: 0, FAILED: 1, BEGAN: 2, CANCELLED: 3, ACTIVE: 4, END: 5 };
+
+// Direction flags
+var Directions = { RIGHT: 1, LEFT: 2, UP: 4, DOWN: 8 };
+
+// Gesture type (dummy)
+function gestureHandlerRootHOC(Component) { return Component; }
+
+exports.GestureHandlerRootView = GestureHandlerRootView;
+exports.Gesture = Gesture;
+exports.GestureDetector = GestureDetector;
+exports.TapGestureHandler = TapGestureHandler;
+exports.PanGestureHandler = PanGestureHandler;
+exports.PinchGestureHandler = PinchGestureHandler;
+exports.RotationGestureHandler = RotationGestureHandler;
+exports.FlingGestureHandler = FlingGestureHandler;
+exports.LongPressGestureHandler = LongPressGestureHandler;
+exports.ForceTouchGestureHandler = ForceTouchGestureHandler;
+exports.NativeViewGestureHandler = NativeViewGestureHandler;
+exports.Swipeable = Swipeable;
+exports.DrawerLayout = DrawerLayout;
+exports.ScrollView = ScrollView;
+exports.FlatList = FlatList;
+exports.Switch = Switch;
+exports.TextInput = TextInput;
+exports.TouchableOpacity = TouchableOpacity;
+exports.TouchableHighlight = TouchableHighlight;
+exports.TouchableWithoutFeedback = TouchableWithoutFeedback;
+exports.TouchableNativeFeedback = TouchableNativeFeedback;
+exports.State = State;
+exports.Directions = Directions;
+exports.gestureHandlerRootHOC = gestureHandlerRootHOC;
+exports.createNativeWrapper = function(C) { return C; };
+exports.default = { GestureHandlerRootView: GestureHandlerRootView };
+exports.__esModule = true;
+`;
+
+// ---------------------------------------------------------------------------
+// Editor scripts — injected into the preview HTML <head> for IDE integration.
+// These run before the bundle loads so they can intercept errors early.
+// ---------------------------------------------------------------------------
+
+/**
+ * Console interception — forwards console.* calls to the parent editor window
+ * via postMessage so the editor can display them in its console panel.
+ */
+export const CONSOLE_INTERCEPT_SCRIPT =
+  "['log','warn','error','info'].forEach(function(method) {\n" +
+  '  var orig = console[method];\n' +
+  '  console[method] = function() {\n' +
+  '    var args = Array.prototype.slice.call(arguments);\n' +
+  '    var text = args.map(function(a) {\n' +
+  "      if (typeof a === 'object') try { return JSON.stringify(a); } catch(e) { return String(a); }\n" +
+  '      return String(a);\n' +
+  "    }).join(' ');\n" +
+  "    if (window.parent) window.parent.postMessage({ type: 'console', method: method, text: text }, '*');\n" +
+  '    if (orig) orig.apply(console, arguments);\n' +
+  '  };\n' +
+  '});\n';
+
+/**
+ * Source map resolver + runtime error handlers.
+ * Decodes inline source maps (VLQ base64), resolves generated line/col back to
+ * original file, and posts structured runtime errors to the parent editor.
+ * Also listens for HMR updates to extract per-module source maps.
+ */
+export const SM_RESOLVER_AND_ERROR_HANDLERS =
+  '(function() {\n' +
+  "var B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';\n" +
+  'var B64D = {};\n' +
+  'for (var i = 0; i < B64.length; i++) B64D[B64[i]] = i;\n' +
+  'function decodeVLQ(str, offset) {\n' +
+  '  var result = 0, shift = 0, cont, idx = offset;\n' +
+  '  do { var d = B64D[str[idx++]]; cont = (d & 32) !== 0; result += (d & 31) << shift; shift += 5; } while (cont);\n' +
+  '  return { value: (result & 1) ? -(result >> 1) : (result >> 1), next: idx };\n' +
+  '}\n' +
+  'function decodeMappings(mappings) {\n' +
+  '  var lines = [], srcIdx = 0, origLine = 0, origCol = 0;\n' +
+  "  var parts = mappings.split(';');\n" +
+  '  for (var li = 0; li < parts.length; li++) {\n' +
+  '    var segs = [], genCol = 0, lineStr = parts[li];\n' +
+  '    if (lineStr) {\n' +
+  "      var segParts = lineStr.split(',');\n" +
+  '      for (var si = 0; si < segParts.length; si++) {\n' +
+  '        var s = segParts[si]; if (!s) continue;\n' +
+  '        var pos = 0, f = [];\n' +
+  '        while (pos < s.length) { var r = decodeVLQ(s, pos); f.push(r.value); pos = r.next; }\n' +
+  '        if (f.length >= 4) { genCol += f[0]; srcIdx += f[1]; origLine += f[2]; origCol += f[3]; segs.push([genCol, srcIdx, origLine, origCol]); }\n' +
+  '        else if (f.length >= 1) { genCol += f[0]; segs.push([genCol]); }\n' +
+  '      }\n' +
+  '    }\n' +
+  '    lines.push(segs);\n' +
+  '  }\n' +
+  '  return lines;\n' +
+  '}\n' +
+  'var maps = {};\n' +
+  'function addMap(url, mapData) { maps[url] = { sources: mapData.sources, decoded: decodeMappings(mapData.mappings) }; }\n' +
+  'function resolve(url, line, col) {\n' +
+  '  var m = maps[url]; if (!m) return null;\n' +
+  '  var decoded = m.decoded; if (line < 0 || line >= decoded.length) return null;\n' +
+  '  var segs = decoded[line]; if (!segs || segs.length === 0) return null;\n' +
+  '  var best = null;\n' +
+  '  for (var i = 0; i < segs.length; i++) { var seg = segs[i]; if (seg.length < 4) continue; if (seg[0] <= col) best = seg; }\n' +
+  '  if (!best) { for (var j = 0; j < segs.length; j++) { if (segs[j].length >= 4) { best = segs[j]; break; } } }\n' +
+  '  if (!best) return null;\n' +
+  "  return { file: m.sources[best[1]] || '(unknown)', line: best[2] + 1, column: best[3] + 1 };\n" +
+  '}\n' +
+  "function extractInlineSM(code) {\n" +
+  "  var marker = '//# sourceMappingURL=data:application/json;base64,';\n" +
+  '  var idx = code.lastIndexOf(marker); if (idx === -1) return null;\n' +
+  "  var start = idx + marker.length; var end = code.indexOf('\\n', start); if (end === -1) end = code.length;\n" +
+  '  try { return JSON.parse(atob(code.slice(start, end).trim())); } catch(e) { return null; }\n' +
+  '}\n' +
+  "function extractSourceURL(code) {\n" +
+  "  var marker = '//# sourceURL='; var idx = code.lastIndexOf(marker); if (idx === -1) return null;\n" +
+  "  var start = idx + marker.length; var end = code.indexOf('\\n', start); if (end === -1) end = code.length;\n" +
+  '  return code.slice(start, end).trim();\n' +
+  '}\n' +
+  'window.__SM = { init: function(url, mapData) { addMap(url, mapData); }, add: function(url, mapData) { addMap(url, mapData); }, resolve: resolve };\n' +
+  "window.addEventListener('message', function(e) {\n" +
+  "  if (!e.data || e.data.type !== 'hmr-update') return;\n" +
+  '  __runtimeErrorPosted = false;\n' +
+  '  var mods = e.data.updatedModules; if (!mods) return;\n' +
+  '  for (var key in mods) {\n' +
+  "    var code = mods[key]; if (typeof code !== 'string') continue;\n" +
+  '    var sm = extractInlineSM(code); var sourceURL = extractSourceURL(code);\n' +
+  '    if (sm && sourceURL) window.__SM.add(sourceURL, sm);\n' +
+  '  }\n' +
+  '});\n' +
+  'function parseStack(stack) {\n' +
+  '  if (!stack) return [];\n' +
+  '  var frames = [];\n' +
+  "  var lines = stack.split('\\n');\n" +
+  '  for (var i = 0; i < lines.length; i++) {\n' +
+  '    var line = lines[i].trim();\n' +
+  '    var m = line.match(/^at\\s+(.+?)\\s+\\((.+?):(\\d+):(\\d+)\\)$/);\n' +
+  '    if (m) { frames.push({ fn: m[1], file: m[2], line: parseInt(m[3],10), column: parseInt(m[4],10) }); continue; }\n' +
+  '    m = line.match(/^at\\s+(.+?):(\\d+):(\\d+)$/);\n' +
+  "    if (m) { frames.push({ fn: '(anonymous)', file: m[1], line: parseInt(m[2],10), column: parseInt(m[3],10) }); }\n" +
+  '  }\n' +
+  '  return frames;\n' +
+  '}\n' +
+  'var __runtimeErrorPosted = false;\n' +
+  'function postRuntimeError(message, stack) {\n' +
+  '  if (__runtimeErrorPosted) return;\n' +
+  '  __runtimeErrorPosted = true;\n' +
+  '  var resolved = null;\n' +
+  '  if (stack) {\n' +
+  '    var frames = parseStack(stack);\n' +
+  '    for (var i = 0; i < frames.length; i++) {\n' +
+  '      var f = frames[i]; var r = resolve(f.file, f.line - 1, f.column - 1);\n' +
+  "      if (r && r.file && r.file.indexOf('blob:') === -1) { resolved = r; break; }\n" +
+  '    }\n' +
+  '  }\n' +
+  "  var msg = String(message).replace(/^Uncaught\\s+(Error:\\s*)?/, '');\n" +
+  "  var fullMsg = resolved && resolved.file ? resolved.file + ':' + resolved.line + '\\n' + msg : msg;\n" +
+  '  if (!window.parent) return;\n' +
+  "  window.parent.postMessage({ type: 'iframe.error.runtime', payload: {\n" +
+  "    message: fullMsg, errorType: 'runtime-error', source: 'runtime',\n" +
+  "    path: (resolved && resolved.file) || '', line: resolved ? resolved.line : null, column: resolved ? resolved.column : null\n" +
+  "  }}, '*');\n" +
+  '}\n' +
+  'window.onerror = function(msg, src, line, col, err) { postRuntimeError(msg, err && err.stack); return false; };\n' +
+  "window.addEventListener('unhandledrejection', function(e) {\n" +
+  "  var r = e.reason; postRuntimeError(r instanceof Error ? r.message : String(r || 'Unhandled rejection'), r && r.stack);\n" +
+  '});\n' +
+  '})();\n';
+
+/**
+ * Layer selection + pinch zoom — injected into every preview iframe.
+ *
+ * Layer selection: traverses React Fiber nodes to find data-bx-path attributes,
+ * posts hoverElement/selectLayer messages to parent on mousemove/mouseup.
+ * Supports inspect mode (blocks clicks/taps, only sends selection events).
+ *
+ * Pinch zoom: Ctrl+Wheel (desktop) and two-finger touch (mobile) send
+ * pinchZoom messages to parent with phase, scale, and center coordinates.
+ * Throttled to 16ms to prevent excessive postMessage calls.
+ */
+export const LAYER_SELECTION_SCRIPT = `(function() {
+  function getFiberFromDOMNode(el) {
+    if (!el) return null;
+    var key = Object.keys(el).find(function(k) {
+      return k.startsWith('__reactFiber$') ||
+             k.startsWith('__reactContainer$') ||
+             k.startsWith('__reactInternalInstance$');
+    });
+    return key ? el[key] : null;
+  }
+
+  function getBxPath(fiber) {
+    while (fiber) {
+      var props = fiber.memoizedProps;
+      if (props) {
+        var p = props['data-bx-path'] || (props.dataSet && props.dataSet['bx-path']);
+        if (p) return p;
+      }
+      fiber = fiber.return;
+    }
+    return null;
+  }
+
+  function toFileKey(vfsPath) {
+    return vfsPath.startsWith('/') ? vfsPath.slice(1) : vfsPath;
+  }
+
+  var inspectMode = false;
+
+  window.addEventListener('mousemove', function(e) {
+    var target = e.target;
+    if (!target) return;
+    var bxPath = getBxPath(getFiberFromDOMNode(target));
+    if (!bxPath) return;
+    var rect = target.getBoundingClientRect();
+    window.parent.postMessage({
+      type: 'hoverElement',
+      payload: {
+        path: bxPath,
+        filePath: toFileKey(bxPath.split(':')[0]),
+        x: rect.left, y: rect.top, width: rect.width, height: rect.height
+      }
+    }, '*');
+  });
+
+  window.addEventListener('mouseup', function(e) {
+    var target = e.target;
+    if (!target) return;
+    var bxPath = getBxPath(getFiberFromDOMNode(target));
+    if (!bxPath) return;
+    var rect = target.getBoundingClientRect();
+    window.parent.postMessage({
+      type: 'selectLayer',
+      payload: {
+        path: bxPath,
+        filePath: toFileKey(bxPath.split(':')[0]),
+        x: rect.left, y: rect.top, width: rect.width, height: rect.height
+      }
+    }, '*');
+  });
+
+  function blockPropagationOnly(e) {
+    if (!inspectMode) return;
+    if (e.touches && e.touches.length > 1) return;
+    e.stopPropagation();
+  }
+  ['pointerdown', 'mousedown', 'touchstart'].forEach(function(type) {
+    window.addEventListener(type, blockPropagationOnly, true);
+  });
+
+  function blockActionEvent(e) {
+    if (!inspectMode) return;
+    e.preventDefault();
+    e.stopPropagation();
+  }
+  ['click', 'dblclick', 'auxclick', 'contextmenu', 'submit'].forEach(function(type) {
+    window.addEventListener(type, blockActionEvent, true);
+  });
+
+  var artboardX = 0;
+  var artboardY = 0;
+  var artboardId = '';
+
+  window.addEventListener('message', function(e) {
+    if (!e.data) return;
+    if (e.data.type === 'setInspectMode') {
+      inspectMode = !!e.data.value;
+    }
+    if (e.data.type === 'setArtboardPosition') {
+      artboardX = e.data.x || 0;
+      artboardY = e.data.y || 0;
+    }
+    if (e.data.type === 'setArtboardId' && e.data.id) {
+      artboardId = e.data.id;
+      window.parent.postMessage({ type: 'artboardIdSet', id: artboardId }, '*');
+    }
+  });
+
+  window.parent.postMessage({ type: 'requestArtboardPosition' }, '*');
+
+  var lastPinchSend = 0;
+  var THROTTLE_MS = 16;
+
+  function sendPinchZoom(payload) {
+    var now = Date.now();
+    if (now - lastPinchSend < THROTTLE_MS) return;
+    lastPinchSend = now;
+    payload.artboardX = artboardX;
+    payload.artboardY = artboardY;
+    payload.artboardId = artboardId;
+    window.parent.postMessage({ type: 'pinchZoom', payload: payload }, '*');
+  }
+
+  window.addEventListener('wheel', function(e) {
+    if (e.ctrlKey) {
+      e.preventDefault();
+      e.stopPropagation();
+      sendPinchZoom({
+        phase: 'wheel',
+        deltaY: e.deltaY,
+        centerX: e.clientX,
+        centerY: e.clientY
+      });
+    }
+  }, { passive: false });
+
+  var pinchStartDistance = 0;
+  var lastPinchDistance = 0;
+
+  function getTouchDistance(t1, t2) {
+    var dx = t1.clientX - t2.clientX;
+    var dy = t1.clientY - t2.clientY;
+    return Math.sqrt(dx * dx + dy * dy);
+  }
+
+  function getTouchCenter(t1, t2) {
+    return {
+      x: (t1.clientX + t2.clientX) / 2,
+      y: (t1.clientY + t2.clientY) / 2
+    };
+  }
+
+  window.addEventListener('touchstart', function(e) {
+    if (e.touches.length === 2) {
+      e.preventDefault();
+      pinchStartDistance = getTouchDistance(e.touches[0], e.touches[1]);
+      lastPinchDistance = pinchStartDistance;
+      var center = getTouchCenter(e.touches[0], e.touches[1]);
+      sendPinchZoom({ phase: 'start', centerX: center.x, centerY: center.y });
+    }
+  }, { passive: false });
+
+  window.addEventListener('touchmove', function(e) {
+    if (e.touches.length === 2) {
+      e.preventDefault();
+      var currentDistance = getTouchDistance(e.touches[0], e.touches[1]);
+      var scale = currentDistance / lastPinchDistance;
+      lastPinchDistance = currentDistance;
+      var center = getTouchCenter(e.touches[0], e.touches[1]);
+      sendPinchZoom({ phase: 'move', scale: scale, centerX: center.x, centerY: center.y });
+    }
+  }, { passive: false });
+
+  window.addEventListener('touchend', function(e) {
+    if (e.touches.length < 2 && pinchStartDistance > 0) {
+      pinchStartDistance = 0;
+      lastPinchDistance = 0;
+      sendPinchZoom({ phase: 'end' });
+    }
+  }, { passive: false });
+
+  window.addEventListener('gesturestart', function(e) { e.preventDefault(); });
+  window.addEventListener('gesturechange', function(e) { e.preventDefault(); });
+  window.addEventListener('gestureend', function(e) { e.preventDefault(); });
+})();`;
+
 export const WEBVIEW_SHIM = `
 var React = require("react");
 var RN = require("react-native");

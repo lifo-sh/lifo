@@ -33,7 +33,9 @@ import type { Kernel, VirtualRequest, VirtualResponse } from '../../kernel/index
 import { resolve } from '../../utils/path.js';
 import {
   GLOBALS_PREAMBLE, CLASSNAME_PATCH_MODULE, NATIVEWIND_SHIM,
-  EXPO_FONT_SHIM, REANIMATED_SHIM, WEBVIEW_SHIM, buildExpoConstantsShim,
+  EXPO_FONT_SHIM, REANIMATED_SHIM, GESTURE_HANDLER_SHIM, WEBVIEW_SHIM,
+  CONSOLE_INTERCEPT_SCRIPT, SM_RESOLVER_AND_ERROR_HANDLERS, LAYER_SELECTION_SCRIPT,
+  buildExpoConstantsShim,
 } from './browser-metro-shims.js';
 
 const PACKAGE_SERVER = 'https://esm.reactnative.run';
@@ -55,6 +57,7 @@ const SKIP_SEG = /(^|\/)(node_modules|\.git|\.expo|dist|\.cache|\.next)(\/|$)/;
 const EXPO_CONSTANTS_VPATH = '/__shims__/expo-constants.js';
 const REANIMATED_VPATH = '/__shims__/react-native-reanimated.js';
 const WORKLETS_VPATH = '/__shims__/react-native-worklets.js';
+const GESTURE_HANDLER_VPATH = '/__shims__/react-native-gesture-handler.js';
 const WEBVIEW_VPATH = '/__shims__/react-native-webview.js';
 
 const isJSX = (f: string) => f.endsWith('.tsx') || f.endsWith('.jsx');
@@ -67,7 +70,8 @@ function makeExpoWebPlugin(): BundlerPlugin {
       if (filename.endsWith('.json')) return { src: `module.exports = ${src};` };
       let m = src, changed = false;
       if (isJSX(filename) && !hasReactImport(src)) { m = 'import React from "react";\n' + m; changed = true; }
-      if (filename === '/index.tsx' || filename === '/index.ts' || filename === '/index.js') {
+      // Inject classname patch at the top of any entry file (index.*, App.*)
+      if (/^\/(index|App)\.(tsx?|jsx?)$/.test(filename)) {
         m = 'require("__classname-patch__");\n' + m; changed = true;
       }
       return changed ? { src: m } : null;
@@ -77,6 +81,7 @@ function makeExpoWebPlugin(): BundlerPlugin {
       if (name === 'expo-constants') return EXPO_CONSTANTS_VPATH;
       if (name === 'react-native-reanimated') return REANIMATED_VPATH;
       if (name === 'react-native-worklets') return WORKLETS_VPATH;
+      if (name === 'react-native-gesture-handler') return GESTURE_HANDLER_VPATH;
       if (name === 'react-native-webview') return WEBVIEW_VPATH;
       return null;
     },
@@ -165,6 +170,7 @@ function readFileMap(vfs: any, dir: string): FileMap {
   fm[EXPO_CONSTANTS_VPATH] = { content: buildExpoConstantsShim(fm['/app.json']?.content), isExternal: false };
   fm[REANIMATED_VPATH] = { content: REANIMATED_SHIM, isExternal: false };
   fm[WORKLETS_VPATH] = { content: 'module.exports = {};', isExternal: false };
+  fm[GESTURE_HANDLER_VPATH] = { content: GESTURE_HANDLER_SHIM, isExternal: false };
   fm[WEBVIEW_VPATH] = { content: WEBVIEW_SHIM, isExternal: false };
   return fm;
 }
@@ -178,12 +184,82 @@ function publicEnv(env: Record<string, string>): Record<string, string> {
 // The HMR client: polls /__bmhmr and either reloads (a rebuild that can't be
 // hot-applied) or forwards each hot update to the bundle's in-iframe HMR runtime
 // via window.postMessage({type:'hmr-update', …}) — which does React Refresh.
-function pageHtml(bundleVersion: number, hmrSeq: number): string {
+function pageHtml(bundleVersion: number, hmrSeq: number, headExtra: string = '', editorBlock: string = ''): string {
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <style>html,body{height:100%;margin:0}body{overflow:hidden}#root{display:flex;height:100%;flex:1}</style>
 <script src="https://cdn.tailwindcss.com"></script>
-<script>(function(){var B=${bundleVersion},H=${hmrSeq};function p(){fetch('/__bmhmr?b='+B+'&h='+H,{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){if(d.reload){location.reload();return;}if(d.updates){for(var i=0;i<d.updates.length;i++){var u=d.updates[i];window.postMessage({type:'hmr-update',updatedModules:u.update.updatedModules,removedModules:u.update.removedModules,reverseDepsMap:u.update.reverseDepsMap},'*');H=u.seq;}}setTimeout(p,300);}).catch(function(){setTimeout(p,800);});}p();})();</script>
+${headExtra}${editorBlock}<script>(function(){var B=${bundleVersion},H=${hmrSeq};function p(){fetch('/__bmhmr?b='+B+'&h='+H,{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){if(d.reload){location.reload();return;}if(d.updates){for(var i=0;i<d.updates.length;i++){var u=d.updates[i];window.postMessage({type:'hmr-update',updatedModules:u.update.updatedModules,removedModules:u.update.removedModules,reverseDepsMap:u.update.reverseDepsMap},'*');H=u.seq;}}setTimeout(p,300);}).catch(function(){setTimeout(p,800);});}p();})();</script>
 </head><body><div id="root"></div><script src="/index.bundle"></script></body></html>`;
+}
+
+/**
+ * Extract Tailwind theme config from a tailwind.config.js/ts file content.
+ * Returns a script string for the Tailwind CDN runtime configuration.
+ */
+function extractTailwindConfig(content: string): string {
+  try {
+    let configString = '';
+    let moduleExportsIndex = content.indexOf('module.exports');
+    if (moduleExportsIndex === -1) moduleExportsIndex = content.indexOf('export default');
+    if (moduleExportsIndex !== -1) {
+      const braceIndex = content.indexOf('{', moduleExportsIndex);
+      if (braceIndex !== -1) {
+        let depth = 0, inString = false, stringChar = '';
+        for (let i = braceIndex; i < content.length; i++) {
+          const char = content[i];
+          const prevChar = i > 0 ? content[i - 1] : '';
+          if ((char === '"' || char === "'" || char === '`') && prevChar !== '\\') {
+            if (!inString) { inString = true; stringChar = char; }
+            else if (char === stringChar) { inString = false; stringChar = ''; }
+            continue;
+          }
+          if (inString) continue;
+          if (char === '{') depth++;
+          else if (char === '}') { depth--; if (depth === 0) { configString = content.substring(braceIndex, i + 1); break; } }
+        }
+      }
+    }
+    if (!configString) return 'tailwind.config={darkMode:"class"}';
+    const cleaned = configString
+      .replace(/require\([^)]*\)/g, '[]')
+      .replace(/process\.env\.[A-Z_]+/g, '"class"')
+      .replace(/:\s*undefined/g, ': null');
+    // eslint-disable-next-line no-eval
+    const configObj = (0, eval)('(' + cleaned + ')');
+    const extend = configObj?.theme?.extend;
+    if (!extend) return 'tailwind.config={darkMode:"class"}';
+    return 'tailwind.config={darkMode:"class",theme:{extend:' + JSON.stringify(extend) + '}};';
+  } catch {
+    return 'tailwind.config={darkMode:"class"}';
+  }
+}
+
+/**
+ * Build the full editor head block: globals setup, env vars, expo polyfill,
+ * console intercept, error handlers, layer selection, pinch zoom, tailwind config.
+ */
+function buildEditorHeadBlock(env: Record<string, string>, tailwindConfigScript: string): string {
+  const envScript = Object.entries(env)
+    .filter(([k]) => /^(EXPO_PUBLIC_|NEXT_PUBLIC_)/.test(k))
+    .map(([k, v]) => `globalThis.process.env.${k} = ${JSON.stringify(v)};`)
+    .join('\n');
+
+  return (
+    '<script>' +
+    'var global=globalThis;' +
+    "if(typeof __DEV__==='undefined')globalThis.__DEV__=true;" +
+    'globalThis.process=globalThis.process||{};' +
+    'globalThis.process.env=globalThis.process.env||{};' +
+    envScript +
+    GLOBALS_PREAMBLE +
+    '</' + 'script>' +
+    '<script>' +
+    CONSOLE_INTERCEPT_SCRIPT +
+    SM_RESOLVER_AND_ERROR_HANDLERS +
+    LAYER_SELECTION_SCRIPT +
+    '</' + 'script>' +
+    '<script>' + tailwindConfigScript + '</' + 'script>'
+  );
 }
 
 interface HmrEntry { seq: number; update: { updatedModules: Record<string, string>; removedModules: string[]; reverseDepsMap?: Record<string, string[]> } }
@@ -192,14 +268,49 @@ export function createBrowserMetroCommand(kernel: Kernel): Command {
   return async (ctx) => {
     const rest = ctx.args.slice(1);
     if (rest.includes('--help') || rest.includes('-h')) {
-      ctx.stdout.write('Usage: browser-metro [projectDir] [--port <n>]\n\nBundle an Expo web app with browser-metro (light Metro replacement) and serve it.\n');
+      ctx.stdout.write('Usage: browser-metro [projectDir] [--port <n>] [--editor] [--inject-head <file>]\n\nBundle an Expo web app with browser-metro (light Metro replacement) and serve it.\n\nOptions:\n  --port <n>          Port to serve on (default: 8081)\n  --editor            Enable editor scripts (console intercept, error handlers,\n                      layer selection, pinch zoom, env vars, Tailwind config)\n  --inject-head <f>   Inject contents of <f> into the HTML <head>\n');
       return 0;
     }
     const pIdx = rest.indexOf('--port');
     const port = Number(pIdx >= 0 ? rest[pIdx + 1] : 8081) || 8081;
-    const dirArg = rest.find((a) => !a.startsWith('-') && a !== String(port)) || '.';
+    const ihIdx = rest.indexOf('--inject-head');
+    const injectHeadPath = ihIdx >= 0 ? rest[ihIdx + 1] : null;
+    const editorMode = rest.includes('--editor');
+    const skipArgs = new Set<string>([String(port)]);
+    if (injectHeadPath) skipArgs.add(injectHeadPath);
+    const flagArgs = new Set<string>(['--port', '--inject-head', '--editor']);
+    const dirArg = rest.find((a) => !a.startsWith('-') && !skipArgs.has(a) && !flagArgs.has(a)) || '.';
     const dir = resolve(ctx.cwd, dirArg);
     if (!kernel.vfs.exists(dir)) { ctx.stderr.write(`browser-metro: no such directory: ${dir}\n`); return 1; }
+
+    // Read optional head injection content (HTML/script tags injected into <head>)
+    let injectHeadContent = '';
+    if (injectHeadPath) {
+      const absPath = resolve(dir, injectHeadPath);
+      try {
+        const decoder = new TextDecoder();
+        injectHeadContent = decoder.decode(kernel.vfs.readFile(absPath) as Uint8Array);
+        ctx.stdout.write(`browser-metro: injecting head scripts from ${injectHeadPath}\n`);
+      } catch {
+        ctx.stderr.write(`browser-metro: warning: could not read --inject-head file: ${injectHeadPath}\n`);
+      }
+    }
+
+    // --editor: build editor head block with env vars, Tailwind config, and all
+    // editor scripts (console intercept, error handlers, layer selection, pinch zoom).
+    let editorHeadBlock = '';
+    if (editorMode) {
+      let tailwindConfigScript = 'tailwind.config={darkMode:"class"}';
+      const decoder = new TextDecoder();
+      for (const twPath of ['tailwind.config.js', 'tailwind.config.ts']) {
+        const absPath = dir + '/' + twPath;
+        try {
+          const twContent = decoder.decode(kernel.vfs.readFile(absPath) as Uint8Array);
+          if (twContent) { tailwindConfigScript = extractTailwindConfig(twContent); break; }
+        } catch { /* file doesn't exist */ }
+      }
+      editorHeadBlock = buildEditorHeadBlock(ctx.env, tailwindConfigScript);
+    }
 
     const config: BundlerConfig = {
       resolver: { sourceExts: SOURCE_EXTS },
@@ -280,7 +391,7 @@ export function createBrowserMetroCommand(kernel: Kernel): Command {
           res.statusCode = 404; res.headers['content-type'] = 'text/plain'; res.body = `asset not found: ${path}`;
         }
       } else {
-        res.statusCode = 200; res.headers['content-type'] = 'text/html; charset=utf-8'; res.body = pageHtml(bundleVersion, hmrSeq);
+        res.statusCode = 200; res.headers['content-type'] = 'text/html; charset=utf-8'; res.body = pageHtml(bundleVersion, hmrSeq, injectHeadContent, editorHeadBlock);
       }
     };
     kernel.portRegistry.set(port, handler);
