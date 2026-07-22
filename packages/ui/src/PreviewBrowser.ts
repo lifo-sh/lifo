@@ -1,17 +1,32 @@
-import type { ServiceWorkerBridge } from '@lifo-sh/core';
+import type { ServiceWorkerBridge, Kernel } from '@lifo-sh/core';
+import { mountNoSwPreview, type NoSwPreviewHandle } from './preview-nosw.js';
 
 export interface PreviewBrowserOptions {
   /** In-VM virtual port to preview. */
   port: number;
   /**
+   * Preview transport. Default `'sw'` uses the ServiceWorkerBridge.
+   * `'postmessage'` uses a blob-iframe + postMessage transport that works
+   * where service workers are unreliable (iOS Chrome, cross-origin iframes).
+   * When using `'postmessage'`, pass `kernel` instead of `bridge`/`boxId`.
+   */
+  transport?: 'sw' | 'postmessage';
+  /**
    * The box's ServiceWorkerBridge. Its `boxId` is used to route requests
    * (`/_sw/<boxId>/<port>/`) to the right VM. Preferred over `boxId` because it
    * stays correct if you recreate the bridge. Connect the bridge yourself
    * (`await bridge.connect()`) — the preview just points at it.
+   * Required for `transport: 'sw'` (default).
    */
   bridge?: ServiceWorkerBridge;
   /** An explicit box id, if you manage the service worker yourself. */
   boxId?: string;
+  /**
+   * The Lifo Kernel instance. Required for `transport: 'postmessage'` — used
+   * to fetch the HTML/bundle from the in-VM dev server and bridge runtime
+   * requests via postMessage.
+   */
+  kernel?: Kernel;
   /** Initial path inside the app (default `/`) — e.g. `/_/` for a studio route. */
   path?: string;
   /** Render the browser chrome (back / forward / reload + address bar + open-in-tab). Default `true`. */
@@ -78,13 +93,29 @@ export class PreviewBrowser {
   private path: string;
   private currentUrl = '';
 
+  private transport: 'sw' | 'postmessage';
+  private kernel: Kernel | null = null;
+  private noswHandle: NoSwPreviewHandle | null = null;
+  private noswMounting = false;
+
   constructor(container: HTMLElement, options: PreviewBrowserOptions) {
     injectStyles();
     this.port = options.port;
-    this.boxId = options.bridge?.boxId ?? options.boxId ?? '';
-    if (!this.boxId) {
-      throw new Error('PreviewBrowser: pass a `bridge` or an explicit `boxId`.');
+    this.transport = options.transport ?? 'sw';
+    this.kernel = options.kernel ?? null;
+
+    if (this.transport === 'sw') {
+      this.boxId = options.bridge?.boxId ?? options.boxId ?? '';
+      if (!this.boxId) {
+        throw new Error('PreviewBrowser: pass a `bridge` or an explicit `boxId` for SW transport.');
+      }
+    } else {
+      this.boxId = '';
+      if (!this.kernel) {
+        throw new Error('PreviewBrowser: pass `kernel` for postmessage transport.');
+      }
     }
+
     const p = options.path ?? '/';
     this.path = p.startsWith('/') ? p : '/' + p;
 
@@ -97,17 +128,42 @@ export class PreviewBrowser {
     this.iframe = document.createElement('iframe');
     this.iframe.className = 'lf-pv-frame';
     this.iframe.title = 'Preview';
-    this.iframe.src = this.route();
-    root.appendChild(this.iframe);
 
-    container.appendChild(root);
-    this.root = root;
+    if (this.transport === 'postmessage') {
+      // postMessage transport: sandbox the iframe, mount asynchronously
+      this.iframe.sandbox.add('allow-scripts', 'allow-same-origin', 'allow-forms', 'allow-popups', 'allow-modals');
+      root.appendChild(this.iframe);
+      container.appendChild(root);
+      this.root = root;
+      void this.mountNoSw();
+    } else {
+      this.iframe.src = this.route();
+      root.appendChild(this.iframe);
+      container.appendChild(root);
+      this.root = root;
+    }
 
     if (showChrome) this.startPolling();
   }
 
-  /** The absolute in-VM route the iframe points at (`/_sw/<boxId>/<port>/…`). */
+  private async mountNoSw(): Promise<void> {
+    if (this.noswMounting || !this.kernel) return;
+    this.noswMounting = true;
+    try {
+      this.noswHandle?.destroy();
+      this.noswHandle = await mountNoSwPreview(this.iframe, this.kernel, this.port, this.path);
+    } catch (err) {
+      console.error('[PreviewBrowser] postmessage mount failed:', err);
+    } finally {
+      this.noswMounting = false;
+    }
+  }
+
+  /** The absolute in-VM route the iframe points at (`/_sw/<boxId>/<port>/…`). For postmessage transport, returns the blob URL. */
   route(): string {
+    if (this.transport === 'postmessage') {
+      return this.iframe?.src || '';
+    }
     return `/_sw/${this.boxId}/${this.port}${this.path}?_t=${this.nonce}`;
   }
 
@@ -235,6 +291,12 @@ export class PreviewBrowser {
 
   /** Reload in place, preserving the current in-app route where possible. */
   reload(): void {
+    if (this.transport === 'postmessage') {
+      this.noswHandle?.destroy();
+      this.noswHandle = null;
+      void this.mountNoSw();
+      return;
+    }
     try {
       this.iframe.contentWindow?.location.reload();
     } catch {
@@ -246,6 +308,12 @@ export class PreviewBrowser {
   /** Navigate the preview to a new in-VM path (resets to the entry route). */
   navigate(path: string): void {
     this.path = path.startsWith('/') ? path : '/' + path;
+    if (this.transport === 'postmessage') {
+      this.noswHandle?.destroy();
+      this.noswHandle = null;
+      void this.mountNoSw();
+      return;
+    }
     this.nonce++;
     this.iframe.src = this.route();
   }
@@ -253,6 +321,13 @@ export class PreviewBrowser {
   /** Point the preview at a different in-VM port. */
   setPort(port: number): void {
     this.port = port;
+    if (this.transport === 'postmessage') {
+      this.noswHandle?.destroy();
+      this.noswHandle = null;
+      void this.mountNoSw();
+      this.updateAddress();
+      return;
+    }
     this.nonce++;
     this.iframe.src = this.route();
     this.updateAddress();
@@ -261,6 +336,8 @@ export class PreviewBrowser {
   destroy(): void {
     if (this.pollTimer) clearInterval(this.pollTimer);
     this.pollTimer = null;
+    this.noswHandle?.destroy();
+    this.noswHandle = null;
     this.root.remove();
   }
 }
