@@ -1,5 +1,11 @@
 # @lifo-sh/core
 
+## 0.6.5
+
+### Patch Changes
+
+- Fix webpack build error caused by static `node:module` import in bundled output
+
 ## 0.6.4
 
 ### Patch Changes

@@ -177,9 +177,13 @@ async function ensureHttpsLoader(): Promise<void> {
 
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const modId = 'node:' + 'module'; // prevent static analysis
+    const nodeModuleSpec = ['node', 'module'].join(':');
     const nodeModule: { register?: (specifier: string) => void } =
-      await import(/* @vite-ignore */ /* webpackIgnore: true */ modId);
+      await import(
+        /* @vite-ignore */
+        /* webpackIgnore: true */
+        nodeModuleSpec
+      );
     if (typeof nodeModule.register !== 'function') {
       // Node.js < 20.6 -- module.register() not available
       return;

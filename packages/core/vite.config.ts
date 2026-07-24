@@ -6,6 +6,7 @@ const external = [
   ...Object.keys(pkg.dependencies ?? {}),
   ...Object.keys(pkg.peerDependencies ?? {}),
   ...Object.keys(pkg.optionalDependencies ?? {}),
+  /^node:/,
 ];
 
 export default defineConfig({
