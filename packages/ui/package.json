@@ -1,6 +1,6 @@
 {
   "name": "@lifo-sh/ui",
-  "version": "0.6.1",
+  "version": "0.6.4",
   "description": "Embeddable UI components for Lifo — terminal, preview browser, and file explorer",
   "license": "MIT",
   "repository": {
