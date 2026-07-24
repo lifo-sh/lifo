@@ -57,7 +57,7 @@ async function ensureInitialized(): Promise<any> {
           // Computed specifier so the browser bundle doesn't rewrite this
           // to a browser-external stub — it must reach Node's real loader.
           const nodeModuleSpec = 'node' + ':module';
-          const { createRequire } = await import(/* @vite-ignore */ nodeModuleSpec);
+          const { createRequire } = await import(/* @vite-ignore */ /* webpackIgnore: true */ nodeModuleSpec);
           const req = createRequire(import.meta.url);
           esbuildModule = req('esbuild');
           return;
@@ -68,7 +68,7 @@ async function ensureInitialized(): Promise<any> {
 
       // Use dynamic import from CDN
       // This works in browsers natively
-      const mod = await import(/* @vite-ignore */ ESBUILD_ESM_URL);
+      const mod = await import(/* @vite-ignore */ /* webpackIgnore: true */ ESBUILD_ESM_URL);
       await mod.initialize({
         wasmURL: ESBUILD_WASM_URL,
       });
