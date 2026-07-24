@@ -1,5 +1,12 @@
 # lifo-pkg-git
 
+## 0.6.2
+
+### Patch Changes
+
+- Updated dependencies
+  - @lifo-sh/core@0.6.5
+
 ## 0.6.1
 
 ### Patch Changes
