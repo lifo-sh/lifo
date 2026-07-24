@@ -403,8 +403,8 @@ importers:
   packages/ui:
     dependencies:
       '@lifo-sh/core':
-        specifier: workspace:*
-        version: link:../core
+        specifier: '>=0.6.0'
+        version: 0.6.2
       '@xterm/addon-fit':
         specifier: ^0.10.0
         version: 0.10.0(@xterm/xterm@5.5.0)
@@ -1215,6 +1215,14 @@ packages:
 
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
+
+  '@lifo-sh/core@0.6.2':
+    resolution: {integrity: sha512-6RTYSdvuElfrsGNBvGbTXhhqtwW7TeVVlahWY0ER04yEvO6hlG/g+L+BaLVKveD0djtdx93xfl2XnFQ48ncl8Q==}
+    peerDependencies:
+      '@lifo-sh/ui': 0.6.0
+    peerDependenciesMeta:
+      '@lifo-sh/ui':
+        optional: true
 
   '@manypkg/find-root@1.1.0':
     resolution: {integrity: sha512-mki5uBvhHzO8kYYix/WRy2WX8S3B5wdVSc9D6KcU5lQNglP2yt58/VfLuAK49glRXChosY8ap2oJ1qgma3GUVA==}
@@ -5293,6 +5301,17 @@ snapshots:
     dependencies:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
+
+  '@lifo-sh/core@0.6.2':
+    dependencies:
+      acorn: 8.17.0
+      browser-metro: 1.0.31
+      ws: 8.19.0
+    optionalDependencies:
+      esbuild: 0.28.1
+    transitivePeerDependencies:
+      - bufferutil
+      - utf-8-validate
 
   '@manypkg/find-root@1.1.0':
     dependencies:
