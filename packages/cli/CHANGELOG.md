@@ -1,5 +1,12 @@
 # lifo-sh
 
+## 0.7.0
+
+### Patch Changes
+
+- Updated dependencies [d6084b5]
+  - @lifo-sh/core@0.7.0
+
 ## 0.6.8
 
 ### Patch Changes
