@@ -140,3 +140,137 @@ describe('grep long options', () => {
     });
   });
 });
+
+/**
+ * Pattern dialects.
+ *
+ * grep's default is BRE, and the implementation used to hand the pattern straight to `new RegExp`
+ * (which is ERE). The two are inverted for the most useful metacharacters, so `grep "a\|b"` compiled
+ * to the literal text `a|b`, matched nothing, and exited 1 — indistinguishable from a real absence.
+ */
+describe('pattern dialects', () => {
+  let vfs: VFS;
+
+  beforeEach(() => {
+    vfs = new VFS();
+    vfs.mkdir('/project', { recursive: true });
+    vfs.writeFile('/project/a.ts', [
+      "import { createClient } from '@supabase/supabase-js';",
+      'const literalPipe = "x|y";',
+      'const parens = "f(1)";',
+      'const plus = "a+b";',
+      'const question = "who?";',
+      'const braces = "{ok}";',
+      'colour color colouur',
+      'foo123',
+    ].join('\n') + '\n');
+  });
+
+  describe('BRE (the default)', () => {
+    it('\\| is alternation', async () => {
+      const { code, stdout } = await run(vfs, ['-n', 'createClient\\|nothingxyz', 'a.ts']);
+      expect(code).toBe(0);
+      expect(stdout).toContain('createClient');
+    });
+
+    it('a bare | is a LITERAL pipe', async () => {
+      const { code, stdout } = await run(vfs, ['-n', 'x|y', 'a.ts']);
+      expect(code).toBe(0);
+      expect(stdout).toContain('literalPipe');
+    });
+
+    it('bare ( ) are literal parens', async () => {
+      const { stdout } = await run(vfs, ['-n', 'f(1)', 'a.ts']);
+      expect(stdout).toContain('parens');
+    });
+
+    it('a bare + is a literal plus', async () => {
+      const { stdout } = await run(vfs, ['-n', 'a+b', 'a.ts']);
+      expect(stdout).toContain('plus');
+    });
+
+    it('a bare ? is a literal question mark', async () => {
+      const { stdout } = await run(vfs, ['-n', 'who?', 'a.ts']);
+      expect(stdout).toContain('question');
+    });
+
+    it('bare { } are literal braces', async () => {
+      const { stdout } = await run(vfs, ['-n', '{ok}', 'a.ts']);
+      expect(stdout).toContain('braces');
+    });
+
+    it('\\+ is one-or-more', async () => {
+      const { stdout } = await run(vfs, ['-n', 'colou\\+r', 'a.ts']);
+      expect(stdout).toContain('colour');
+    });
+
+    it('\\? is optional', async () => {
+      const { stdout } = await run(vfs, ['-n', 'colou\\?r', 'a.ts']);
+      expect(stdout).toContain('colour');
+    });
+
+    it('\\( \\) group, with \\| inside', async () => {
+      const { stdout } = await run(vfs, ['-n', '\\(createClient\\|absent\\)', 'a.ts']);
+      expect(stdout).toContain('createClient');
+    });
+
+    it('\\{n,m\\} is an interval', async () => {
+      const { stdout } = await run(vfs, ['-n', 'foo[0-9]\\{3\\}', 'a.ts']);
+      expect(stdout).toContain('foo123');
+    });
+
+    it('* and . keep their meaning', async () => {
+      const { stdout } = await run(vfs, ['-n', 'colou*r', 'a.ts']);
+      expect(stdout).toContain('colour');
+    });
+
+    it('\\. is still a literal dot', async () => {
+      vfs.writeFile('/project/dots.ts', 'index.tsx\nindexAtsx\n');
+      const { stdout } = await run(vfs, ['-n', 'index\\.tsx', 'dots.ts']);
+      expect(stdout).toContain('index.tsx');
+      expect(stdout).not.toContain('indexAtsx');
+    });
+
+    it('metacharacters inside a bracket expression stay literal', async () => {
+      const { stdout } = await run(vfs, ['-n', '[+?]', 'a.ts']);
+      expect(stdout).toBeTruthy();
+    });
+  });
+
+  describe('-E (ERE)', () => {
+    it('| is alternation', async () => {
+      const { stdout } = await run(vfs, ['-nE', 'createClient|nothingxyz', 'a.ts']);
+      expect(stdout).toContain('createClient');
+    });
+
+    it('( ) group and + quantifies', async () => {
+      const { stdout } = await run(vfs, ['-nE', 'colou+r', 'a.ts']);
+      expect(stdout).toContain('colour');
+    });
+  });
+
+  describe('-F (fixed strings)', () => {
+    it('treats every metacharacter literally', async () => {
+      const { code, stdout } = await run(vfs, ['-nF', 'x|y', 'a.ts']);
+      expect(code).toBe(0);
+      expect(stdout).toContain('literalPipe');
+    });
+
+    it('does not treat \\| as alternation', async () => {
+      const { code } = await run(vfs, ['-nF', 'createClient\\|absent', 'a.ts']);
+      expect(code).toBe(1);
+    });
+  });
+
+  describe('mode flags', () => {
+    it('-G forces BRE back after -E', async () => {
+      const { stdout } = await run(vfs, ['-n', '-E', '-G', 'x|y', 'a.ts']);
+      expect(stdout).toContain('literalPipe');
+    });
+
+    it('--fixed-strings is accepted', async () => {
+      const { stdout } = await run(vfs, ['-n', '--fixed-strings', 'x|y', 'a.ts']);
+      expect(stdout).toContain('literalPipe');
+    });
+  });
+});

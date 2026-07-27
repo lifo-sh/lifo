@@ -1,5 +1,13 @@
 # @lifo-sh/desktop
 
+## 0.0.6
+
+### Patch Changes
+
+- Updated dependencies [d6084b5]
+  - @lifo-sh/core@0.7.0
+  - @lifo-sh/ui@0.7.0
+
 ## 0.0.5
 
 ### Patch Changes

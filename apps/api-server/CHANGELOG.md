@@ -1,5 +1,11 @@
 # @lifo-sh/api-server
 
+## 0.1.6
+
+### Patch Changes
+
+- lifo-sh@0.7.0
+
 ## 0.1.5
 
 ### Patch Changes
