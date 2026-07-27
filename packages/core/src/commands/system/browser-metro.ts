@@ -184,11 +184,16 @@ function publicEnv(env: Record<string, string>): Record<string, string> {
 // The HMR client: polls /__bmhmr and either reloads (a rebuild that can't be
 // hot-applied) or forwards each hot update to the bundle's in-iframe HMR runtime
 // via window.postMessage({type:'hmr-update', …}) — which does React Refresh.
+// Blob-served pages (the SW-free preview transport) must NOT location.reload():
+// that reloads the SAME blob with the OLD embedded bundleVersion, whose poll
+// immediately sees reload:true again — an infinite reload loop that makes every
+// mounted preview flicker. Instead they ask the host to remount them with fresh
+// HTML via the hmr-full-reload message (and stop polling until remounted).
 function pageHtml(bundleVersion: number, hmrSeq: number, headExtra: string = '', editorBlock: string = ''): string {
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <style>html,body{height:100%;margin:0}body{overflow:hidden}#root{display:flex;height:100%;flex:1}</style>
 <script src="https://cdn.tailwindcss.com"></script>
-${headExtra}${editorBlock}<script>(function(){var B=${bundleVersion},H=${hmrSeq};function p(){fetch('/__bmhmr?b='+B+'&h='+H,{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){if(d.reload){location.reload();return;}if(d.updates){for(var i=0;i<d.updates.length;i++){var u=d.updates[i];window.postMessage({type:'hmr-update',updatedModules:u.update.updatedModules,removedModules:u.update.removedModules,reverseDepsMap:u.update.reverseDepsMap},'*');H=u.seq;}}setTimeout(p,300);}).catch(function(){setTimeout(p,800);});}p();})();</script>
+${headExtra}${editorBlock}<script>(function(){var B=${bundleVersion},H=${hmrSeq};function p(){fetch('/__bmhmr?b='+B+'&h='+H,{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){if(d.reload){if(location.protocol==='blob:'){try{window.parent.postMessage({type:'hmr-full-reload'},'*');}catch(_){}return;}location.reload();return;}if(d.updates){for(var i=0;i<d.updates.length;i++){var u=d.updates[i];window.postMessage({type:'hmr-update',updatedModules:u.update.updatedModules,removedModules:u.update.removedModules,reverseDepsMap:u.update.reverseDepsMap},'*');H=u.seq;}}setTimeout(p,300);}).catch(function(){setTimeout(p,800);});}p();})();</script>
 </head><body><div id="root"></div><script src="/index.bundle"></script></body></html>`;
 }
 
