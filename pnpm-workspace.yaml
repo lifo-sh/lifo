@@ -1,3 +1,12 @@
 packages:
   - "packages/*"
   - "apps/*"
+
+# Which dependencies may run install scripts. pnpm 11 reads this HERE — not from .npmrc, where the
+# old `onlyBuiltDependencies[]="esbuild"` line was silently ignored (hence the "Unknown project
+# config" warning on every command, and esbuild never actually being approved).
+allowBuilds:
+  # esbuild's install script fetches its platform binary; without it esbuild cannot run.
+  esbuild: true
+  # msw's script only installs the browser service-worker stub, which nothing here uses.
+  msw: false
