@@ -1,5 +1,12 @@
 # lifo-pkg-vi
 
+## 0.1.3
+
+### Patch Changes
+
+- Updated dependencies [9e183ab]
+  - @lifo-sh/core@0.6.6
+
 ## 0.1.2
 
 ### Patch Changes

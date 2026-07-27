@@ -1,6 +1,6 @@
 {
   "name": "lifo-pkg-vi",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "vi/vim modal editor",
   "license": "MIT",
   "author": "Sanket Sahu",

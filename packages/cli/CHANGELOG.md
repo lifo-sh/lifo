@@ -1,5 +1,12 @@
 # lifo-sh
 
+## 0.6.6
+
+### Patch Changes
+
+- Updated dependencies [9e183ab]
+  - @lifo-sh/core@0.6.6
+
 ## 0.6.5
 
 ### Patch Changes

@@ -1,5 +1,12 @@
 # lifo-pkg-ffmpeg
 
+## 0.6.3
+
+### Patch Changes
+
+- Updated dependencies [9e183ab]
+  - @lifo-sh/core@0.6.6
+
 ## 0.6.2
 
 ### Patch Changes
