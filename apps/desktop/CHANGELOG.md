@@ -1,5 +1,13 @@
 # @lifo-sh/desktop
 
+## 0.0.5
+
+### Patch Changes
+
+- Updated dependencies [fec16db]
+  - @lifo-sh/core@0.6.8
+  - @lifo-sh/ui@0.6.8
+
 ## 0.0.4
 
 ### Patch Changes
