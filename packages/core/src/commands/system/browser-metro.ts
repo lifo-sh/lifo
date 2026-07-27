@@ -359,17 +359,26 @@ export function createBrowserMetroCommand(kernel: Kernel): Command {
     let bundleVersion = 1;    // bumped when a rebuild can't be hot-applied → clients reload
     let hmrSeq = 0;           // bumped per hot update
     let hmrLog: HmrEntry[] = [];
+    // Latest build/rebuild error (message incl. code frame), or null when the
+    // bundle is good. Published on /__bmhmr so hosts (editors embedding the
+    // preview) can display it, and cleared on the next successful rebuild.
+    // The port is bound EVEN when the first build fails — like a real dev
+    // server (Metro binds before any build) — so clients aren't stuck on a
+    // dead port, and the watcher recovers by itself once the file is fixed.
+    let buildError: string | null = null;
+    const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
     ctx.stdout.write(`browser-metro: bundling ${dir} (packages from ${PACKAGE_SERVER})…\n`);
     const t0 = Date.now();
     try {
       const r = await bundler.build(entry);
       currentBundle = materializeAssets(r.bundle);
+      ctx.stdout.write(`browser-metro: bundled in ${((Date.now() - t0) / 1000).toFixed(1)}s (${(currentBundle.length / 1048576).toFixed(2)} MB). Serving on port ${port} (HMR on).\n`);
     } catch (e) {
-      ctx.stderr.write(`browser-metro: bundle failed: ${e instanceof Error ? e.message : String(e)}\n`);
-      return 1;
+      buildError = errText(e);
+      ctx.stderr.write(`browser-metro: bundle failed: ${buildError}\n`);
+      ctx.stdout.write(`browser-metro: serving the build error on port ${port} — fix the file and the preview reloads itself.\n`);
     }
-    ctx.stdout.write(`browser-metro: bundled in ${((Date.now() - t0) / 1000).toFixed(1)}s (${(currentBundle.length / 1048576).toFixed(2)} MB). Serving on port ${port} (HMR on).\n`);
 
     const handler = (req: VirtualRequest, res: VirtualResponse): void => {
       const [path, query] = req.url.split('?');
@@ -380,8 +389,8 @@ export function createBrowserMetroCommand(kernel: Kernel): Command {
         const cb = Number(q.get('b') || 0), ch = Number(q.get('h') || 0);
         res.statusCode = 200; res.headers['content-type'] = 'application/json';
         res.body = cb < bundleVersion
-          ? JSON.stringify({ reload: true, bundleVersion })
-          : JSON.stringify({ reload: false, bundleVersion, hmrSeq, updates: hmrLog.filter((u) => u.seq > ch) });
+          ? JSON.stringify({ reload: true, bundleVersion, buildError })
+          : JSON.stringify({ reload: false, bundleVersion, hmrSeq, buildError, updates: hmrLog.filter((u) => u.seq > ch) });
       } else if (path.startsWith(ASSET_PREFIX + '/')) {
         const full = dir + path.slice(ASSET_PREFIX.length);
         try {
@@ -428,20 +437,36 @@ export function createBrowserMetroCommand(kernel: Kernel): Command {
       }
       building = true;
       try {
-        const r = await bundler.rebuild(changes);
-        if (r.type === 'full' || !r.hmrUpdate || r.hmrUpdate.requiresReload) {
-          currentBundle = materializeAssets(r.bundle); bundleVersion++; hmrLog = [];
-          ctx.stdout.write(`browser-metro: full rebuild → reload (v${bundleVersion}).\n`);
-        } else {
+        if (!currentBundle) {
+          // The initial build never succeeded — incremental state is unusable,
+          // so run a fresh full build and reload clients off the error page.
+          const r = await bundler.build(entry);
           currentBundle = materializeAssets(r.bundle);
-          const updatedModules: Record<string, string> = {};
-          for (const [k, v] of Object.entries(r.hmrUpdate.updatedModules)) updatedModules[k] = materializeAssets(v);
-          hmrLog.push({ seq: ++hmrSeq, update: { updatedModules, removedModules: r.hmrUpdate.removedModules, reverseDepsMap: r.hmrUpdate.reverseDepsMap } });
-          if (hmrLog.length > 300) hmrLog = hmrLog.slice(-300);
-          ctx.stdout.write(`browser-metro: hot update (${Object.keys(updatedModules).length} module(s)).\n`);
+          bundleVersion++; hmrLog = [];
+          buildError = null;
+          ctx.stdout.write(`browser-metro: build fixed → reload (v${bundleVersion}).\n`);
+        } else {
+          const r = await bundler.rebuild(changes);
+          if (r.type === 'full' || !r.hmrUpdate || r.hmrUpdate.requiresReload) {
+            currentBundle = materializeAssets(r.bundle); bundleVersion++; hmrLog = [];
+            ctx.stdout.write(`browser-metro: full rebuild → reload (v${bundleVersion}).\n`);
+          } else {
+            currentBundle = materializeAssets(r.bundle);
+            const updatedModules: Record<string, string> = {};
+            for (const [k, v] of Object.entries(r.hmrUpdate.updatedModules)) updatedModules[k] = materializeAssets(v);
+            hmrLog.push({ seq: ++hmrSeq, update: { updatedModules, removedModules: r.hmrUpdate.removedModules, reverseDepsMap: r.hmrUpdate.reverseDepsMap } });
+            if (hmrLog.length > 300) hmrLog = hmrLog.slice(-300);
+            ctx.stdout.write(`browser-metro: hot update (${Object.keys(updatedModules).length} module(s)).\n`);
+          }
+          buildError = null;
         }
       } catch (e) {
-        ctx.stderr.write(`browser-metro: rebuild failed: ${e instanceof Error ? e.message : String(e)}\n`);
+        buildError = errText(e);
+        // "bundle failed" = there is still NO working bundle (initial build never
+        // succeeded — every screen is down); "rebuild failed" = the last good
+        // bundle keeps serving and only the broken module's screen is affected.
+        // Hosts key on this distinction to scope their error UI.
+        ctx.stderr.write(`browser-metro: ${currentBundle ? 'rebuild' : 'bundle'} failed: ${buildError}\n`);
       } finally {
         building = false;
         if (pending.size) { clearTimeout(timer); timer = setTimeout(() => { void flush(); }, 50); }

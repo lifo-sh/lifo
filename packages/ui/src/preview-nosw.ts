@@ -253,7 +253,20 @@ export async function mountNoSwPreview(
   if (scriptMatch) {
     realBundlePath = scriptMatch[1].startsWith('/') ? scriptMatch[1] : '/' + scriptMatch[1];
     const bundleRes = await vmFetch(kernel, port, realBundlePath);
-    bundleBlob = mkBlob(bundleRes.body, 'application/javascript');
+    let bundleBytes = bundleRes.body;
+    if (bundleRes.status !== 200) {
+      // A failed build (Metro answers the bundle request with a 500 + JSON
+      // error) must not be executed as JavaScript — render the error instead
+      // of a silently broken iframe.
+      let msg = new TextDecoder().decode(bundleRes.body);
+      try {
+        const j = JSON.parse(msg) as { message?: string };
+        if (j?.message) msg = j.message;
+      } catch { /* not JSON — show raw body */ }
+      const overlay = `(function(){var o=document.createElement('pre');o.style.cssText='position:fixed;inset:0;z-index:2147483647;margin:0;padding:24px;box-sizing:border-box;background:rgba(22,22,30,.97);color:#f7768e;font:12.5px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;overflow:auto';o.textContent=${JSON.stringify('Build failed (HTTP ' + bundleRes.status + ')\n\n' + msg)};(document.body||document.documentElement).appendChild(o);})();`;
+      bundleBytes = new TextEncoder().encode(overlay);
+    }
+    bundleBlob = mkBlob(bundleBytes, 'application/javascript');
     html = html.replace(scriptMatch[0], `<script src="${bundleBlob}"`);
   }
 
