@@ -3,9 +3,26 @@
   "changelog": "@changesets/cli/changelog",
   "commit": false,
   "fixed": [],
-  "linked": [["@lifo-sh/core", "@lifo-sh/ui", "lifo-sh"]],
+  "linked": [
+    [
+      "@lifo-sh/core",
+      "@lifo-sh/ui",
+      "lifo-sh"
+    ]
+  ],
   "access": "public",
   "baseBranch": "main",
   "updateInternalDependencies": "patch",
-  "ignore": ["@lifo-sh/playground"]
+  "ignore": [
+    "@lifo-sh/playground",
+    "lifo-pkg-bc",
+    "lifo-pkg-cal",
+    "lifo-pkg-fastfetch",
+    "lifo-pkg-ffmpeg",
+    "lifo-pkg-git",
+    "lifo-pkg-less",
+    "lifo-pkg-man",
+    "lifo-pkg-nano",
+    "lifo-pkg-vi"
+  ]
 }

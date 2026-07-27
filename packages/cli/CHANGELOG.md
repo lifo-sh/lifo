@@ -1,5 +1,12 @@
 # lifo-sh
 
+## 0.6.8
+
+### Patch Changes
+
+- Updated dependencies [fec16db]
+  - @lifo-sh/core@0.6.8
+
 ## 0.6.7
 
 ### Patch Changes
