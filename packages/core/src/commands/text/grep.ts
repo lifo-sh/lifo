@@ -27,6 +27,101 @@ function globToRegExp(glob: string): RegExp {
   return new RegExp(`^${out}$`);
 }
 
+/**
+ * Translate a POSIX basic regular expression (BRE) into JavaScript regex source.
+ *
+ * WHY THIS EXISTS
+ * grep's DEFAULT dialect is BRE, and the pattern used to be handed straight to `new RegExp`, which is
+ * ERE. Those two dialects are not a subset of one another — they are inverted for the most useful
+ * metacharacters:
+ *
+ *   BRE            meaning              ERE / JS
+ *   \|             alternation           |
+ *   |              literal pipe          alternation
+ *   \( \)          group                 ( )
+ *   ( )            literal parens        group
+ *   \{n,m\}        interval              {n,m}
+ *   \+  \?         one-or-more, optional (GNU extensions)  +  ?
+ *   +   ?          literal chars         quantifiers
+ *
+ * So `grep "createClient\|supabase-js"` — the most natural way to search for two things at once, and
+ * valid GNU grep — compiled to the LITERAL text `createClient|supabase-js` and matched nothing. It
+ * exited 1 with no output, indistinguishable from a genuine absence, and callers acted on the empty
+ * result. Silent wrong answers are the worst failure mode a search tool has.
+ *
+ * NOT translated, deliberately: the positional rules where BRE treats a metacharacter as literal
+ * because of where it sits (a leading `*`, a `^` that is not at the start, a `$` that is not at the
+ * end). The leading-`*` case is handled since it is cheap; the anchor cases are left to JS, which
+ * treats them as anchors everywhere. Patterns relying on those are vanishingly rare next to the
+ * escapes above.
+ */
+export function breToJs(pattern: string): string {
+  let out = '';
+  for (let i = 0; i < pattern.length; i++) {
+    const ch = pattern[i];
+
+    // Inside a bracket expression everything is literal — copy it through untouched, or `[+?]` would
+    // get mangled into `[\+\?]`. Handles a `]` as the first member, which POSIX allows.
+    if (ch === '[') {
+      let end = i + 1;
+      if (pattern[end] === '^') end++;
+      if (pattern[end] === ']') end++;
+      while (end < pattern.length && pattern[end] !== ']') end++;
+      if (end >= pattern.length) {
+        out += '\\[';           // unterminated — treat as a literal bracket
+        continue;
+      }
+      out += pattern.slice(i, end + 1);
+      i = end;
+      continue;
+    }
+
+    if (ch === '\\') {
+      const next = pattern[i + 1];
+      if (next === undefined) {
+        out += '\\\\';
+        continue;
+      }
+      // The escapes that MEAN something in BRE become bare metacharacters in JS.
+      if ('(){}|+?'.includes(next)) {
+        out += next;
+        i++;
+        continue;
+      }
+      // GNU word-boundary escapes.
+      if (next === '<' || next === '>') {
+        out += '\\b';
+        i++;
+        continue;
+      }
+      // Everything else (\. \* \\ \[ \w \s \1 …) means the same in both dialects.
+      out += ch + next;
+      i++;
+      continue;
+    }
+
+    // Bare ERE metacharacters are LITERAL in BRE.
+    if ('(){}|+?'.includes(ch)) {
+      out += '\\' + ch;
+      continue;
+    }
+
+    // A `*` with nothing to repeat is literal in BRE (e.g. `*foo`).
+    if (ch === '*' && (out === '' || out === '^')) {
+      out += '\\*';
+      continue;
+    }
+
+    out += ch;
+  }
+  return out;
+}
+
+/** Escape a string so it matches literally — for -F / --fixed-strings. */
+export function escapeLiteral(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 function basename(path: string): string {
   const idx = path.lastIndexOf('/');
   return idx === -1 ? path : path.slice(idx + 1);
@@ -41,6 +136,11 @@ const command: Command = async (ctx) => {
   let filesWithMatches = false;
   let recursive = false;
   let wordMatch = false;
+  /**
+   * Pattern dialect. BRE is grep's default, matching GNU — see breToJs for why that matters.
+   * The last of -E/-F/-G on the command line wins, as in GNU grep.
+   */
+  let mode: 'bre' | 'ere' | 'fixed' = 'bre';
   let pattern = '';
   const files: string[] = [];
   const includeGlobs: RegExp[] = [];
@@ -98,7 +198,9 @@ const command: Command = async (ctx) => {
         case 'files-with-matches': filesWithMatches = true; break;
         case 'recursive': recursive = true; break;
         case 'word-regexp': wordMatch = true; break;
-        case 'extended-regexp': break; // JS regex is already ERE
+        case 'extended-regexp': mode = 'ere'; break;
+        case 'basic-regexp': mode = 'bre'; break;
+        case 'fixed-strings': mode = 'fixed'; break;
         default:
           ctx.stderr.write(`grep: unrecognized option '${arg}'\n`);
           return 2;
@@ -117,7 +219,9 @@ const command: Command = async (ctx) => {
           case 'l': filesWithMatches = true; break;
           case 'r': recursive = true; break;
           case 'R': recursive = true; break;
-          case 'E': break; // JS regex is already ERE
+          case 'E': mode = 'ere'; break;
+          case 'G': mode = 'bre'; break;
+          case 'F': mode = 'fixed'; break;
           case 'w': wordMatch = true; break;
         }
       }
@@ -139,7 +243,8 @@ const command: Command = async (ctx) => {
     return 2;
   }
 
-  let regexPattern = pattern;
+  let regexPattern =
+    mode === 'fixed' ? escapeLiteral(pattern) : mode === 'bre' ? breToJs(pattern) : pattern;
   if (wordMatch) {
     regexPattern = `\\b${regexPattern}\\b`;
   }
