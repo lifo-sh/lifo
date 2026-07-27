@@ -1,6 +1,6 @@
 {
   "name": "lifo-sh",
-  "version": "0.6.6",
+  "version": "0.6.7",
   "description": "Run Lifo (a Linux-like OS) in your terminal -- npx lifo-sh",
   "license": "MIT",
   "repository": {
@@ -34,7 +34,8 @@
   ],
   "scripts": {
     "build": "tsup",
-    "dev": "NODE_ENV=development tsx src/index.ts"
+    "dev": "NODE_ENV=development tsx src/index.ts",
+    "prepublishOnly": "node ../../scripts/ensure-pnpm-publish.mjs"
   },
   "dependencies": {
     "@lifo-sh/core": "workspace:*",

@@ -7,7 +7,8 @@
     "start": "node server.js",
     "start:vite": "node server.js --port 5173",
     "start:next": "node server.js --port 3000",
-    "start:multi": "node server.js"
+    "start:multi": "node server.js",
+    "prepublishOnly": "node ../../scripts/ensure-pnpm-publish.mjs"
   },
   "dependencies": {
     "ws": "^8.18.0"

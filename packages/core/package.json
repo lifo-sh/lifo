@@ -1,6 +1,6 @@
 {
   "name": "@lifo-sh/core",
-  "version": "0.6.6",
+  "version": "0.6.7",
   "description": "Linux-like OS engine for JavaScript -- kernel, shell, VFS, and 60+ commands",
   "license": "MIT",
   "repository": {
@@ -39,7 +39,8 @@
     "build": "vite build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "prepublishOnly": "node ../../scripts/ensure-pnpm-publish.mjs"
   },
   "dependencies": {
     "acorn": "^8.17.0",

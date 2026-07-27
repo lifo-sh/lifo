@@ -1,6 +1,6 @@
 {
   "name": "lifo-pkg-git",
-  "version": "0.6.3",
+  "version": "0.6.4",
   "description": "Git command for Lifo, powered by isomorphic-git",
   "license": "MIT",
   "author": "Sanket Sahu",
@@ -34,7 +34,8 @@
   "scripts": {
     "build": "vite build",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "prepublishOnly": "node ../../scripts/ensure-pnpm-publish.mjs"
   },
   "dependencies": {
     "isomorphic-git": "^1.37.2"

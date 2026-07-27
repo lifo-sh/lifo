@@ -1,5 +1,27 @@
 # lifo-sh
 
+## 0.6.7
+
+### Patch Changes
+
+- Republish so the packages install from npm.
+
+  Both were last published with `npm publish`, which does not rewrite the `workspace:*` protocol the
+  way pnpm does. The tarballs therefore carried it literally:
+
+  - `lifo-sh` shipped `"@lifo-sh/core": "workspace:*"` as a dependency
+  - `@lifo-sh/core` shipped `"@lifo-sh/ui": "workspace:*"` as a peer dependency
+
+  Either one fails a default `npm install` with `EUNSUPPORTEDPROTOCOL: Unsupported URL Type
+"workspace:"`. The peer was the less obvious of the two — it is still a hard failure, and it only
+  went unnoticed because the consumers that had it installed set `legacy-peer-deps=true`.
+
+  No source change; this release exists only to ship manifests pnpm has resolved to real versions.
+  A `prepublishOnly` guard now refuses to publish through npm so it cannot recur.
+
+- Updated dependencies
+  - @lifo-sh/core@0.6.7
+
 ## 0.6.6
 
 ### Patch Changes

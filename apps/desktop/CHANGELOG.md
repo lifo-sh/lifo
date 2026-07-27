@@ -1,5 +1,12 @@
 # @lifo-sh/desktop
 
+## 0.0.4
+
+### Patch Changes
+
+- Updated dependencies
+  - @lifo-sh/core@0.6.7
+
 ## 0.0.3
 
 ### Patch Changes

@@ -1,5 +1,12 @@
 # lifo-pkg-fastfetch
 
+## 0.1.4
+
+### Patch Changes
+
+- Updated dependencies
+  - @lifo-sh/core@0.6.7
+
 ## 0.1.3
 
 ### Patch Changes

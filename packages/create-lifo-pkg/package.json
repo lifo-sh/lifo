@@ -28,7 +28,8 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsup"
+    "build": "tsup",
+    "prepublishOnly": "node ../../scripts/ensure-pnpm-publish.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

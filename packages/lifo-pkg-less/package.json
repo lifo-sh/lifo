@@ -1,6 +1,6 @@
 {
   "name": "lifo-pkg-less",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "less pager",
   "license": "MIT",
   "author": "Sanket Sahu",
@@ -32,7 +32,8 @@
   "scripts": {
     "build": "vite build",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "prepublishOnly": "node ../../scripts/ensure-pnpm-publish.mjs"
   },
   "peerDependencies": {
     "@lifo-sh/core": "workspace:*"

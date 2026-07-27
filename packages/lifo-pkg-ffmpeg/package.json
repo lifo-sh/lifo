@@ -1,6 +1,6 @@
 {
   "name": "lifo-pkg-ffmpeg",
-  "version": "0.6.3",
+  "version": "0.6.4",
   "description": "FFmpeg command for Lifo, powered by ffmpeg.wasm",
   "license": "MIT",
   "author": "Sanket Sahu",
@@ -34,7 +34,8 @@
     "transcode"
   ],
   "scripts": {
-    "build": "vite build"
+    "build": "vite build",
+    "prepublishOnly": "node ../../scripts/ensure-pnpm-publish.mjs"
   },
   "dependencies": {},
   "peerDependencies": {
