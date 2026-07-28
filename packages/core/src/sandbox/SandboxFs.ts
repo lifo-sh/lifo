@@ -2,6 +2,7 @@ import type { VFS } from '../kernel/vfs/index.js';
 import type { SandboxFs as ISandboxFs } from './types.js';
 import { resolve } from '../utils/path.js';
 import { exportVfsSnapshot, importVfsSnapshot } from '../kernel/vfs/snapshot.js';
+import type { SnapshotMetadata } from '../kernel/vfs/snapshot.js';
 import type { SnapshotOptions } from './types.js';
 
 /**
@@ -88,10 +89,16 @@ export class SandboxFsImpl implements ISandboxFs {
 
   /** Directories to skip during export (virtual providers) */
   async exportSnapshot(options: SnapshotOptions = {}): Promise<Uint8Array> {
-    return exportVfsSnapshot(this.vfs, options);
+    // `metadata: false` is a Sandbox-level convenience meaning "files only";
+    // the VFS layer just takes an optional object.
+    const { metadata, ...rest } = options;
+    return exportVfsSnapshot(this.vfs, {
+      ...rest,
+      metadata: metadata === false ? undefined : metadata,
+    });
   }
 
-  async importSnapshot(data: Uint8Array): Promise<void> {
+  async importSnapshot(data: Uint8Array): Promise<SnapshotMetadata | null> {
     return importVfsSnapshot(this.vfs, data);
   }
 }

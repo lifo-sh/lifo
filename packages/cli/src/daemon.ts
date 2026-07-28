@@ -82,7 +82,14 @@ function getSpawnExecutable(): { executable: string; prefixArgs: string[] } {
  * @returns            The session ID (hex string) once the daemon is ready.
  * @throws             If the daemon fails to become ready within 5 seconds.
  */
-export async function startDaemon(mountPath: string, port?: number, snapshotPath?: string, scriptPath?: string): Promise<string> {
+export async function startDaemon(
+  mountPath: string,
+  port?: number,
+  snapshotPath?: string,
+  scriptPath?: string,
+  /** `--expose vmPort:hostPort` mappings to forward to the daemon process. */
+  expose?: Array<{ vmPort: number; hostPort: number }>,
+): Promise<string> {
   const id = generateId();
   const jsonPath = path.join(SESSIONS_DIR, `${id}.json`);
   const daemonLogPath = logPath(id);
@@ -94,6 +101,12 @@ export async function startDaemon(mountPath: string, port?: number, snapshotPath
   const extraArgs: string[] = [];
   if (port !== undefined) extraArgs.push('--port', String(port));
   if (snapshotPath !== undefined) extraArgs.push('--snapshot', snapshotPath);
+  // The forwarders have to be bound by the DAEMON, since that's the process
+  // holding the kernel — so the mappings are passed through rather than acted on
+  // here.
+  for (const { vmPort, hostPort } of expose ?? []) {
+    extraArgs.push('--expose', `${vmPort}:${hostPort}`);
+  }
 
   // Redirect daemon stderr to a log file so startup errors aren't silently lost.
   // The log is cleaned up by deleteSession() on normal shutdown; if the daemon

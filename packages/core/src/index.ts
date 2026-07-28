@@ -29,6 +29,11 @@ export type { DispatchInit, DispatchOptions, DispatchedResponse } from './kernel
 // service-worker/preview transport and the tunnel's socket stand-in.
 export { openWsPipe, VirtualUpgradeSocket } from './kernel/network/ws-pipe.js';
 export type { WsPipe, WsPipeHooks, WsPipeOptions } from './kernel/network/ws-pipe.js';
+
+// Publish an in-VM port on a real host port (Node hosts — the CLI). `node:http`
+// is injected rather than imported so this entry stays browser-safe.
+export { exposePort } from './kernel/network/expose.js';
+export type { ExposePortOptions, ExposedPort, HostHttpModule, HostHttpServer } from './kernel/network/expose.js';
 export type {
 	VmWebSocket,
 	VmMessageEvent,
@@ -86,7 +91,8 @@ export {
 export type { VfsChange, SyncOptions } from './kernel/vfs/sync.js';
 
 // VFS snapshot (tar.gz), operable on any VFS — non-blocking (yields)
-export { exportVfsSnapshot, importVfsSnapshot } from './kernel/vfs/snapshot.js';
+export { exportVfsSnapshot, importVfsSnapshot, readSnapshotMetadata, SNAPSHOT_MANIFEST_ENTRY } from './kernel/vfs/snapshot.js';
+export type { SnapshotMetadata } from './kernel/vfs/snapshot.js';
 export { pruneExpoModules } from './sandbox/prune.js';
 export type { PruneOptions, PruneResult } from './sandbox/prune.js';
 export type { VfsSnapshotOptions } from './kernel/vfs/snapshot.js';

@@ -1,5 +1,6 @@
 import type { Command } from '../commands/types.js';
 import type { Kernel } from '../kernel/index.js';
+import type { SnapshotMetadata } from '../kernel/vfs/snapshot.js';
 import type { Shell } from '../shell/Shell.js';
 import type { ITerminal } from '../terminal/ITerminal.js';
 import type { NativeFsModule } from '../kernel/vfs/providers/NativeFsProvider.js';
@@ -78,6 +79,14 @@ export interface SnapshotOptions {
    * box must reinstall (`npm install`) before it can run.
    */
   exclude?: string[];
+  /**
+   * Session state to embed in the archive's `lifo-snapshot.json` manifest.
+   *
+   * Defaults to the box's `cwd` + `env`, which is what makes one snapshot file
+   * portable across the browser, Node and the CLI. Pass extra fields to add to
+   * it, or `false` for a files-only archive.
+   */
+  metadata?: false | Omit<Partial<SnapshotMetadata>, 'version' | 'savedAt'>;
 }
 
 export interface SandboxFs {
@@ -95,7 +104,7 @@ export interface SandboxFs {
   /** Export the VFS as a tar.gz snapshot (optionally excluding paths). */
   exportSnapshot(options?: SnapshotOptions): Promise<Uint8Array>;
   /** Restore VFS from a tar.gz snapshot */
-  importSnapshot(data: Uint8Array): Promise<void>;
+  importSnapshot(data: Uint8Array): Promise<SnapshotMetadata | null>;
 }
 
 // ─── Internal types for Sandbox internals ───

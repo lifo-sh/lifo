@@ -18,6 +18,21 @@
  *
  *   lifo login / logout / whoami  Auth helpers (see auth.ts).
  *
+ * Port forwarding
+ * ───────────────
+ *   --expose <vmPort>[:<hostPort>]   Publish an in-VM port on a real host port.
+ *                                    Repeatable. hostPort defaults to vmPort.
+ *
+ *     lifo --expose 3000             in-VM 3000 -> http://127.0.0.1:3000
+ *     lifo --expose 3000:5000        in-VM 3000 -> http://127.0.0.1:5000
+ *     lifo --detach --expose 5173    works for background sessions too
+ *
+ *   Loopback only, and forwards HTTP and WebSockets (so a dev server's HMR
+ *   works). This is NOT the same as `tunnel`: the in-shell `tunnel` command
+ *   shares an in-VM port PUBLICLY through the lifo.sh relay, whereas --expose
+ *   binds a local socket with no relay and no network. They compose — expose a
+ *   port locally, then `lifo tunnel <hostPort>` to share it.
+ *
  * Internal flag (not user-facing):
  *   lifo --daemon --id <id> --mount <path>
  *                                 Runs as the background daemon process.
@@ -53,7 +68,13 @@ import {
 	createNodeCommand,
 	createCurlCommand,
 	rehydrateGlobalPackages,
+	exposePort,
+	exportVfsSnapshot,
+	importVfsSnapshot,
+	readSnapshotMetadata,
 } from '@lifo-sh/core';
+import type { ExposedPort } from '@lifo-sh/core';
+import * as nodeHttp from 'node:http';
 import { NodeTerminal } from './NodeTerminal.js';
 import { DaemonTerminal } from './DaemonTerminal.js';
 import { TOKEN_PATH, readToken, handleLogin, handleLogout, handleWhoami } from './auth.js';
@@ -63,8 +84,8 @@ import { attachToSession, attachViaTcp } from './attach.js';
 import {
 	SNAPSHOTS_DIR,
 	requestSnapshot,
-	writeSnapshotZip,
-	readSnapshotZip,
+	writeSnapshotArchive,
+	readSnapshotArchive,
 	listSnapshots,
 } from './snapshot.js';
 import { handleTunnel, createHostTunnelCommand } from './tunnel.js';
@@ -109,6 +130,52 @@ interface CliOptions {
 	id?: string;
 	/** Internal flag — path to a snapshot JSON file to restore on daemon boot. */
 	snapshot?: string;
+	/**
+	 * Publish in-VM ports on real host ports: `--expose 3000` or
+	 * `--expose 3000:8080` (vmPort:hostPort). Repeatable.
+	 */
+	expose?: Array<{ vmPort: number; hostPort: number }>;
+}
+
+/** Parse `--expose 3000` / `--expose 3000:8080`. hostPort defaults to vmPort. */
+function parseExpose(spec: string): { vmPort: number; hostPort: number } | null {
+	const [left, right] = spec.split(':');
+	const vmPort = Number(left);
+	const hostPort = right === undefined ? vmPort : Number(right);
+	const valid = (n: number) => Number.isInteger(n) && n >= 1 && n <= 65535;
+	if (!valid(vmPort) || !valid(hostPort)) return null;
+	return { vmPort, hostPort };
+}
+
+/**
+ * Publish each `--expose vmPort[:hostPort]` mapping on the host.
+ *
+ * Bound BEFORE the shell starts, so a forwarder is already listening when the
+ * user runs their dev server — a request that arrives first gets a 404 with
+ * `x-lifo: no-server` rather than a connection refused, which reads better while
+ * a server is still booting.
+ *
+ * A mapping that can't bind (port in use) is reported and skipped rather than
+ * taking the whole session down: losing one forward shouldn't cost you the box.
+ */
+async function startExposedPorts(
+	kernel: Kernel,
+	mappings: Array<{ vmPort: number; hostPort: number }> | undefined,
+	write: (text: string) => void,
+): Promise<ExposedPort[]> {
+	if (!mappings || mappings.length === 0) return [];
+	const opened: ExposedPort[] = [];
+	for (const { vmPort, hostPort } of mappings) {
+		try {
+			const exposed = await exposePort(kernel.portRegistry, { vmPort, hostPort, http: nodeHttp });
+			opened.push(exposed);
+			write(`Exposed in-VM port ${vmPort} at ${exposed.url}\n`);
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			write(`Warning: could not expose ${vmPort} on host port ${hostPort}: ${message}\n`);
+		}
+	}
+	return opened;
 }
 
 function parseArgs(args: string[]): CliOptions {
@@ -126,6 +193,14 @@ function parseArgs(args: string[]): CliOptions {
 				process.exit(1);
 			}
 			opts.port = p;
+			i++;
+		} else if (args[i] === '--expose' && args[i + 1]) {
+			const mapping = parseExpose(args[i + 1]!);
+			if (!mapping) {
+				console.error(`Error: --expose expects <vmPort> or <vmPort>:<hostPort>, got "${args[i + 1]}"`);
+				process.exit(1);
+			}
+			(opts.expose ??= []).push(mapping);
 			i++;
 		} else if (args[i] === '--daemon') {
 			opts.daemon = true;
@@ -218,7 +293,14 @@ function handleStop(id: string): void {
  *   SIGTERM / SIGHUP → close socket server + delete session files + exit.
  *   `exit` typed in the shell → disconnects all clients, VM keeps running.
  */
-async function runDaemon(id: string, mountPath: string, port?: number, snapshotPath?: string): Promise<void> {
+async function runDaemon(
+	id: string,
+	mountPath: string,
+	port?: number,
+	snapshotPath?: string,
+	/** `--expose` mappings; bound here because the daemon owns the kernel. */
+	expose?: Array<{ vmPort: number; hostPort: number }>,
+): Promise<void> {
 	const socketPath = path.join(SESSIONS_DIR, `${id}.sock`);
 
 	fs.mkdirSync(SESSIONS_DIR, { recursive: true });
@@ -232,13 +314,16 @@ async function runDaemon(id: string, mountPath: string, port?: number, snapshotP
 	const kernel = new Kernel();
 	await kernel.boot({ persist: false }); // in-memory VFS; state lives in this process
 
-	// Read snapshot file ONCE up-front, then immediately delete it.
-	// The daemon only needs it during startup — it should not linger on disk.
-	interface SnapPayload { vfs: any; cwd?: string; env?: Record<string, string> }
-	let snap: SnapPayload | null = null;
+	// Host port forwards for a detached session. Messages go to stderr because
+	// stdout belongs to the daemon protocol.
+	const exposedPorts = await startExposedPorts(kernel, expose, (t) => process.stderr.write(t));
+
+	// Read the snapshot archive ONCE up-front, then immediately delete it: the
+	// daemon only needs it during startup and it shouldn't linger on disk.
+	let snapshotBytes: Uint8Array | null = null;
 	if (snapshotPath) {
 		try {
-			snap = JSON.parse(fs.readFileSync(snapshotPath, 'utf-8')) as SnapPayload;
+			snapshotBytes = readSnapshotArchive(snapshotPath);
 		} catch (err: any) {
 			process.stderr.write(`Warning: failed to read snapshot: ${err.message}\n`);
 		} finally {
@@ -247,11 +332,14 @@ async function runDaemon(id: string, mountPath: string, port?: number, snapshotP
 	}
 
 	// Restore VFS from snapshot before mounting the host directory.
-	if (snap) {
+	// Restored with the same importVfsSnapshot() the browser uses, so a snapshot
+	// taken in either place restores in the other. The manifest carries cwd/env.
+	let restored: Awaited<ReturnType<typeof importVfsSnapshot>> = null;
+	if (snapshotBytes) {
 		try {
-			kernel.vfs.loadFromSerialized(deserialize(snap.vfs));
+			restored = await importVfsSnapshot(kernel.vfs, snapshotBytes);
 		} catch (err: any) {
-			process.stderr.write(`Warning: failed to restore snapshot VFS: ${err.message}\n`);
+			process.stderr.write(`Warning: failed to restore snapshot: ${err.message}\n`);
 		}
 	}
 
@@ -268,9 +356,9 @@ async function runDaemon(id: string, mountPath: string, port?: number, snapshotP
 	env.PWD = MOUNT_PATH;          // start the shell inside the mounted directory
 	env.LIFO_HOST_DIR = mountPath; // expose host path for scripts that need it
 
-	// Overlay saved env vars — reuse already-parsed snap, no second file read.
-	if (snap?.env && typeof snap.env === 'object') {
-		for (const [k, v] of Object.entries(snap.env)) {
+	// Overlay env from the snapshot manifest, if the archive carried one.
+	if (restored?.env && typeof restored.env === 'object') {
+		for (const [k, v] of Object.entries(restored.env)) {
 			if (k !== 'LIFO_HOST_DIR' && k !== 'LIFO_AUTH_TOKEN' && k !== 'LIFO_TOKEN_PATH') {
 				env[k] = v;
 			}
@@ -281,12 +369,14 @@ async function runDaemon(id: string, mountPath: string, port?: number, snapshotP
 	if (token) env.LIFO_AUTH_TOKEN = token;
 	env.LIFO_TOKEN_PATH = TOKEN_PATH;
 
-	const shell = new Shell(daemonTerminal, kernel.vfs, registry, env);
+	const shell = new Shell(daemonTerminal, kernel.vfs, registry, env, kernel.processRegistry);
 
-	const jobTable = shell.getJobTable();
-	registry.register('ps', createPsCommand(jobTable));
-	registry.register('top', createTopCommand(jobTable));
-	registry.register('kill', createKillCommand(jobTable));
+	// ps/top/kill take the PROCESS REGISTRY, not the job table — passing the job
+	// table made them throw `processRegistry.getAll is not a function`.
+	const processRegistry = shell.getProcessRegistry();
+	registry.register('ps', createPsCommand(processRegistry));
+	registry.register('top', createTopCommand(processRegistry));
+	registry.register('kill', createKillCommand(processRegistry));
 	registry.register('watch', createWatchCommand(registry));
 	registry.register('help', createHelpCommand(registry));
 	registry.register('node', createNodeCommand(kernel));
@@ -311,8 +401,8 @@ async function runDaemon(id: string, mountPath: string, port?: number, snapshotP
 	await shell.sourceFile('/etc/profile');
 	await shell.sourceFile(env.HOME + '/.bashrc');
 
-	// Restore CWD from snapshot — only if the path actually exists in the VFS.
-	const snapshotCwd = snap?.cwd;
+	// Restore CWD from the snapshot manifest — only if it exists in the VFS.
+	const snapshotCwd = restored?.cwd;
 	if (snapshotCwd && kernel.vfs.exists(snapshotCwd)) {
 		shell.setCwd(snapshotCwd);
 	}
@@ -330,17 +420,29 @@ async function runDaemon(id: string, mountPath: string, port?: number, snapshotP
 	// Uses setImmediate to yield the event loop before the CPU-heavy serialize()
 	// so in-flight shell output isn't delayed for other attached clients.
 	daemonTerminal.onSnapshot((socket) => {
-		setImmediate(() => {
-			const data = {
-				type: 'snapshot-data',
-				vfs: serialize(kernel.vfs.getRoot()),
-				cwd: shell.getCwd(),
-				env: shell.getEnv(),
-				mountPath,  // save original mount path so restore can reuse it
-			};
-			socket.write(JSON.stringify(data) + '\n');
-			socket.end();
-		});
+		// The archive is built HERE, in the process that owns the VFS, using the
+		// same exportVfsSnapshot() the browser uses — so one format serves every
+		// environment. base64 because the daemon protocol is newline-delimited JSON.
+		void (async () => {
+			try {
+				const bytes = await exportVfsSnapshot(kernel.vfs, {
+					metadata: { cwd: shell.getCwd(), env: shell.getEnv(), mountPath },
+				});
+				socket.write(JSON.stringify({
+					type: 'snapshot-data',
+					format: 'tar.gz',
+					data: Buffer.from(bytes).toString('base64'),
+					cwd: shell.getCwd(),
+					env: shell.getEnv(),
+					mountPath,
+				}) + '\n');
+			} catch (err) {
+				const message = err instanceof Error ? err.message : String(err);
+				socket.write(JSON.stringify({ type: 'snapshot-error', error: message }) + '\n');
+			} finally {
+				socket.end();
+			}
+		})();
 	});
 
 	// ── Socket server ─────────────────────────────────────────────────────────
@@ -394,6 +496,7 @@ async function runDaemon(id: string, mountPath: string, port?: number, snapshotP
 
 	// ── Shutdown handler ──────────────────────────────────────────────────────
 	function shutdown() {
+		for (const exposed of exposedPorts) void exposed.close();
 		server.close();           // stop accepting new connections on Unix socket
 		tcpServer?.close();       // stop accepting new connections on TCP (if any)
 		deleteSession(id);        // clean up ~/.lifo/sessions/<id>.{json,sock}
@@ -436,6 +539,10 @@ async function runInteractive(opts: CliOptions): Promise<void> {
 	const kernel = new Kernel();
 	await kernel.boot({ persist: false });
 
+	// Host port forwards, bound before the shell so they're already listening
+	// when the user starts a dev server.
+	const exposedPorts = await startExposedPorts(kernel, opts.expose, (t) => process.stdout.write(t));
+
 	const MOUNT_PATH = '/mnt/host';
 	kernel.vfs.mkdir('/mnt', { recursive: true });
 	const nativeProvider = new NativeFsProvider(hostDir, fs);
@@ -452,12 +559,14 @@ async function runInteractive(opts: CliOptions): Promise<void> {
 	if (token) env.LIFO_AUTH_TOKEN = token;
 	env.LIFO_TOKEN_PATH = TOKEN_PATH;
 
-	const shell = new Shell(terminal, kernel.vfs, registry, env);
+	const shell = new Shell(terminal, kernel.vfs, registry, env, kernel.processRegistry);
 
-	const jobTable = shell.getJobTable();
-	registry.register('ps', createPsCommand(jobTable));
-	registry.register('top', createTopCommand(jobTable));
-	registry.register('kill', createKillCommand(jobTable));
+	// ps/top/kill take the PROCESS REGISTRY, not the job table — passing the job
+	// table made them throw `processRegistry.getAll is not a function`.
+	const processRegistry = shell.getProcessRegistry();
+	registry.register('ps', createPsCommand(processRegistry));
+	registry.register('top', createTopCommand(processRegistry));
+	registry.register('kill', createKillCommand(processRegistry));
 	registry.register('watch', createWatchCommand(registry));
 	registry.register('help', createHelpCommand(registry));
 	registry.register('node', createNodeCommand(kernel));
@@ -504,6 +613,7 @@ async function runInteractive(opts: CliOptions): Promise<void> {
 	);
 
 	function cleanup() {
+		for (const exposed of exposedPorts) void exposed.close();
 		terminal.destroy();
 		if (isTempSession) {
 			// Clean up the throwaway temp directory we created above.
@@ -590,7 +700,7 @@ async function main() {
 
 		if (sub === 'save') {
 			const id = args[2];
-			if (!id) { console.error('Usage: lifo snapshot save <id> [--output <file.zip>]'); process.exit(1); }
+			if (!id) { console.error('Usage: lifo snapshot save <id> [--output <file.tar.gz>]'); process.exit(1); }
 
 			// Parse --output from remaining args
 			let outputPath: string | undefined;
@@ -602,7 +712,7 @@ async function main() {
 			}
 			if (!outputPath) {
 				fs.mkdirSync(SNAPSHOTS_DIR, { recursive: true });
-				outputPath = path.join(SNAPSHOTS_DIR, `${id}-${Date.now()}.zip`);
+				outputPath = path.join(SNAPSHOTS_DIR, `${id}-${Date.now()}.tar.gz`);
 			}
 
 			const session = readSession(id);
@@ -610,9 +720,10 @@ async function main() {
 
 			console.log(`Requesting snapshot from VM ${id}...`);
 			try {
-				const data = await requestSnapshot(session.socketPath);
-				writeSnapshotZip(data, outputPath);
+				const archive = await requestSnapshot(session.socketPath);
+				writeSnapshotArchive(archive.bytes, outputPath);
 				console.log(`Snapshot saved to ${outputPath}`);
+				console.log('Portable: this file also restores in the browser playground.');
 			} catch (err: any) {
 				console.error(`Failed to save snapshot: ${err.message}`);
 				process.exit(1);
@@ -622,7 +733,7 @@ async function main() {
 
 		if (sub === 'restore') {
 			const zipPath = args[2] ? path.resolve(args[2]) : undefined;
-			if (!zipPath) { console.error('Usage: lifo snapshot restore <file.zip> [--mount <path>]'); process.exit(1); }
+			if (!zipPath) { console.error('Usage: lifo snapshot restore <file.tar.gz> [--mount <path>]'); process.exit(1); }
 			if (!fs.existsSync(zipPath)) { console.error(`File not found: ${zipPath}`); process.exit(1); }
 
 			// Parse --mount from remaining args
@@ -634,9 +745,11 @@ async function main() {
 				}
 			}
 
-			let data: ReturnType<typeof readSnapshotZip>;
+			let archiveBytes: Uint8Array;
+			let manifest: Awaited<ReturnType<typeof readSnapshotMetadata>> = null;
 			try {
-				data = readSnapshotZip(zipPath);
+				archiveBytes = readSnapshotArchive(zipPath);
+				manifest = await readSnapshotMetadata(archiveBytes);
 			} catch (err: any) {
 				console.error(`Failed to read snapshot: ${err.message}`);
 				process.exit(1);
@@ -644,17 +757,18 @@ async function main() {
 
 			// Determine mount path: explicit flag > saved path (if it still exists) > new temp dir
 			if (!mountPath) {
-				if (data.mountPath && fs.existsSync(data.mountPath) && fs.statSync(data.mountPath).isDirectory()) {
-					mountPath = data.mountPath;
+				if (manifest?.mountPath && fs.existsSync(manifest.mountPath) && fs.statSync(manifest.mountPath).isDirectory()) {
+					mountPath = manifest.mountPath;
 					console.log(`Using original mount path: ${mountPath}`);
 				} else {
 					mountPath = fs.mkdtempSync(path.join(os.tmpdir(), 'lifo-'));
 				}
 			}
 
-			// Write snapshot data to a temp file for the daemon process to read on boot.
-			const tmpSnap = path.join(os.tmpdir(), `lifo-snap-${Date.now()}.json`);
-			fs.writeFileSync(tmpSnap, JSON.stringify({ vfs: data.vfs, cwd: data.cwd, env: data.env }), 'utf-8');
+			// Hand the archive itself to the daemon — no re-encoding, so the file the
+			// user restores is byte-for-byte the one importVfsSnapshot() reads.
+			const tmpSnap = path.join(os.tmpdir(), `lifo-snap-${Date.now()}.tar.gz`);
+			fs.writeFileSync(tmpSnap, archiveBytes);
 
 			try {
 				const id = await startDaemon(mountPath, undefined, tmpSnap);
@@ -696,7 +810,7 @@ async function main() {
 			mountPath = fs.mkdtempSync(path.join(os.tmpdir(), 'lifo-'));
 		}
 		try {
-			const id = await startDaemon(mountPath, newOpts.port);
+			const id = await startDaemon(mountPath, newOpts.port, undefined, undefined, newOpts.expose);
 			if (newOpts.port !== undefined) {
 				console.log(`Started VM ${id} (TCP port: ${newOpts.port})`);
 			} else {
@@ -718,7 +832,7 @@ async function main() {
 	if (opts.daemon) {
 		if (!opts.id) { console.error('--daemon requires --id'); process.exit(1); }
 		if (!opts.mount) { console.error('--daemon requires --mount'); process.exit(1); }
-		await runDaemon(opts.id, opts.mount, opts.port, opts.snapshot);
+		await runDaemon(opts.id, opts.mount, opts.port, opts.snapshot, opts.expose);
 		return;
 	}
 
@@ -743,7 +857,7 @@ async function main() {
 		}
 
 		try {
-			const id = await startDaemon(mountPath, opts.port);
+			const id = await startDaemon(mountPath, opts.port, undefined, undefined, opts.expose);
 			const portSuffix = opts.port !== undefined ? `, TCP port: ${opts.port}` : '';
 			if (isTempMount) {
 				console.log(`Started VM ${id} (temp mount: ${mountPath}${portSuffix})`);
