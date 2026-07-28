@@ -2,8 +2,8 @@ import type { Packet } from '../types.js';
 import type { NetworkStack } from '../NetworkStack.js';
 import { BaseTunnel } from './BaseTunnel.js';
 import { Buffer } from '../../../node-compat/buffer.js';
-import type { VirtualResponseWithDone } from '../../../node-compat/http.js';
 import { getUpgradeHandlers } from '../../../node-compat/http.js';
+import { dispatchRequest, LIFO_HEADER } from '../dispatch.js';
 import { EventEmitter } from '../../../node-compat/events.js';
 
 function bytesToBase64(bytes: Uint8Array): string {
@@ -427,51 +427,28 @@ export class WebSocketTunnel extends BaseTunnel {
 			return;
 		}
 
-		// Get handler
-		const handler = this.portRegistry.get(port);
-
-		// Create virtual request/response
-		const vReq = {
+		// The shared dispatcher waits for async middleware to call res.end() via
+		// `_donePromise`, bounded at 120s, and returns 504/500 rather than throwing.
+		const vRes = await dispatchRequest(this.portRegistry, port, {
 			method,
 			url: path,
 			headers,
 			body: Buffer.from(body || '', 'base64').toString(),
-		};
+		});
 
-		const vRes: VirtualResponseWithDone = {
-			statusCode: 200,
-			headers: {} as Record<string, string>,
-			body: '',
-		};
-
-		try {
-			// Call handler
-			handler(vReq, vRes);
-
-			// Wait for async middleware to call res.end() (populates vRes)
-			// Add a 25s safety timeout so we respond before external timeout
-			if (vRes._donePromise) {
-				const timeout = new Promise<'timeout'>((resolve) =>
-					setTimeout(() => resolve('timeout'), 120000)
-				);
-				const result = await Promise.race([vRes._donePromise.then(() => 'done' as const), timeout]);
-				if (result === 'timeout') {
-					console.error(`[WebSocketTunnel] TIMEOUT waiting for response: ${method} ${path}`);
-					this.sendError(requestId, 504, `Gateway timeout: server did not respond for ${path}`);
-					return;
-				}
-			}
-
-			// Send response back through WebSocket (binary-safe via bodyBytes)
-			const outBytes = vRes.bodyBytes ?? new TextEncoder().encode(vRes.body);
-			this.sendResponse(requestId, vRes.statusCode, vRes.headers, outBytes);
-
-			// Update stats
-			this.updateStats(outBytes.length, 'tx');
-		} catch (error) {
-			const errorMessage = error instanceof Error ? error.message : String(error);
-			this.sendError(requestId, 500, `Internal server error: ${errorMessage}`);
+		if (vRes.statusCode === 504 && vRes.headers[LIFO_HEADER] === 'timeout') {
+			console.error(`[WebSocketTunnel] TIMEOUT waiting for response: ${method} ${path}`);
+			this.sendError(requestId, 504, `Gateway timeout: server did not respond for ${path}`);
+			return;
 		}
+		if (vRes.headers[LIFO_HEADER] === 'handler-error') {
+			this.sendError(requestId, 500, vRes.body);
+			return;
+		}
+
+		// Send response back through the WebSocket (binary-safe via bodyBytes)
+		this.sendResponse(requestId, vRes.statusCode, vRes.headers, vRes.bodyBytes);
+		this.updateStats(vRes.bodyBytes.length, 'tx');
 	}
 
 	/**

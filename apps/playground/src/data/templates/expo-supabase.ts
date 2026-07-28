@@ -30,7 +30,7 @@ export function expoSupabaseAppFiles(root: string): Record<string, string> {
 		devDependencies: {
 			// The backend is the tinbase CLI (`npx tinbase`) — Supabase-compatible,
 			// no server code. pg-mem is its pure-JS Postgres engine (--engine pgmem).
-			tinbase: '^0.8.1',
+			tinbase: '^0.10.1',
 			'pg-mem': 'npm:@tinbase/pg-mem@^3.2.0',
 		},
 	}, null, 2);

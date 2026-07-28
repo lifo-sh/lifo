@@ -14,146 +14,38 @@
  * This makes the preview work where service workers are unreliable (iOS Chrome,
  * cross-origin iframes). HMR rides the WebSocket shim.
  */
-import { ServiceWorkerBridge } from '@lifo-sh/core';
+import { ServiceWorkerBridge, dispatchRequest } from '@lifo-sh/core';
 import type { Kernel } from '@lifo-sh/core';
+import { buildPreviewShim } from './preview-shims.js';
 
 interface VmResponse { status: number; headers: Record<string, string>; body: Uint8Array }
 
-/** Call a bound in-VM port directly (no SW) and await its full response. */
-function vmFetch(kernel: Kernel, port: number, url: string, timeoutMs = 120000): Promise<VmResponse> {
-  const handler = kernel.portRegistry.get(port);
-  if (!handler) return Promise.resolve({ status: 502, headers: {}, body: new Uint8Array() });
-  const vRes: {
-    statusCode: number; headers: Record<string, string>; body: string;
-    bodyBytes?: Uint8Array; _donePromise?: Promise<unknown>;
-  } = { statusCode: 200, headers: {}, body: '' };
-  handler({ method: 'GET', url, headers: { host: `localhost:${port}` }, body: '' }, vRes);
-  const finish = (): VmResponse => ({
-    status: vRes.statusCode,
-    headers: vRes.headers,
-    body: vRes.bodyBytes ?? new TextEncoder().encode(vRes.body || ''),
-  });
-  if (vRes._donePromise) {
-    return Promise.race([
-      vRes._donePromise.then(finish),
-      new Promise<VmResponse>((resolve) => setTimeout(() => resolve({ status: 504, headers: {}, body: new Uint8Array() }), timeoutMs)),
-    ]);
-  }
-  return Promise.resolve(finish());
+/**
+ * Call a bound in-VM port directly (no SW) and await its full response.
+ *
+ * This used to hand-roll the `_donePromise` await — one of five copies of that
+ * dance. `dispatchRequest` owns it now, along with the timeout and the
+ * bodyBytes fallback.
+ */
+async function vmFetch(kernel: Kernel, port: number, url: string, timeoutMs = 120000): Promise<VmResponse> {
+  const res = await dispatchRequest(
+    kernel.portRegistry,
+    port,
+    { method: 'GET', url, headers: { host: `localhost:${port}` } },
+    { timeoutMs },
+  );
+  return { status: res.statusCode, headers: res.headers, body: res.bodyBytes };
 }
 
 /**
- * Injected into the preview HTML (as a classic inline script, before the bundle)
- * so it runs first. Tunnels the app's runtime fetch/XHR/WebSocket to the parent
- * over window.postMessage.
+ * The transport shim injected into the preview document, before the bundle.
+ *
+ * Composed from the individually selectable patches in preview-shims.ts —
+ * import `buildPreviewShim` directly to take a subset (e.g. HTTP only) in
+ * another embedder.
  */
-function shimScript(port: number): string {
-  return `(function(){
-  var PORT=${port};
-  var parentWin=window.parent, seq=0, pending=new Map(), wsConns=new Map();
-  function b64enc(u8){var s='';for(var i=0;i<u8.length;i++)s+=String.fromCharCode(u8[i]);return btoa(s);}
-  function b64dec(b){var s=atob(b),u=new Uint8Array(s.length);for(var i=0;i<s.length;i++)u[i]=s.charCodeAt(i);return u;}
-  window.addEventListener('message',function(e){
-    if(e.source!==parentWin)return; var m=e.data||{};
-    if(m.type==='response'){var p=pending.get(m.requestId);if(p){pending.delete(m.requestId);p(m);}}
-    else if(m.connId){var c=wsConns.get(m.connId);if(!c)return;
-      if(m.type==='ws-opened')c.__open();
-      else if(m.type==='ws-message')c.__msg(m.data,m.binary);
-      else if(m.type==='ws-close'){wsConns.delete(m.connId);c.__close(1006,'');}}
-  });
-  function tunnelable(u){ if(!u)return false; if(/^(blob:|data:)/.test(u))return false;
-    if(u[0]==='/')return true; try{var url=new URL(u); return url.host==='localhost:'+PORT||url.host===location.host;}catch(_){return u[0]==='.';} }
-  function pathOf(u){ if(u[0]==='/')return u; try{return new URL(u).pathname+new URL(u).search;}catch(_){return u;} }
-  function vmreq(method,url,headers,body){ return new Promise(function(res){ var id='r'+(seq++);
-    var h={}; if(headers){ if(typeof headers.forEach==='function'&&!Array.isArray(headers)){headers.forEach(function(v,k){h[k]=v;});} else if(Array.isArray(headers)){headers.forEach(function(p){h[p[0]]=p[1];});} else {for(var k in headers)h[k]=headers[k];} }
-    if(body&&body.length&&h['content-length']==null&&h['Content-Length']==null)h['content-length']=String(body.length);
-    pending.set(id,res); parentWin.postMessage({type:'request',requestId:id,port:PORT,method:method,url:pathOf(url),headers:h,body:body?b64enc(body):''},'*'); }); }
-  // --- fetch shim ---
-  var origFetch=window.fetch;
-  window.fetch=function(input,init){ var url=typeof input==='string'?input:(input&&input.url);
-    if(!tunnelable(url))return origFetch.apply(this,arguments);
-    var method=(init&&init.method)||'GET'; var body=init&&init.body; var bytes=null;
-    if(typeof body==='string')bytes=new TextEncoder().encode(body);
-    return vmreq(method,url,(init&&init.headers)||{},bytes).then(function(m){
-      var st=m.statusCode||200; var buf=m.bodyBuffer||(m.body?b64dec(m.body).buffer:new ArrayBuffer(0));
-      var nb=st===204||st===205||st===304;
-      return new Response(nb?null:buf,{status:st,headers:m.headers||{}}); }); };
-  // --- image asset interceptor ---
-  (function(){
-    var proto=window.HTMLImageElement&&HTMLImageElement.prototype; if(!proto)return;
-    var d=Object.getOwnPropertyDescriptor(proto,'src');
-    if(d&&d.set){ Object.defineProperty(proto,'src',{configurable:true,enumerable:d.enumerable,
-      get:function(){return d.get.call(this);},
-      set:function(v){ var img=this; if(typeof v==='string'&&tunnelable(v)){ window.fetch(v).then(function(r){return r.ok?r.blob():null;}).then(function(b){ d.set.call(img,b?URL.createObjectURL(b):v); }).catch(function(){ d.set.call(img,v); }); } else { d.set.call(this,v); } }
-    }); }
-    var os=proto.setAttribute; proto.setAttribute=function(n,val){ if(n==='src'){ this.src=val; return; } return os.call(this,n,val); };
-  })();
-  // --- font interceptor (expo-font / @expo/vector-icons) ---
-  (function(){
-    var Orig=window.FontFace; if(!Orig)return;
-    function Patched(family,source,desc){
-      if(typeof source==='string'){ var m=source.match(/url\\(\\s*['"]?([^'")]+)['"]?\\s*\\)/);
-        if(m&&tunnelable(m[1])){ var url=m[1]; var ff=new Orig(family,'url(about:blank)',desc||{});
-          ff.load=function(){ return window.fetch(url).then(function(r){return r.arrayBuffer();}).then(function(buf){ var real=new Orig(family,buf,desc||{}); try{document.fonts.add(real);}catch(_){}; return real.load(); }); };
-          return ff; } }
-      return new Orig(family,source,desc);
-    }
-    Patched.prototype=Orig.prototype;
-    try{ window.FontFace=Patched; }catch(_){}
-  })();
-  // --- CSS @font-face interceptor ---
-  (function(){
-    function rewrite(styleEl){
-      try{ var css=styleEl.textContent||''; if(css.indexOf('@font-face')<0&&css.indexOf('url(')<0)return;
-        var urls=[]; css.replace(/url\\(\\s*['"]?([^'")]+)['"]?\\s*\\)/g,function(_m,u){ if(tunnelable(u)&&urls.indexOf(u)<0)urls.push(u); return _m; });
-        if(!urls.length)return; if(styleEl.__lifoRw)return; styleEl.__lifoRw=1;
-        var map={},pending=urls.length;
-        urls.forEach(function(u){ window.fetch(u).then(function(r){return r.ok?r.blob():null;}).then(function(b){ if(b)map[u]=URL.createObjectURL(b); }).catch(function(){}).then(function(){ if(--pending===0){ var out=css; Object.keys(map).forEach(function(u){ out=out.split(u).join(map[u]); }); if(styleEl.textContent!==out)styleEl.textContent=out; } }); });
-      }catch(_){}
-    }
-    var ap=Node.prototype.appendChild;
-    Node.prototype.appendChild=function(node){ var r=ap.call(this,node); try{ if(node&&node.tagName==='STYLE')rewrite(node); else if(this&&this.tagName==='STYLE')rewrite(this); }catch(_){}; return r; };
-    var ib=Node.prototype.insertBefore;
-    Node.prototype.insertBefore=function(node,ref){ var r=ib.call(this,node,ref); try{ if(node&&node.tagName==='STYLE')rewrite(node); }catch(_){}; return r; };
-  })();
-  // --- XHR shim ---
-  var OrigXHR=window.XMLHttpRequest;
-  function ShimXHR(){ this._h={}; this.readyState=0; this.status=0; this.response=''; this.responseText=''; this.onload=null; this.onreadystatechange=null; this.onerror=null; }
-  ShimXHR.prototype.open=function(m,u){ this._m=m; this._u=u; if(!tunnelable(u)){this._native=new OrigXHR();this._native.open.apply(this._native,arguments);} };
-  ShimXHR.prototype.setRequestHeader=function(k,v){ if(this._native)return this._native.setRequestHeader(k,v); this._h[k]=v; };
-  ShimXHR.prototype.send=function(body){ var self=this; if(this._native){['onload','onerror','onreadystatechange'].forEach(function(k){self._native[k]=function(){self.status=self._native.status;self.responseText=self._native.responseText;self.response=self._native.response;self.readyState=self._native.readyState;self[k]&&self[k]();};});return this._native.send(body);}
-    var bytes=typeof body==='string'?new TextEncoder().encode(body):null;
-    vmreq(this._m,this._u,this._h,bytes).then(function(m){ var buf=m.bodyBuffer||(m.body?b64dec(m.body).buffer:new ArrayBuffer(0));
-      self.status=m.statusCode||200; self.response=buf; self.responseText=new TextDecoder().decode(new Uint8Array(buf)); self.readyState=4;
-      self.onreadystatechange&&self.onreadystatechange(); self.onload&&self.onload(); }); };
-  ShimXHR.prototype.getAllResponseHeaders=function(){return '';}; ShimXHR.prototype.getResponseHeader=function(){return null;}; ShimXHR.prototype.abort=function(){};
-  window.XMLHttpRequest=ShimXHR;
-  // --- WebSocket shim (HMR) ---
-  var OrigWS=window.WebSocket;
-  function LifoWS(url,protocols){
-    var raw=String(url), pathSearch=null;
-    if(/^wss?:\\/\\/\\//i.test(raw)){ pathSearch=raw.replace(/^wss?:\\/\\//i,''); if(pathSearch.charAt(0)!=='/')pathSearch='/'+pathSearch; }
-    else { var u=null; try{u=new URL(raw,location.href);}catch(_){}
-      if(u&&(u.protocol==='ws:'||u.protocol==='wss:')&&(u.host==='localhost:'+PORT||u.host===location.host))pathSearch=u.pathname+u.search;
-      else return new OrigWS(url,protocols); }
-    var self=this;
-    this.url=raw; this.readyState=0; this.bufferedAmount=0; this.protocol=Array.isArray(protocols)?(protocols[0]||''):(protocols||''); this.binaryType='blob';
-    this.onopen=null;this.onmessage=null;this.onclose=null;this.onerror=null; this._l={open:[],message:[],close:[],error:[]};
-    this.connId='ws'+(seq++); wsConns.set(this.connId,this);
-    parentWin.postMessage({type:'ws-open',connId:this.connId,port:PORT,url:pathSearch,protocol:this.protocol},'*');
-    this.__open=function(){self.readyState=1;self.__emit('open',{});};
-    this.__msg=function(b64,binary){var data;if(binary){var buf=b64dec(b64).buffer;data=self.binaryType==='arraybuffer'?buf:new Blob([buf]);}else{data=new TextDecoder().decode(b64dec(b64));}self.__emit('message',{data:data});};
-    this.__close=function(code,reason){if(self.readyState===3)return;self.readyState=3;self.__emit('close',{code:code||1000,reason:reason||'',wasClean:code===1000});};
-    this.__emit=function(type,init){var ev;try{ev=type==='message'?new MessageEvent('message',init):new (type==='close'?CloseEvent:Event)(type,init);}catch(_){ev={type:type};for(var k in init)ev[k]=init[k];}var h=self['on'+type];if(h)try{h.call(self,ev);}catch(_){}(self._l[type]||[]).forEach(function(fn){try{fn.call(self,ev);}catch(_){}});};
-  }
-  LifoWS.prototype.send=function(data){var u8;if(typeof data==='string')u8=new TextEncoder().encode(data);else if(data instanceof ArrayBuffer)u8=new Uint8Array(data);else if(ArrayBuffer.isView(data))u8=new Uint8Array(data.buffer,data.byteOffset,data.byteLength);else u8=new TextEncoder().encode(String(data));parentWin.postMessage({type:'ws-send',connId:this.connId,data:b64enc(u8),binary:typeof data!=='string'},'*');};
-  LifoWS.prototype.close=function(code,reason){if(this.readyState>=2)return;this.readyState=2;parentWin.postMessage({type:'ws-close',connId:this.connId},'*');this.__close(code||1000,reason||'');};
-  LifoWS.prototype.addEventListener=function(t,fn){if(this._l[t])this._l[t].push(fn);};
-  LifoWS.prototype.removeEventListener=function(t,fn){if(this._l[t]){var i=this._l[t].indexOf(fn);if(i>=0)this._l[t].splice(i,1);}};
-  LifoWS.prototype.dispatchEvent=function(){return true;};
-  LifoWS.CONNECTING=0;LifoWS.OPEN=1;LifoWS.CLOSING=2;LifoWS.CLOSED=3;
-  window.WebSocket=LifoWS;
-})();`;
+export function shimScript(port: number, hostPort = ''): string {
+  return buildPreviewShim({ port, hostPort });
 }
 
 /**
@@ -236,12 +128,16 @@ export async function mountNoSwPreview(
   const blobUrls: string[] = [];
   const mkBlob = (bytes: Uint8Array, type: string) => { const u = URL.createObjectURL(new Blob([bytes as BlobPart], { type })); blobUrls.push(u); return u; };
 
-  // Wait for the dev server to bind + serve a real page.
+  // Fetch the ENTRY DOCUMENT at `path`, not always at '/'. A server's root is
+  // not necessarily its app: tinbase answers '/' with a JSON health check and
+  // serves the studio at '/_/', so mounting with path='/_/' used to blob the
+  // health JSON and render nothing.
+  const entryPath = path || '/';
   const deadline = Date.now() + 180000;
-  let htmlRes = await vmFetch(kernel, port, '/');
+  let htmlRes = await vmFetch(kernel, port, entryPath);
   while ((htmlRes.status !== 200 || htmlRes.headers['x-lifo'] === 'no-server') && Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 800));
-    htmlRes = await vmFetch(kernel, port, '/');
+    htmlRes = await vmFetch(kernel, port, entryPath);
   }
 
   let html = new TextDecoder().decode(htmlRes.body);
@@ -271,7 +167,9 @@ export async function mountNoSwPreview(
   }
 
   // Inject router shim + transport shim before the bundle.
-  html = html.replace(/<head(\s[^>]*)?>/i, (h) => `${h}\n<script>${routerShim(bundleBlob, realBundlePath)}</script>\n<script>${shimScript(port)}</script>`);
+  // The embedding page's port is excluded from in-VM routing (see resolveTarget).
+  const hostPort = typeof location !== 'undefined' ? location.port : '';
+  html = html.replace(/<head(\s[^>]*)?>/i, (h) => `${h}\n<script>${routerShim(bundleBlob, realBundlePath)}</script>\n<script>${shimScript(port, hostPort)}</script>`);
 
   // Serve the HTML as a blob.
   const hashPath = path && path !== '/' ? '#' + path.replace(/^\//, '') : '';

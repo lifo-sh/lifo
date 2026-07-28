@@ -10,11 +10,11 @@
  */
 
 import type { VirtualRequestHandler } from '../index.js';
-import type { VirtualResponseWithDone } from '../../node-compat/http.js';
 import { getUpgradeHandlers } from '../../node-compat/http.js';
 import { EventEmitter } from '../../node-compat/events.js';
 import { Buffer } from '../../node-compat/buffer.js';
 import { encodeFrame, FrameDecoder, OPCODE, splitHandshake } from './ws-frame.js';
+import { dispatchRequest } from './dispatch.js';
 
 interface SwRequestMessage {
 	type: 'request';
@@ -49,7 +49,6 @@ interface SwWsCloseMessage {
 }
 
 const textEncoder = new TextEncoder();
-const textDecoder = new TextDecoder();
 
 function randomMask(out: Uint8Array): void {
 	if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
@@ -259,10 +258,6 @@ export class ServiceWorkerBridge {
 		activeBridges.delete(this.boxId);
 	}
 
-	private respondText(requestId: string, statusCode: number, headers: Record<string, string>, text: string): void {
-		this.respond(requestId, statusCode, headers, textEncoder.encode(text));
-	}
-
 	private respond(requestId: string, statusCode: number, headers: Record<string, string>, bytes: Uint8Array): void {
 		// Transfer the ArrayBuffer (zero-copy) instead of base64 — critical for
 		// large binary responses like PGlite's ~12MB wasm.
@@ -275,50 +270,19 @@ export class ServiceWorkerBridge {
 	private async handleRequest(message: SwRequestMessage): Promise<void> {
 		const { requestId, port, method, url, headers, body } = message;
 
-		const handler = this.portRegistry.get(port);
-		if (!handler) {
-			// x-lifo marks this as "port not bound" (vs an app's own 404) so the
-			// service worker can render a friendly auto-reloading page for
-			// document requests while curl/tunnel keep the terse text.
-			this.respondText(requestId, 404, { 'content-type': 'text/plain', 'x-lifo': 'no-server' }, `No server listening on port ${port}`);
-			return;
-		}
-
-		const vReq = {
+		// The shared dispatcher owns the `_donePromise` await, the 120s bound, the
+		// bodyBytes fallback, and the 404/504/500 shapes — all of which were
+		// written here first and are now used by every transport. `x-lifo:
+		// no-server` on an unbound port lets the SW render a friendly
+		// auto-reloading page for document requests while curl keeps the terse
+		// text.
+		const res = await dispatchRequest(this.portRegistry, port, {
 			method,
 			url,
 			headers,
-			body: body ? textDecoder.decode(base64ToBytes(body)) : '',
-		};
-		const vRes: VirtualResponseWithDone = {
-			statusCode: 200,
-			headers: {} as Record<string, string>,
-			body: '',
-		};
-
-		try {
-			handler(vReq, vRes);
-			if (vRes._donePromise) {
-				// 120s, not 25s: a dev bundler's FIRST bundle (Metro compiling
-				// hundreds of modules — e.g. react-native-web + react-dom for
-				// `expo start --web` — via Babel INSIDE the VM) is much slower than
-				// in native Node and legitimately exceeds 25s, surfacing as a
-				// spurious 504 on GET /index.bundle. Still bounded so a truly stuck
-				// handler eventually fails instead of hanging forever.
-				const timeout = new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 120000));
-				const result = await Promise.race([vRes._donePromise.then(() => 'done' as const), timeout]);
-				if (result === 'timeout') {
-					this.respondText(requestId, 504, { 'content-type': 'text/plain' }, `Gateway timeout: server did not respond for ${url}`);
-					return;
-				}
-			}
-			// bodyBytes is binary-safe; fall back to encoding the text view.
-			const outBytes = vRes.bodyBytes ?? textEncoder.encode(vRes.body);
-			this.respond(requestId, vRes.statusCode, vRes.headers, outBytes);
-		} catch (error) {
-			const messageText = error instanceof Error ? error.message : String(error);
-			this.respondText(requestId, 500, { 'content-type': 'text/plain' }, `Internal server error: ${messageText}`);
-		}
+			body: body ? base64ToBytes(body) : undefined,
+		});
+		this.respond(requestId, res.statusCode, res.headers, res.bodyBytes);
 	}
 
 	// ─── WebSocket transport (Phase 2: HMR) ───

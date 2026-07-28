@@ -20,6 +20,7 @@
 import type { Sandbox } from './Sandbox.js';
 import type { Kernel } from '../kernel/index.js';
 import { resolve, join, dirname } from '../utils/path.js';
+import { dispatchRequest, LIFO_HEADER } from '../kernel/network/dispatch.js';
 
 export interface PruneOptions {
   /** Project dir (default: sandbox cwd). */
@@ -134,22 +135,21 @@ function resolveBare(vfs: any, nmSet: Set<string>, fromFile: string, spec: strin
   return out;
 }
 
-/** Fire a virtual HTTP GET into an in-VM port and await the response. */
-function vmRequest(kernel: Kernel, port: number, url: string, timeoutMs = 120000): Promise<void> {
-  const handler = kernel.portRegistry.get(port);
-  if (!handler) return Promise.reject(new Error(`no handler on port ${port}`));
-  const vRes: {
-    statusCode: number; headers: Record<string, string>; body: string;
-    bodyBytes?: Uint8Array; _donePromise?: Promise<unknown>;
-  } = { statusCode: 200, headers: {}, body: '' };
-  handler({ method: 'GET', url, headers: { host: `localhost:${port}` }, body: '' }, vRes);
-  if (vRes._donePromise) {
-    return Promise.race([
-      vRes._donePromise.then(() => undefined),
-      new Promise<void>((_, rej) => setTimeout(() => rej(new Error('bundle timeout')), timeoutMs)),
-    ]);
-  }
-  return Promise.resolve();
+/**
+ * Fire a virtual HTTP GET into an in-VM port and await the response.
+ *
+ * Rejects (rather than resolving with a status) because callers here treat a
+ * failed bundle as fatal to the trace.
+ */
+async function vmRequest(kernel: Kernel, port: number, url: string, timeoutMs = 120000): Promise<void> {
+  if (!kernel.portRegistry.has(port)) throw new Error(`no handler on port ${port}`);
+  const res = await dispatchRequest(
+    kernel.portRegistry,
+    port,
+    { method: 'GET', url, headers: { host: `localhost:${port}` } },
+    { timeoutMs },
+  );
+  if (res.statusCode === 504 && res.headers[LIFO_HEADER] === 'timeout') throw new Error('bundle timeout');
 }
 
 export async function pruneExpoModules(sandbox: Sandbox, opts: PruneOptions = {}): Promise<PruneResult> {

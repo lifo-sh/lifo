@@ -14,7 +14,7 @@ const server = http.createServer((q, r) => { (async () => { const t = new URL(q.
 await new Promise((r) => server.listen(CORS, r));
 
 const files = {
-  [`${APP}/package.json`]: JSON.stringify({ name: 'tinbase-todo', version: '1.0.0', type: 'module', scripts: { dev: 'vite', build: 'vite build' }, dependencies: { vite: '^7.3.1', react: '^18.3.1', 'react-dom': '^18.3.1', '@vitejs/plugin-react': '^5.0.0', '@supabase/supabase-js': '^2.110.0' }, devDependencies: { tinbase: '^0.8.1', 'pg-mem': 'npm:@tinbase/pg-mem@^3.2.0' } }, null, 2),
+  [`${APP}/package.json`]: JSON.stringify({ name: 'tinbase-todo', version: '1.0.0', type: 'module', scripts: { dev: 'vite', build: 'vite build' }, dependencies: { vite: '^7.3.1', react: '^18.3.1', 'react-dom': '^18.3.1', '@vitejs/plugin-react': '^5.0.0', '@supabase/supabase-js': '^2.110.0' }, devDependencies: { tinbase: '^0.10.1', 'pg-mem': 'npm:@tinbase/pg-mem@^3.2.0' } }, null, 2),
   [`${APP}/supabase/migrations/20240101000000_create_todos.sql`]: `create table if not exists todos (\n  id bigint generated always as identity primary key,\n  title text not null,\n  done boolean not null default false,\n  created_at timestamptz not null default now()\n);\n`,
   [`${APP}/supabase/seed.sql`]: `insert into todos (title, done) values\n  ('Edit supabase/migrations to change the schema', false),\n  ('Add seed rows in supabase/seed.sql', true);\n`,
 };

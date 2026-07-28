@@ -6,7 +6,6 @@ import gitCommand from 'lifo-pkg-git';
 import type { Terminal } from '@lifo-sh/ui';
 import { ExamplePanel } from '@/components/example-panel';
 import { PreviewTabs, type PreviewTab } from '@/components/preview-tabs';
-import { NoSwPreview } from '@/components/nosw-preview';
 import { TerminalArea } from '@/components/terminal-area';
 import { bootShell, browserCorsEnv } from '@/lib/shell';
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable';
@@ -183,11 +182,14 @@ export function ProjectExample({ title, subtitle, files, cwd, previewPort, previ
           <ResizableHandle className={terminalFolded ? 'hidden' : 'my-0.5'} />
           <ResizablePanel defaultSize={55} minSize={20}>
             {previewEngine === 'postmessage' ? (
-              sandbox ? (
-                <NoSwPreview kernel={sandbox.kernel} port={previewTabs[0]?.port ?? previewPort ?? 8081} />
-              ) : (
-                <div className="flex-1 h-full grid place-items-center text-[12px] text-tokyo-comment">Booting box…</div>
-              )
+              // Same tabs as the SW path (App + Studio + …) — this used to drop
+              // everything after the first, hiding tinbase's studio entirely.
+              <PreviewTabs
+                boxId={boxId}
+                tabs={previewTabs.length ? previewTabs : [{ label: 'App', port: previewPort ?? 8081 }]}
+                engine="postmessage"
+                kernel={sandbox?.kernel ?? null}
+              />
             ) : swReady === null ? (
               <div className="flex-1 h-full grid place-items-center text-[12px] text-tokyo-comment">
                 Starting preview…

@@ -28,6 +28,51 @@ import type { SandboxOptions, SandboxCommands, SandboxFs, SnapshotOptions } from
 import { SandboxFsImpl } from './SandboxFs.js';
 import { SandboxCommandsImpl } from './SandboxCommands.js';
 import { HeadlessTerminal } from './HeadlessTerminal.js';
+import { dispatchRequest, waitForPort } from '../kernel/network/dispatch.js';
+
+export interface SandboxFetchInit {
+	method?: string;
+	headers?: HeadersInit | Record<string, string>;
+	body?: string | Uint8Array | ArrayBuffer;
+	/** In-VM port, when `input` is a bare path rather than a full URL. */
+	port?: number;
+	/** Milliseconds to wait for the server (default 120s). */
+	timeout?: number;
+}
+
+/**
+ * Resolve a fetch target to an in-VM port + a server-relative URL.
+ *
+ * The port has to come from somewhere explicit: there is no ambient "current
+ * port" for a sandbox, and silently defaulting to one would send requests to the
+ * wrong server. So a bare path requires `{ port }`, and a full URL must be
+ * loopback — a request to a real external host is not something this method can
+ * honour, and pretending otherwise would be worse than refusing.
+ */
+function resolveTarget(input: string | URL, portOption?: number): { port: number; url: string } {
+	const raw = typeof input === 'string' ? input : input.href;
+
+	if (raw.startsWith('/')) {
+		if (portOption == null) {
+			throw new Error(`sandbox.fetch: "${raw}" is a path, so it needs a port — pass { port } or use an absolute http://localhost:<port>/… URL`);
+		}
+		return { port: portOption, url: raw };
+	}
+
+	let parsed: URL;
+	try {
+		parsed = new URL(raw);
+	} catch {
+		throw new Error(`sandbox.fetch: "${raw}" is not a valid URL`);
+	}
+
+	if (parsed.hostname !== 'localhost' && parsed.hostname !== '127.0.0.1' && parsed.hostname !== '[::1]') {
+		throw new Error(`sandbox.fetch: only loopback hosts address the sandbox, got "${parsed.hostname}" — use the global fetch for external requests`);
+	}
+
+	const port = parsed.port ? Number(parsed.port) : portOption ?? (parsed.protocol === 'https:' ? 443 : 80);
+	return { port, url: parsed.pathname + parsed.search };
+}
 
 export class Sandbox {
 	/** Programmatic command execution */
@@ -266,6 +311,73 @@ export class Sandbox {
 	 */
 	detach(): void {
 		// v1: no-op placeholder
+	}
+
+	/**
+	 * Make an HTTP request to a server running INSIDE this sandbox — no service
+	 * worker, no port forwarding, no host networking involved.
+	 *
+	 * ```js
+	 * const res = await sandbox.fetch('http://localhost:54321/rest/v1/todos', {
+	 *   headers: { apikey: ANON_KEY },
+	 * });
+	 * const todos = await res.json();
+	 * ```
+	 *
+	 * The URL's port selects the in-VM server, so the host must be loopback
+	 * (`localhost` / `127.0.0.1`); pass `{ port }` when you only hold a path.
+	 * Note this is a HOST→VM call: it is unrelated to the `fetch` that app code
+	 * running inside the VM sees.
+	 *
+	 * Never throws for transport reasons — an unbound port resolves as a 404
+	 * carrying `x-lifo: no-server`, a timeout as a 504, exactly as the service
+	 * worker behaves, so host and browser see the same thing for the same box.
+	 */
+	async fetch(input: string | URL, init: SandboxFetchInit = {}): Promise<Response> {
+		if (this._destroyed) throw new Error('Sandbox is destroyed');
+		const { port, url } = resolveTarget(input, init.port);
+
+		const headers: Record<string, string> = {};
+		new Headers(init.headers as HeadersInit | undefined).forEach((value, key) => { headers[key] = value; });
+
+		const body = init.body == null
+			? undefined
+			: typeof init.body === 'string'
+				? init.body
+				: new Uint8Array(init.body as ArrayBuffer);
+
+		// In-VM body parsers (body-parser/express.json's hasBody()) need
+		// Content-Length; fetch omits it, so restore it as the SW/nosw shims do.
+		if (body != null && headers['content-length'] == null) {
+			headers['content-length'] = String(
+				typeof body === 'string' ? new TextEncoder().encode(body).length : body.length,
+			);
+		}
+
+		const res = await dispatchRequest(
+			this.kernel.portRegistry,
+			port,
+			{ method: init.method ?? 'GET', url, headers, body },
+			{ timeoutMs: init.timeout },
+		);
+
+		// 204/205/304 are null-body statuses — Response throws if given a body.
+		const nullBody = res.statusCode === 204 || res.statusCode === 205 || res.statusCode === 304;
+		return new Response(nullBody ? null : (res.bodyBytes as unknown as BodyInit), {
+			status: res.statusCode,
+			headers: res.headers,
+		});
+	}
+
+	/**
+	 * Resolve once a server is listening on `port` inside the sandbox.
+	 *
+	 * "Listening" is all the port registry knows — it cannot report readiness, so
+	 * a server that binds before it can serve will still need a retried request.
+	 */
+	async waitForPort(port: number, options: { timeout?: number } = {}): Promise<void> {
+		if (this._destroyed) throw new Error('Sandbox is destroyed');
+		return waitForPort(this.kernel.portRegistry, port, options);
 	}
 
 	/**

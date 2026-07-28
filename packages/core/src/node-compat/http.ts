@@ -3,10 +3,12 @@ import { Buffer } from './buffer.js';
 import type { VirtualRequestHandler, VirtualResponse } from '../kernel/index.js';
 import { makeProxyingFetch } from './proxy-fetch.js';
 
-/** Extended VirtualResponse with a done promise for async middleware */
-export interface VirtualResponseWithDone extends VirtualResponse {
-  _donePromise?: Promise<void>;
-}
+/**
+ * @deprecated `_donePromise` now lives on `VirtualResponse` itself, so this
+ * alias adds nothing. Kept as a re-export because it was public API; use
+ * `VirtualResponse` (and `dispatchRequest`, which handles the promise for you).
+ */
+export type VirtualResponseWithDone = VirtualResponse;
 
 interface RequestOptions {
   hostname?: string;
