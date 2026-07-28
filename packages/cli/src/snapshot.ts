@@ -139,11 +139,21 @@ export function readSnapshotArchive(archivePath: string): Uint8Array {
   return new Uint8Array(buf);
 }
 
-/** Lists all .zip files in ~/.lifo/snapshots/. */
-export function listSnapshots(): string[] {
-  if (!fs.existsSync(SNAPSHOTS_DIR)) return [];
+/**
+ * Lists snapshot archives in `~/.lifo/snapshots/`.
+ *
+ * Matches `.tar.gz`, the extension `snapshot save` writes. It used to match
+ * `.zip` — which meant that once saves moved to `.tar.gz`, `lifo snapshot list`
+ * reported "No snapshots found" no matter how many you had. Zip snapshots are no
+ * longer readable, so listing them would only offer files that can't be restored.
+ *
+ * `dir` is a parameter so this is testable without writing into a real home
+ * directory.
+ */
+export function listSnapshots(dir: string = SNAPSHOTS_DIR): string[] {
+  if (!fs.existsSync(dir)) return [];
   return fs
-    .readdirSync(SNAPSHOTS_DIR)
-    .filter((f) => f.endsWith('.zip'))
-    .map((f) => path.join(SNAPSHOTS_DIR, f));
+    .readdirSync(dir)
+    .filter((f) => f.endsWith('.tar.gz'))
+    .map((f) => path.join(dir, f));
 }
