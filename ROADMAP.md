@@ -111,6 +111,7 @@ Turn the playground's building blocks into reusable components so anyone can emb
 - [ ] Migrate the playground to consume the packaged components (dogfood).
 - [x] Example: a **Node/Express server with the preview browser** bound to its port — a full backend + live preview in one box, alongside the existing Vite/Expo examples. **← current focus #1**
 - [x] **Supabase (tinbase) fidelity:** both the Supabase (tinbase) and Expo Router + Supabase examples ship a real `supabase/` folder (`config.toml`, `migrations/*.sql`, `seed.sql`) and start the backend with the `npx tinbase --engine pgmem` CLI (like `supabase start`) — no hand-written `server.mjs`, no hard-coded migration. Each has a `README.txt`.
+  - Fixed in 0.7.1: `npx tinbase --engine pgmem` died with `Cannot read properties of undefined (reading 'slice')`. The ESM→CJS masker's `scanBracedExpr` called `isRegexStart` with two arguments against a three-parameter signature, so **any `/` inside a `${…}` template expression threw** — which `pg-mem`, `tinbase/dist/db/pgmem-engine.js` and `schema-diff.js` all contain (`` `${l.replace(/'/g, "''")}` ``), and nothing else in the examples did. Note the thrown error names the *parent* module being executed, not the module whose transform failed; sweeping `transformEsmToCjs` over every file in `node_modules` is what located it. Covered by `tests/commands/esm-transform.test.ts`; verified end-to-end by `bench/test-tinbase-cli.mjs`.
 
 ### 8. Package manager & WASM runtimes — *planned*
 
