@@ -9,9 +9,21 @@ export type {
 	SnapshotOptions,
 } from './sandbox/index.js';
 
+export type { SandboxFetchInit } from './sandbox/Sandbox.js';
+
 // Kernel
 export { Kernel } from './kernel/index.js';
 export type { VirtualRequest, VirtualResponse, VirtualRequestHandler } from './kernel/index.js';
+
+// In-VM HTTP dispatch — the primitive behind sandbox.fetch() and every
+// transport (service worker, blob preview, curl, tunnel).
+export {
+	dispatchRequest,
+	waitForPort,
+	LIFO_HEADER,
+	DEFAULT_DISPATCH_TIMEOUT_MS,
+} from './kernel/network/dispatch.js';
+export type { DispatchInit, DispatchOptions, DispatchedResponse } from './kernel/network/dispatch.js';
 
 // Network Stack
 export { NetworkStack } from './kernel/network/index.js';

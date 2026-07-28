@@ -1,6 +1,7 @@
 import type { Command } from '../types.js';
 import { resolve } from '../../utils/path.js';
 import type { Kernel } from '../../kernel/index.js';
+import { dispatchRequest, LIFO_HEADER } from '../../kernel/network/dispatch.js';
 
 function createCurlImpl(kernel?: Kernel): Command {
   return async (ctx) => {
@@ -86,33 +87,21 @@ function createCurlImpl(kernel?: Kernel): Command {
         }
 
         if ((host === 'localhost' || host === '127.0.0.1') && kernel.portRegistry.has(port)) {
-          const handler = kernel.portRegistry.get(port)!;
-          const vReq = {
+          // The shared dispatcher waits for async middleware (Vite, Express,
+          // tinbase) via `_donePromise` and bounds it at 120s — a dev bundler's
+          // FIRST in-VM bundle legitimately exceeds 30s.
+          const vRes = await dispatchRequest(kernel.portRegistry, port, {
             method,
             url: parsed.pathname + parsed.search,
             headers,
             body: data || '',
-          };
-          const vRes = {
-            statusCode: 200,
-            headers: {} as Record<string, string>,
-            body: '',
-          } as { statusCode: number; headers: Record<string, string>; body: string; _donePromise?: Promise<void> };
+          });
 
-          handler(vReq, vRes);
-
-          // Wait for async middleware to complete (e.g., Vite, Express).
-          // 120s, matching the service-worker proxy: a dev bundler's FIRST
-          // bundle (Metro compiling in-VM) legitimately exceeds 30s.
-          if (vRes._donePromise) {
-            const timeout = new Promise<'timeout'>((resolve) =>
-              setTimeout(() => resolve('timeout'), 120000)
-            );
-            const result = await Promise.race([vRes._donePromise.then(() => 'done' as const), timeout]);
-            if (result === 'timeout') {
-              ctx.stderr.write('curl: request timeout after 120s\n');
-              return 7;
-            }
+          // Our synthetic timeout is a transport failure, not an HTTP result:
+          // curl reports it on stderr and exits 7, as it did before.
+          if (vRes.statusCode === 504 && vRes.headers[LIFO_HEADER] === 'timeout') {
+            ctx.stderr.write('curl: request timeout after 120s\n');
+            return 7;
           }
 
           if (headOnly) {

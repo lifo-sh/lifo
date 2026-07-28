@@ -1,4 +1,5 @@
-import type { VirtualRequestHandler, VirtualRequest, VirtualResponse } from '../index.js';
+import type { VirtualRequestHandler } from '../index.js';
+import { dispatchRequest } from './dispatch.js';
 
 /**
  * Port Bridge - Bridges virtual ports to real host network
@@ -60,9 +61,7 @@ export class PortBridge {
       };
     }
 
-    // Get handler from port registry
-    const handler = this.portRegistry.get(virtualPort);
-    if (!handler) {
+    if (!this.portRegistry.has(virtualPort)) {
       return {
         statusCode: 502,
         headers: { 'Content-Type': 'text/plain' },
@@ -70,30 +69,11 @@ export class PortBridge {
       };
     }
 
-    // Forward request to virtual server
-    const virtualReq: VirtualRequest = {
-      method,
-      url: path,
-      headers,
-      body,
-    };
-
-    const virtualRes: VirtualResponse = {
-      statusCode: 200,
-      headers: {},
-      body: '',
-    };
-
-    try {
-      handler(virtualReq, virtualRes);
-      return virtualRes;
-    } catch (error) {
-      return {
-        statusCode: 500,
-        headers: { 'Content-Type': 'text/plain' },
-        body: `Internal Server Error: ${error instanceof Error ? error.message : String(error)}\n`,
-      };
-    }
+    // Delegate to the shared dispatcher. This used to call the handler and
+    // return the response object immediately, which meant every async server
+    // (Express, Vite, Metro, tinbase) answered with an empty 200 — the handler
+    // had not written anything yet. dispatchRequest awaits `_donePromise`.
+    return dispatchRequest(this.portRegistry, virtualPort, { method, url: path, headers, body });
   }
 
   /**

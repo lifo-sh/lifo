@@ -1,6 +1,8 @@
 import { useState } from 'react';
+import type { Kernel } from '@lifo-sh/core';
 import { cn } from '@/lib/utils';
 import { UiPreviewBrowser } from '@/components/ui-preview-browser';
+import { NoSwPreview } from '@/components/nosw-preview';
 
 export interface PreviewTab {
   /** Tab label, e.g. "App" or "Studio". */
@@ -14,6 +16,14 @@ export interface PreviewTab {
 interface PreviewTabsProps {
   boxId: string;
   tabs: PreviewTab[];
+  /**
+   * Which transport mounts each pane. `postmessage` needs the kernel, since it
+   * talks to the port registry directly instead of through a service worker.
+   * Both engines get the SAME tabs — the SW-free path used to render only the
+   * first one, so sibling services like tinbase's studio were unreachable.
+   */
+  engine?: 'sw' | 'postmessage';
+  kernel?: Kernel | null;
 }
 
 /**
@@ -21,7 +31,7 @@ interface PreviewTabsProps {
  * (flat, 1px top accent on the active tab). No top border — the resizable
  * handle above is the only separator, so there's no double line.
  */
-export function PreviewTabs({ boxId, tabs }: PreviewTabsProps) {
+export function PreviewTabs({ boxId, tabs, engine = 'sw', kernel = null }: PreviewTabsProps) {
   const [active, setActive] = useState(0);
 
   return (
@@ -49,7 +59,15 @@ export function PreviewTabs({ boxId, tabs }: PreviewTabsProps) {
             className="absolute inset-0"
             style={{ display: i === active ? 'block' : 'none' }}
           >
-            <UiPreviewBrowser boxId={boxId} port={tab.port} path={tab.path} />
+            {engine === 'postmessage' ? (
+              kernel ? (
+                <NoSwPreview kernel={kernel} port={tab.port} path={tab.path ?? '/'} />
+              ) : (
+                <div className="flex-1 h-full grid place-items-center text-[12px] text-tokyo-comment">Booting box…</div>
+              )
+            ) : (
+              <UiPreviewBrowser boxId={boxId} port={tab.port} path={tab.path} />
+            )}
           </div>
         ))}
       </div>

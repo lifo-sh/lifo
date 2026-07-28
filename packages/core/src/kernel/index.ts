@@ -66,6 +66,15 @@ export interface VirtualResponse {
 	body: string;
 	/** Canonical binary body. Set for all responses; transports should prefer this. */
 	bodyBytes?: Uint8Array;
+	/**
+	 * Set by async servers (Express, Vite, Metro, tinbase) to signal when they
+	 * have finished writing. A handler returns immediately, so a caller that
+	 * reads the response without awaiting this sees an empty 200.
+	 *
+	 * Do not hand-roll the await — use `dispatchRequest()`, which owns the
+	 * timeout and the bodyBytes fallback too.
+	 */
+	_donePromise?: Promise<void>;
 }
 
 export type VirtualRequestHandler = (req: VirtualRequest, res: VirtualResponse) => void;

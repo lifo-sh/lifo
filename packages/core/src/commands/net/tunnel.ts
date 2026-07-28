@@ -1,7 +1,7 @@
 import type { Command } from '../types.js';
 import type { Kernel } from '../../kernel/index.js';
-import type { VirtualResponseWithDone } from '../../node-compat/http.js';
 import { Buffer } from '../../node-compat/buffer.js';
+import { dispatchRequest, LIFO_HEADER } from '../../kernel/network/dispatch.js';
 
 interface TunnelOptions {
 	server: string;
@@ -154,62 +154,45 @@ function createTunnelImpl(kernel?: Kernel): Command {
 						actualPath = match[2] || '/';
 					}
 
-					// Lookup handler in portRegistry
-					const handler = kernel!.portRegistry.get(port);
-
-					if (!handler) {
+					if (!kernel!.portRegistry.has(port)) {
 						sendError(requestId, 404, `No server listening on port ${port}`);
 						return;
 					}
 
-					// Create virtual request/response
-					const vReq = {
-						method,
-						url: actualPath,
-						headers,
-						body: Buffer.from(body || '', 'base64').toString(),
-					};
+					// 25s, not the dispatcher's default 120s: the tunnel server times
+					// out at 30s, so we must answer before it does.
+					const vRes = await dispatchRequest(
+						kernel!.portRegistry,
+						port,
+						{
+							method,
+							url: actualPath,
+							headers,
+							body: Buffer.from(body || '', 'base64').toString(),
+						},
+						{ timeoutMs: 25000 },
+					);
 
-					const vRes: VirtualResponseWithDone = {
-						statusCode: 200,
-						headers: {} as Record<string, string>,
-						body: '',
-					};
-
-					try {
-						// Call the virtual server handler
-						handler(vReq, vRes);
-
-						// Wait for async middleware to call res.end() (populates vRes)
-						// Add a 25s safety timeout so we respond before the tunnel server's 30s timeout
-						if (vRes._donePromise) {
-							const timeout = new Promise<'timeout'>((resolve) =>
-								setTimeout(() => resolve('timeout'), 25000)
-							);
-							const result = await Promise.race([vRes._donePromise.then(() => 'done' as const), timeout]);
-							if (result === 'timeout') {
-								ctx.stderr.write(`[tunnel] TIMEOUT waiting for response: ${method} ${actualPath}\n`);
-								sendError(requestId, 504, `Gateway timeout: server did not respond for ${actualPath}`);
-								return;
-							}
-						}
-
-						// Send response back through tunnel
-						const response = {
-							type: 'response',
-							requestId,
-							statusCode: vRes.statusCode,
-							headers: vRes.headers,
-							body: Buffer.from(vRes.body).toString('base64'),
-						};
-
-						ws?.send(JSON.stringify(response));
-						log(`Sent response: ${vRes.statusCode}`);
-					} catch (error) {
-						const errorMessage = error instanceof Error ? error.message : String(error);
-						ctx.stderr.write(`[tunnel] ERROR for ${method} ${actualPath}: ${errorMessage}\n`);
-						sendError(requestId, 500, `Internal server error: ${errorMessage}`);
+					if (vRes.headers[LIFO_HEADER] === 'timeout') {
+						ctx.stderr.write(`[tunnel] TIMEOUT waiting for response: ${method} ${actualPath}\n`);
+						sendError(requestId, 504, `Gateway timeout: server did not respond for ${actualPath}`);
+						return;
 					}
+					if (vRes.headers[LIFO_HEADER] === 'handler-error') {
+						ctx.stderr.write(`[tunnel] ERROR for ${method} ${actualPath}: ${vRes.body}\n`);
+						sendError(requestId, 500, vRes.body);
+						return;
+					}
+
+					// Send response back through tunnel
+					ws?.send(JSON.stringify({
+						type: 'response',
+						requestId,
+						statusCode: vRes.statusCode,
+						headers: vRes.headers,
+						body: Buffer.from(vRes.body).toString('base64'),
+					}));
+					log(`Sent response: ${vRes.statusCode}`);
 				}
 			} catch (error) {
 				ctx.stderr.write(`tunnel: Error processing message: ${error}\n`);
