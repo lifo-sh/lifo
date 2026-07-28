@@ -36,6 +36,7 @@ import viCommand from 'lifo-pkg-vi';
 import calCommand from 'lifo-pkg-cal';
 import bcCommand from 'lifo-pkg-bc';
 import manCommand from 'lifo-pkg-man';
+import orchdCommand from 'lifo-pkg-orchd';
 
 /**
  * CORS-proxy env for every browser box (git clone, expo, etc. can't reach
@@ -59,7 +60,7 @@ export function browserCorsEnv(): Record<string, string> {
 export interface BootShellOptions {
   /** Extra installable-package commands to register. git is always
    *  registered ('git' entries are accepted for back-compat). */
-  pkgs?: Array<'git' | 'ffmpeg'>;
+  pkgs?: Array<'git' | 'ffmpeg' | 'orchd'>;
   /** Register node/curl/tunnel + the network/systemctl command set. */
   network?: boolean;
   /** Boot enabled systemd services after sourcing profile (e.g. tunnel). */
@@ -111,6 +112,7 @@ export async function bootShell(
   registry.register('bc', bcCommand);
   registry.register('man', manCommand);
   if (opts.pkgs?.includes('ffmpeg')) registry.register('ffmpeg', ffmpegCommand);
+  if (opts.pkgs?.includes('orchd')) registry.register('orchd', orchdCommand);
   bootLifoPackages(kernel.vfs, registry);
 
   const env = { ...kernel.getDefaultEnv(), ...browserCorsEnv(), ...opts.env };

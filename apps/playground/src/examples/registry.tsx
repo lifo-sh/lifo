@@ -24,6 +24,7 @@ const ExpoSupabaseExample = lazy(() => import('@/examples/expo-supabase'));
 const CliExample = lazy(() => import('@/examples/cli'));
 const LifoPkgExample = lazy(() => import('@/examples/lifo-pkg'));
 const BuildPkgExample = lazy(() => import('@/examples/build-pkg'));
+const OrchdExample = lazy(() => import('@/examples/orchd'));
 
 export type ExampleGroup = 'Examples' | 'Real-World Stacks' | 'Installable Packages' | 'Develop';
 
@@ -61,6 +62,7 @@ export const examples: ExampleConfig[] = [
   // ── Installable Packages ──
   { id: 'git', label: 'Git', group: 'Installable Packages', Component: GitExample },
   { id: 'ffmpeg', label: 'FFmpeg', group: 'Installable Packages', Component: FfmpegExample },
+  { id: 'orchd', label: 'ORCHD (orchd.json)', group: 'Installable Packages', Component: OrchdExample },
   // ── Develop ──
   { id: 'lifo-pkg', label: 'Lifo Package Manager', group: 'Develop', hideCode: true, Component: LifoPkgExample },
   { id: 'build-pkg', label: 'Build Lifo Packages', group: 'Develop', hideCode: true, Component: BuildPkgExample },

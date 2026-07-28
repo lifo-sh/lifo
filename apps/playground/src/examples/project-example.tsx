@@ -25,6 +25,8 @@ export interface ProjectExampleProps {
   /** Offer "Prune node_modules" in the box menu (Expo projects) — shrinks the
    *  box to just what Metro needs before snapshotting. */
   pruneable?: boolean;
+  /** Extra in-VM packages to register in this example's shells (git is always on). */
+  pkgs?: Array<'git' | 'ffmpeg' | 'orchd'>;
 }
 
 /**
@@ -33,7 +35,7 @@ export interface ProjectExampleProps {
  * preview, split by a resizable handle. The SW bridge serves /_sw/<boxId>/<port>/
  * so each example routes to its own VM.
  */
-export function ProjectExample({ title, subtitle, files, cwd, previewPort, previews, env, pruneable }: ProjectExampleProps) {
+export function ProjectExample({ title, subtitle, files, cwd, previewPort, previews, env, pruneable, pkgs }: ProjectExampleProps) {
   const hasPreview = !!(previews?.length || previewPort);
   // Always present the preview as Chrome-like tabs, even for a single port.
   const previewTabs: PreviewTab[] = previews?.length
@@ -88,7 +90,7 @@ export function ProjectExample({ title, subtitle, files, cwd, previewPort, previ
     if (!sb) return;
     void bootShell(term, sb.kernel, {
       network: true,
-      pkgs: ['git'],
+      pkgs: pkgs ?? ['git'],
       cwd,
       env: { ...browserCorsEnv(), ...env },
     });
