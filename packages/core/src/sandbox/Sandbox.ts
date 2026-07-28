@@ -29,6 +29,8 @@ import { SandboxFsImpl } from './SandboxFs.js';
 import { SandboxCommandsImpl } from './SandboxCommands.js';
 import { HeadlessTerminal } from './HeadlessTerminal.js';
 import { dispatchRequest, waitForPort } from '../kernel/network/dispatch.js';
+import { connectVmWebSocket } from './vm-websocket.js';
+import type { SandboxConnectOptions, VmWebSocket } from './vm-websocket.js';
 
 export interface SandboxFetchInit {
 	method?: string;
@@ -367,6 +369,33 @@ export class Sandbox {
 			status: res.statusCode,
 			headers: res.headers,
 		});
+	}
+
+	/**
+	 * Open a WebSocket to a server running INSIDE this sandbox — no service
+	 * worker, no host networking.
+	 *
+	 * ```js
+	 * const ws = await sandbox.connect(5173, '/hot');   // Vite HMR
+	 * ws.onmessage = (e) => console.log(e.data);
+	 * ws.send('ping');
+	 * ```
+	 *
+	 * The returned object is WebSocket-*shaped* (`send`, `close`, `readyState`,
+	 * `onopen`/`onmessage`/`onclose`/`onerror`, `addEventListener`) but is not a
+	 * real `WebSocket` — there is no socket, and no URL a browser could open. The
+	 * promise resolves once the in-VM server has completed its handshake, so a
+	 * message sent immediately afterwards is not dropped.
+	 *
+	 * Text frames arrive as strings; binary frames as `Uint8Array` (there is no
+	 * `binaryType` to switch, since nothing here is a Blob).
+	 *
+	 * Rejects if no server on `port` handles upgrades. Use `waitForPort` first if
+	 * the server is still starting.
+	 */
+	async connect(port: number, url = '/', options: SandboxConnectOptions = {}): Promise<VmWebSocket> {
+		if (this._destroyed) throw new Error('Sandbox is destroyed');
+		return connectVmWebSocket(this.kernel.portRegistry, port, url, options);
 	}
 
 	/**

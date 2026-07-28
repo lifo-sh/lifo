@@ -1,5 +1,58 @@
 # @lifo-sh/core
 
+## 0.9.0
+
+### Minor Changes
+
+- `sandbox.connect()` — WebSockets into the VM from the host, plus one shared ws pipe
+
+  Completes the host network API. `sandbox.fetch()` covered HTTP; this covers the other
+  half, so a test or a bench can drive an in-VM ws server (Vite/Metro HMR, supabase
+  realtime) the way app code does:
+
+  ```js
+  await sandbox.waitForPort(5173);
+  const ws = await sandbox.connect(5173, "/hot");
+  ws.onmessage = (e) => console.log(e.data);
+  ws.send("ping");
+  await ws.nextMessage(); // convenient in tests
+  ```
+
+  The promise resolves only after the server's handshake, so a `send()` straight after
+  `await` is safe. Text frames arrive as strings, binary as `Uint8Array`. It is
+  WebSocket-_shaped_, not a real `WebSocket` — there is no socket and no URL a browser
+  could open, so pretending harder would mislead.
+
+  **One ws pipe instead of two.** `kernel/network/ws-pipe.ts` now owns the socket
+  stand-in and the handshake/frame handling that `ServiceWorkerBridge` and
+  `WebSocketTunnel` each carried a copy of: forging the upgrade, splitting the 101
+  response from frame bytes that arrive in the same write, reassembling fragments, and
+  auto-ponging. `ServiceWorkerBridge` 454 → 260 lines, `WebSocketTunnel` 590 → 485.
+
+  The tunnel shares only the **socket**, not the frame loop — it forwards raw bytes and
+  lets the relay frame them, so a frame-level API would have meant re-framing bytes it
+  had just received unframed.
+
+  Also fixes two bugs found by testing against a real in-VM `ws` server:
+
+  - **`Buffer.writeUIntBE` was missing** from the node-compat shim. `ws` uses it for the
+    64-bit length header, so **every in-VM WebSocket message over ~64 KB threw**
+    (`target.writeUIntBE is not a function`) while smaller ones worked — affecting HMR
+    and realtime payloads generally, not just this API. `writeUIntLE`, `readUIntBE` and
+    `readUIntLE` were added with it.
+  - **A server greeting sent in the same write as the handshake could never reach an
+    event handler.** The caller only gets the socket after `await`, and `resolve()` costs
+    extra microtask ticks, so even a deferred emit ran first. Message events are buffered
+    until a handler exists and flushed when one is attached.
+
+  New exports: `openWsPipe`, `VirtualUpgradeSocket`, and the `VmWebSocket` /
+  `SandboxConnectOptions` types.
+
+### Patch Changes
+
+- Updated dependencies
+  - @lifo-sh/ui@0.9.0
+
 ## 0.8.2
 
 ### Patch Changes
