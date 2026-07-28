@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { Sandbox } from '../../src/sandbox/index.js';
+import { readSnapshotMetadata, SNAPSHOT_MANIFEST_ENTRY } from '../../src/kernel/vfs/snapshot.js';
 
 describe('Snapshot import/export', () => {
   let sandbox: Sandbox;
@@ -148,5 +149,83 @@ describe('Snapshot import/export', () => {
 
     const content = await sandbox.fs.readFile('/home/user/test.txt');
     expect(content).toBe('via sandbox');
+  });
+});
+
+describe('snapshot portability (one format everywhere)', () => {
+  // The point of the manifest: a snapshot carries session state, so the SAME file
+  // restores in the browser, in Node and through the CLI. Before it existed the
+  // CLI needed cwd/env and so invented a second, incompatible container.
+  it('carries cwd and env in the archive, and restores them', async () => {
+    const a = await Sandbox.create({ persist: false, env: { MY_VAR: 'set-in-box-a' } });
+    await a.fs.mkdir('/home/user/project', { recursive: true });
+    await a.fs.writeFile('/home/user/project/app.js', 'console.log(1)');
+    a.cwd = '/home/user/project';
+
+    const bytes = await a.exportSnapshot();
+
+    const b = await Sandbox.create({ persist: false });
+    expect(b.cwd).not.toBe('/home/user/project');
+
+    const manifest = await b.importSnapshot(bytes);
+    expect(manifest?.version).toBe(1);
+    expect(manifest?.cwd).toBe('/home/user/project');
+    expect(manifest?.env?.MY_VAR).toBe('set-in-box-a');
+
+    // Applied, not merely reported.
+    expect(b.cwd).toBe('/home/user/project');
+    expect(b.env.MY_VAR).toBe('set-in-box-a');
+    expect(await b.fs.readFile('/home/user/project/app.js')).toBe('console.log(1)');
+
+    a.destroy(); b.destroy();
+  });
+
+  it('readSnapshotMetadata reads the manifest without a VFS', async () => {
+    // The CLI needs mountPath BEFORE it has anywhere to restore into.
+    const a = await Sandbox.create({ persist: false });
+    const bytes = await a.exportSnapshot({ metadata: { mountPath: '/host/dir' } });
+    const manifest = await readSnapshotMetadata(bytes);
+    expect(manifest?.mountPath).toBe('/host/dir');
+    expect(manifest?.savedAt).toBeTruthy();
+    a.destroy();
+  });
+
+  it('the manifest is not restored as a file in the VFS', async () => {
+    const a = await Sandbox.create({ persist: false });
+    const bytes = await a.exportSnapshot();
+    const b = await Sandbox.create({ persist: false });
+    await b.importSnapshot(bytes);
+    // It would land at /lifo-snapshot.json, since importVfsSnapshot prefixes
+    // relative tar entries with '/'.
+    expect(await b.fs.exists('/lifo-snapshot.json')).toBe(false);
+    expect(await b.fs.exists('/' + SNAPSHOT_MANIFEST_ENTRY)).toBe(false);
+    a.destroy(); b.destroy();
+  });
+
+  it('a files-only archive still restores (pre-manifest snapshots keep working)', async () => {
+    const a = await Sandbox.create({ persist: false });
+    await a.fs.writeFile('/home/user/only-files.txt', 'hello');
+    const bytes = await a.exportSnapshot({ metadata: false });
+
+    expect(await readSnapshotMetadata(bytes)).toBeNull();
+
+    const b = await Sandbox.create({ persist: false });
+    const cwdBefore = b.cwd;
+    const manifest = await b.importSnapshot(bytes);
+    expect(manifest).toBeNull();
+    expect(b.cwd).toBe(cwdBefore);                       // nothing to apply
+    expect(await b.fs.readFile('/home/user/only-files.txt')).toBe('hello');
+    a.destroy(); b.destroy();
+  });
+
+  it('caller-supplied metadata merges with cwd/env rather than replacing them', async () => {
+    const a = await Sandbox.create({ persist: false });
+    const bytes = await a.exportSnapshot({ metadata: { mountPath: '/host/x', lifoVersion: 'test' } });
+    const manifest = await readSnapshotMetadata(bytes);
+    expect(manifest?.mountPath).toBe('/host/x');
+    expect(manifest?.lifoVersion).toBe('test');
+    expect(manifest?.cwd).toBeTruthy();     // still stamped automatically
+    expect(manifest?.env).toBeTruthy();
+    a.destroy();
   });
 });

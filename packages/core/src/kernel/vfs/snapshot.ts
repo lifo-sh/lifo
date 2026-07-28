@@ -12,9 +12,40 @@ const YIELD_EVERY = 200;
 const EMPTY = new Uint8Array(0);
 const yieldToEventLoop = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
 
+/**
+ * Reserved tar entry carrying session state alongside the files.
+ *
+ * Every VFS path starts with `/`, so a relative entry name cannot collide with a
+ * real file. It exists so ONE format serves every environment: before this, the
+ * CLI needed somewhere to keep `cwd`/`env`/`mountPath` and so invented a
+ * different container (a zip wrapping a JSON-serialized VFS), which meant a
+ * snapshot saved by the CLI could not be opened in the browser and vice versa.
+ */
+export const SNAPSHOT_MANIFEST_ENTRY = 'lifo-snapshot.json';
+
+/** Session state travelling with a snapshot. All fields optional but `version`. */
+export interface SnapshotMetadata {
+  version: 1;
+  /** ISO timestamp, stamped on export. */
+  savedAt: string;
+  /** Working directory to restore. */
+  cwd?: string;
+  /** Environment to restore. */
+  env?: Record<string, string>;
+  /** Host directory this box had mounted, so a restore can reuse it (CLI). */
+  mountPath?: string;
+  /** Version of @lifo-sh/core that wrote it, for diagnosing odd restores. */
+  lifoVersion?: string;
+}
+
 export interface VfsSnapshotOptions {
   /** Path segments to skip, e.g. `['node_modules', '.git']`. */
   exclude?: string[];
+  /**
+   * Session state to embed. Omit for a files-only snapshot — which is exactly
+   * what pre-manifest snapshots are, so they keep restoring unchanged.
+   */
+  metadata?: Omit<Partial<SnapshotMetadata>, 'version' | 'savedAt'>;
 }
 
 /**
@@ -43,6 +74,22 @@ export async function exportVfsSnapshot(vfs: VFS, opts: VfsSnapshotOptions = {})
   };
 
   await walk('/');
+
+  // Manifest last, so a reader streaming entries has already seen the files.
+  if (opts.metadata) {
+    const manifest: SnapshotMetadata = {
+      version: 1,
+      savedAt: new Date().toISOString(),
+      ...opts.metadata,
+    };
+    entries.push({
+      path: SNAPSHOT_MANIFEST_ENTRY,
+      data: new TextEncoder().encode(JSON.stringify(manifest, null, 2)),
+      type: 'file',
+      mode: 0o644,
+      mtime: Math.floor(Date.now() / 1000),
+    });
+  }
   const tar = createTar(entries);
   return compressGzip(tar);
 }
@@ -52,11 +99,27 @@ export async function exportVfsSnapshot(vfs: VFS, opts: VfsSnapshotOptions = {})
  * then files; skips writing a file over an existing directory so a restore can
  * never throw mid-way. Yields periodically to stay responsive.
  */
-export async function importVfsSnapshot(vfs: VFS, data: Uint8Array): Promise<void> {
+export async function importVfsSnapshot(vfs: VFS, data: Uint8Array): Promise<SnapshotMetadata | null> {
   const tar = await decompressGzip(data);
   const entries = parseTar(tar);
   const dirs = entries.filter((e) => e.type === 'directory');
-  const files = entries.filter((e) => e.type === 'file');
+
+  // The manifest is metadata, not a file to restore — without this it would be
+  // written into the VFS as /lifo-snapshot.json, since the loop below prefixes
+  // any relative entry with '/'.
+  let metadata: SnapshotMetadata | null = null;
+  const files = entries.filter((e) => {
+    if (e.type !== 'file') return false;
+    if (e.path === SNAPSHOT_MANIFEST_ENTRY || e.path === '/' + SNAPSHOT_MANIFEST_ENTRY) {
+      try {
+        metadata = JSON.parse(new TextDecoder().decode(e.data)) as SnapshotMetadata;
+      } catch {
+        // A corrupt manifest must not cost you the files.
+      }
+      return false;
+    }
+    return true;
+  });
 
   for (const entry of dirs) {
     const path = entry.path.startsWith('/') ? entry.path : '/' + entry.path;
@@ -72,4 +135,27 @@ export async function importVfsSnapshot(vfs: VFS, data: Uint8Array): Promise<voi
     vfs.writeFile(path, entry.data);
     if (++count % YIELD_EVERY === 0) await yieldToEventLoop();
   }
+
+  return metadata;
+}
+
+/**
+ * Read just the manifest from a snapshot archive, without touching a VFS.
+ *
+ * A restorer often has to make decisions BEFORE it has somewhere to restore into
+ * — the CLI picks which host directory to mount based on `mountPath` — so the
+ * metadata has to be readable on its own.
+ */
+export async function readSnapshotMetadata(data: Uint8Array): Promise<SnapshotMetadata | null> {
+  const tar = await decompressGzip(data);
+  for (const entry of parseTar(tar)) {
+    if (entry.path === SNAPSHOT_MANIFEST_ENTRY || entry.path === '/' + SNAPSHOT_MANIFEST_ENTRY) {
+      try {
+        return JSON.parse(new TextDecoder().decode(entry.data)) as SnapshotMetadata;
+      } catch {
+        return null;
+      }
+    }
+  }
+  return null;
 }

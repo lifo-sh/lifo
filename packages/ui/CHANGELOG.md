@@ -1,5 +1,72 @@
 # @lifo-sh/ui
 
+## 0.10.0
+
+### Minor Changes
+
+- Publish in-VM ports on the host, one portable snapshot format, and two CLI fixes
+
+  **`exposePort()` / `lifo --expose`** — bind a real host port to a server inside the
+  box. A box's ports are entries in a map, so nothing outside the process could reach
+  them; in the browser that's what the service worker or blob preview is for, but on a
+  host with real sockets neither is needed.
+
+  ```bash
+  lifo --expose 3000            # in-VM 3000 → http://127.0.0.1:3000
+  lifo --expose 3000:5000       # in-VM 3000 → http://127.0.0.1:5000
+  lifo --detach --expose 5173   # background sessions too
+  ```
+
+  Forwards HTTP through the shared dispatcher and WebSockets at the byte level (the
+  client's socket goes to the in-VM server, which does its own handshake — so HMR
+  works and nothing between has to parse a frame). Loopback-only by default, since a
+  box runs project code. Binding doesn't require the server to exist yet: requests get
+  `404` + `x-lifo: no-server` until it's live, which reads better than a refused
+  connection while a dev server boots. `node:http` is injected rather than imported,
+  as `NativeFsProvider` does with `fs`, so the browser bundle is unaffected.
+
+  This is **not** `tunnel`: the in-shell `tunnel` shares a port PUBLICLY via the
+  `tunnel.lifo.sh` relay, while `--expose` binds a local socket with no relay and no
+  network. They compose — expose locally, then `lifo tunnel <hostPort>`.
+
+  **One snapshot format everywhere.** There were two: core wrote a `.tar.gz` of files
+  while the CLI wrote a zip wrapping a JSON-serialized VFS — because the tar had
+  nowhere to keep `cwd`/`env`/`mountPath`. So a snapshot saved by the CLI could not be
+  opened in the browser, and vice versa, which is a strange gap for a project whose
+  point is running the same VM everywhere.
+
+  Snapshots now carry a `lifo-snapshot.json` manifest beside the files (VFS paths all
+  start with `/`, so a relative entry can't collide, and it's never restored as a
+  file). `sandbox.exportSnapshot()` embeds `cwd` + `env` automatically;
+  `importSnapshot()` applies them and returns the manifest. `readSnapshotMetadata()`
+  reads it without a VFS, for decisions that come before you have anywhere to restore
+  into. `{ metadata: false }` gives a files-only archive — which is also exactly how
+  pre-manifest snapshots behave, so old `.tar.gz` files keep restoring.
+
+  The CLI now emits and reads that archive (built by the daemon, which owns the
+  filesystem). **The zip format is gone**; a zip written by lifo ≤ 0.9.0 is rejected
+  with a clear message rather than half-working, and `adm-zip` is no longer a
+  dependency.
+
+  **Two pre-existing CLI bugs**, found because `--expose` couldn't be demonstrated
+  without fixing them:
+
+  - **`lifo --detach` / `lifo new` crashed on startup.** `new Shell(...)` was called
+    with 4 arguments but needs 5 — `processRegistry` was missing, so `shell.start()`
+    threw `Cannot read properties of undefined (reading 'spawn')`. Confirmed identical
+    without any new flag.
+  - **`ps` / `top` / `kill` threw** `processRegistry.getAll is not a function`: the CLI
+    passed `shell.getJobTable()` where a `ProcessRegistry` was expected.
+
+  Both are the same class of stale wiring the failing `shell.test.ts` /
+  `system-extra.test.ts` suites point at (lifo#69). `Sandbox.create` had it right; the
+  CLI wasn't updated when the signature changed.
+
+### Patch Changes
+
+- Updated dependencies
+  - @lifo-sh/core@0.10.0
+
 ## 0.9.0
 
 ### Minor Changes

@@ -29,6 +29,7 @@ import { SandboxFsImpl } from './SandboxFs.js';
 import { SandboxCommandsImpl } from './SandboxCommands.js';
 import { HeadlessTerminal } from './HeadlessTerminal.js';
 import { dispatchRequest, waitForPort } from '../kernel/network/dispatch.js';
+import type { SnapshotMetadata } from '../kernel/vfs/snapshot.js';
 import { connectVmWebSocket } from './vm-websocket.js';
 import type { SandboxConnectOptions, VmWebSocket } from './vm-websocket.js';
 
@@ -410,18 +411,41 @@ export class Sandbox {
 	}
 
 	/**
-	 * Export the VFS as a tar.gz snapshot. Pass `{ exclude: ['node_modules'] }`
+	 * Export the box as a `tar.gz` snapshot. Pass `{ exclude: ['node_modules'] }`
 	 * to skip subtrees (smaller snapshot; restore then needs a reinstall).
+	 *
+	 * The archive carries the working directory and environment in a
+	 * `lifo-snapshot.json` manifest beside the files, so the SAME file restores in
+	 * the browser, in Node and through the CLI. Pass `{ metadata: false }` for a
+	 * files-only archive.
 	 */
-	async exportSnapshot(options?: SnapshotOptions): Promise<Uint8Array> {
-		return this.fs.exportSnapshot(options);
+	async exportSnapshot(options: SnapshotOptions = {}): Promise<Uint8Array> {
+		const { metadata, ...rest } = options;
+		return this.fs.exportSnapshot({
+			...rest,
+			metadata: metadata === false
+				? undefined
+				: { cwd: this.cwd, env: this.env, ...(typeof metadata === 'object' ? metadata : {}) },
+		});
 	}
 
 	/**
-	 * Restore VFS from a tar.gz snapshot.
+	 * Restore the box from a `tar.gz` snapshot.
+	 *
+	 * Files are always restored. `cwd` and `env` are applied when the archive
+	 * carries a manifest — a files-only archive (anything written before manifests
+	 * existed) restores exactly as it used to. Returns the manifest, or `null`.
 	 */
-	async importSnapshot(data: Uint8Array): Promise<void> {
-		return this.fs.importSnapshot(data);
+	async importSnapshot(data: Uint8Array): Promise<SnapshotMetadata | null> {
+		if (this._destroyed) throw new Error('Sandbox is destroyed');
+		const metadata = await this.fs.importSnapshot(data);
+		if (metadata?.env) {
+			for (const [key, value] of Object.entries(metadata.env)) this.env[key] = value;
+		}
+		if (metadata?.cwd && this.kernel.vfs.exists(metadata.cwd)) {
+			this.shell.setCwd(metadata.cwd);
+		}
+		return metadata;
 	}
 
 	/**
