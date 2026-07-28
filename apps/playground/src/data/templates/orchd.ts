@@ -11,22 +11,26 @@ export function orchdProjectFiles(dir: string): Record<string, string> {
         name: 'demo',
         workloads: [
           {
-            name: 'mobile',
-            kind: 'node',
-            dir: '.',
-            install: ['npm', 'install'],
-            run: ['npx', 'expo', 'start', '--web', '--port', '$PORT'],
-            profiles: {
-              lifo: { run: ['browser-metro', '.', '--port', '$PORT'] },
-            },
-          },
-          {
             name: 'api',
             kind: 'node',
             dir: 'api',
-            install: ['npm', 'install'],
+            port: 3000,
             run: ['node', 'index.js'],
             port_env: 'PORT',
+          },
+          {
+            name: 'mobile',
+            kind: 'node',
+            dir: '.',
+            port: 8081,
+            install: ['npm', 'install'],
+            run: ['npx', 'expo', 'start', '--web', '--port', '$PORT'],
+            // The app learns where the api landed by NAME — on a host that is a
+            // subdomain, in a box it is a port on localhost.
+            env: { EXPO_PUBLIC_API_URL: '${url:api}' },
+            profiles: {
+              lifo: { run: ['browser-metro', '.', '--port', '$PORT'] },
+            },
           },
         ],
       },

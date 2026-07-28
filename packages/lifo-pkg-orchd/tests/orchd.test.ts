@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { VFS } from '@lifo-sh/core';
 import type { CommandContext, CommandOutputStream } from '@lifo-sh/core';
-import orchd, { applyProfile, expandArgv, resolveWorkload } from '../src/index.js';
+import orchd, { applyProfile, assignPorts, expandArgv, resolveAll, resolveWorkload } from '../src/index.js';
 
 const MANIFEST = {
   name: 'rapidnative',
@@ -48,6 +48,35 @@ function ctxFor(args: string[], opts: { cwd?: string; files?: Record<string, str
   } as unknown as CommandContext & { stdout: { text: string }; stderr: { text: string } };
   return { ctx, calls, vfs };
 }
+
+describe('cross-workload wiring', () => {
+  const WIRED = {
+    workloads: [
+      { name: 'db', kind: 'tinbase', port: 5432, run: ['tinbase', 'start', '--port', '$PORT'] },
+      {
+        name: 'app', kind: 'node', dir: 'app', run: ['vite', '--port', '$PORT'],
+        env: { API_URL: '${url:db}', DB_PORT: '${port:db}' },
+      },
+    ],
+  };
+
+  it('assigns declared ports first, then fills from the base', () => {
+    expect(assignPorts(WIRED.workloads, 8080)).toEqual({ db: 5432, app: 8080 });
+  });
+
+  it('never reuses a declared port when filling', () => {
+    const wls = [{ name: 'a', port: 8080 }, { name: 'b' }, { name: 'c' }];
+    expect(assignPorts(wls, 8080)).toEqual({ a: 8080, b: 8081, c: 8082 });
+  });
+
+  it('resolves ${url:x} and ${port:x} to a sibling\'s assigned port', () => {
+    const all = resolveAll(WIRED, { configDir: '/p', portBase: 8080 });
+    const app = all.find((r) => r.workload.name === 'app')!;
+    expect(app.env.API_URL).toBe('http://localhost:5432');
+    expect(app.env.DB_PORT).toBe('5432');
+    expect(app.argv).toEqual(['vite', '--port', '8080']);
+  });
+});
 
 describe('resolution', () => {
   it('merges a profile over the base workload', () => {
@@ -106,39 +135,40 @@ describe('command', () => {
   it('resolve prints the command line without running anything', async () => {
     const { ctx, calls } = ctxFor(['resolve', '--workload', 'mobile', '--port', '8081']);
     expect(await orchd(ctx)).toBe(0);
-    expect(ctx.stdout.text.trim()).toBe('browser-metro --port 8081');
+    // env travels with the line as prefix assignments — executeCapture has no env option
+    expect(ctx.stdout.text.trim()).toBe('CI=1 BROWSER=none browser-metro --port 8081');
     expect(calls).toHaveLength(0);
   });
 
   it('honours --profile', async () => {
     const { ctx } = ctxFor(['resolve', '--workload', 'mobile', '--port', '8081', '--profile', 'docker']);
     expect(await orchd(ctx)).toBe(0);
-    expect(ctx.stdout.text.trim()).toBe("npx expo start --web --port 8081");
+    expect(ctx.stdout.text.trim()).toBe('CI=1 npx expo start --web --port 8081');
   });
 
   it('takes the port from $PORT when not passed', async () => {
     const { ctx } = ctxFor(['resolve', '--workload', 'mobile']);
     ctx.env.PORT = '7777';
     expect(await orchd(ctx)).toBe(0);
-    expect(ctx.stdout.text.trim()).toBe('browser-metro --port 7777');
+    expect(ctx.stdout.text.trim()).toBe('CI=1 BROWSER=none browser-metro --port 7777');
   });
 
   it('run executes in the workload directory', async () => {
     const { ctx, calls } = ctxFor(['run', '--workload', 'mobile', '--port', '8081', '--no-install']);
     expect(await orchd(ctx)).toBe(0);
-    expect(calls.at(-1)).toEqual({ input: 'browser-metro --port 8081', cwd: '/proj/mobile' });
+    expect(calls.at(-1)).toEqual({ input: 'CI=1 BROWSER=none browser-metro --port 8081', cwd: '/proj/mobile' });
   });
 
   it('installs first when node_modules is missing', async () => {
     const { ctx, calls } = ctxFor(['run', '--workload', 'api', '--port', '9000']);
     expect(await orchd(ctx)).toBe(0);
-    expect(calls.map((c) => c.input)).toEqual(['npm install', 'node --watch index.js']);
+    expect(calls.map((c) => c.input)).toEqual(['npm install', 'PORT=9000 node --watch index.js']);
   });
 
   it('skips install with --no-install', async () => {
     const { ctx, calls } = ctxFor(['run', '--workload', 'api', '--port', '9000', '--no-install']);
     expect(await orchd(ctx)).toBe(0);
-    expect(calls.map((c) => c.input)).toEqual(['node --watch index.js']);
+    expect(calls.map((c) => c.input)).toEqual(['PORT=9000 node --watch index.js']);
   });
 
   it('falls back to /orchd.json when the cwd has none', async () => {
@@ -146,7 +176,7 @@ describe('command', () => {
       cwd: '/somewhere', files: { '/orchd.json': JSON.stringify(MANIFEST) },
     });
     expect(await orchd(ctx)).toBe(0);
-    expect(ctx.stdout.text.trim()).toBe('browser-metro --port 1');
+    expect(ctx.stdout.text.trim()).toBe('CI=1 BROWSER=none browser-metro --port 1');
   });
 
   it('errors clearly when no manifest exists', async () => {
@@ -181,6 +211,41 @@ describe('command', () => {
       env: { CI: '1', BROWSER: 'none' },
       install: ['npm', 'install'],
     });
+  });
+
+  it('resolve --all assigns a port per workload from the base', async () => {
+    const { ctx } = ctxFor(['resolve', '--all', '--port-base', '8080']);
+    expect(await orchd(ctx)).toBe(0);
+    const lines = ctx.stdout.text.trim().split('\n');
+    expect(lines).toHaveLength(3);
+    expect(lines[0]).toContain('db');
+    expect(lines[1]).toContain('PORT=8081');          // api, via port_env
+    expect(lines[2]).toContain('--port 8082');         // mobile, via $PORT
+  });
+
+  it('resolve --all --json emits the whole plan', async () => {
+    const { ctx } = ctxFor(['resolve', '--all', '--json']);
+    expect(await orchd(ctx)).toBe(0);
+    const plan = JSON.parse(ctx.stdout.text);
+    expect(plan.map((p: { workload: string }) => p.workload)).toEqual(['db', 'api', 'mobile']);
+    expect(plan[2].cwd).toBe('/proj/mobile');
+  });
+
+  it('up starts every workload as a background job', async () => {
+    const { ctx, calls } = ctxFor(['up', '--no-install', '--port-base', '9000', '--settle', '0']);
+    expect(await orchd(ctx)).toBe(0);
+    const launches = calls.filter((c) => c.input.endsWith(' &'));
+    expect(launches).toHaveLength(3);
+    // Each job cds itself: a {cwd} option does not survive backgrounding,
+    // because the job resolves paths when it starts — after the restore.
+    expect(launches[2].input).toBe('cd /proj/mobile && CI=1 BROWSER=none browser-metro --port 9002 &');
+    expect(ctx.stdout.text).toContain('3 workload(s) started');
+  });
+
+  it('up returns the shell to where it started', async () => {
+    const { ctx, calls } = ctxFor(['up', '--no-install', '--settle', '0']);
+    expect(await orchd(ctx)).toBe(0);
+    expect(calls.at(-1)!.input).toBe('cd /proj');
   });
 
   it('quotes arguments that need it', async () => {

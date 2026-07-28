@@ -29,6 +29,8 @@ export interface OrchdWorkload {
   run?: string[];
   env?: Record<string, string>;
   port_env?: string;
+  /** Preferred port. Without one, `up` assigns from --port-base by position. */
+  port?: number;
   profiles?: Record<string, Partial<OrchdWorkload>>;
 }
 
@@ -43,13 +45,18 @@ Usage:
   orchd list                            list workloads in the manifest
   orchd resolve [options]               print the resolved command line
   orchd run [options]                   resolve, then run it
+  orchd up [options]                    start every workload, each on its own port
 
 Options:
   -w, --workload <name>   workload to act on (default: the only one, if unambiguous)
   -p, --port <n>          port to bind; substituted for $PORT (default: $PORT env)
       --profile <name>    profile to merge (default: ${DEFAULT_PROFILE})
   -c, --config <path>     manifest path (default: ./orchd.json, then /orchd.json)
+      --all               (resolve) the whole project, not one workload
       --json              (resolve) emit {cwd, argv, env, install} instead of a line
+      --port-base <n>     (up/--all) first port to assign (default: 8080)
+      --settle <ms>       (up) pause before moving the shell to the next
+                          workload's directory (default: 500)
       --no-install        skip the install step even if node_modules is missing
   -h, --help              show this help
 `;
@@ -90,14 +97,50 @@ export function applyProfile(wl: OrchdWorkload, profile: string): OrchdWorkload 
   };
 }
 
-/** Substitute $PORT / ${PORT} (and any other provided var) in an argv. */
+/**
+ * Substitute $PORT / ${PORT}, and the cross-workload forms ${port:<name>} and
+ * ${url:<name>} — which is how one workload learns where another is listening.
+ * On a host those are subdomains; in a box everything shares localhost, so the
+ * manifest refers to siblings by name and the port is filled in here.
+ */
+export function expandVars(value: string, vars: Record<string, string>): string {
+  return value.replace(/\$\{([\w:]+)\}|\$(\w+)/g, (m, braced, bare) => {
+    const key = braced ?? bare;
+    return key in vars ? vars[key] : m;
+  });
+}
+
 export function expandArgv(argv: string[], vars: Record<string, string>): string[] {
-  return argv.map((a) =>
-    a.replace(/\$\{(\w+)\}|\$(\w+)/g, (m, braced, bare) => {
-      const key = braced ?? bare;
-      return key in vars ? vars[key] : m;
-    }),
-  );
+  return argv.map((a) => expandVars(a, vars));
+}
+
+/** Assign a port to every workload: its declared one, else counting from base. */
+export function assignPorts(workloads: OrchdWorkload[], base: number): Record<string, number> {
+  const ports: Record<string, number> = {};
+  const taken = new Set<number>();
+  for (const w of workloads) {
+    if (typeof w.port === 'number') { ports[w.name] = w.port; taken.add(w.port); }
+  }
+  let next = base;
+  for (const w of workloads) {
+    if (ports[w.name] !== undefined) continue;
+    while (taken.has(next)) next++;
+    ports[w.name] = next;
+    taken.add(next);
+    next++;
+  }
+  return ports;
+}
+
+/** The variables visible to one workload: its own $PORT plus every sibling. */
+function varsFor(name: string, ports: Record<string, number>): Record<string, string> {
+  const vars: Record<string, string> = {};
+  for (const [n, p] of Object.entries(ports)) {
+    vars[`port:${n}`] = String(p);
+    vars[`url:${n}`] = `http://localhost:${p}`;
+  }
+  if (ports[name] !== undefined) vars.PORT = String(ports[name]);
+  return vars;
 }
 
 export interface Resolved {
@@ -111,7 +154,11 @@ export interface Resolved {
 /** Resolve a manifest + selection into everything needed to run. */
 export function resolveWorkload(
   man: OrchdManifest,
-  opts: { workload?: string; profile?: string; port?: string; configDir: string },
+  opts: {
+    workload?: string; profile?: string; port?: string; configDir: string;
+    /** Extra substitutions, e.g. the ${port:<name>} map built by resolveAll. */
+    vars?: Record<string, string>;
+  },
 ): Resolved {
   const workloads = man.workloads ?? [];
   if (workloads.length === 0) throw new Error('manifest has no workloads');
@@ -137,13 +184,15 @@ export function resolveWorkload(
     throw new Error(`workload "${merged.name}" has no run command for this profile`);
   }
 
-  const vars: Record<string, string> = {};
+  const vars: Record<string, string> = { ...(opts.vars ?? {}) };
   if (opts.port) vars.PORT = opts.port;
 
-  const env: Record<string, string> = { ...(merged.env ?? {}) };
+  const env: Record<string, string> = {};
+  for (const [k, v] of Object.entries(merged.env ?? {})) env[k] = expandVars(v, vars);
   // port_env lets a workload receive its port as an env var (e.g. PORT=8081)
   // rather than an argv flag — both styles appear in real manifests.
-  if (opts.port && merged.port_env) env[merged.port_env] = opts.port;
+  const port = opts.port ?? vars.PORT;
+  if (port && merged.port_env) env[merged.port_env] = port;
 
   return {
     workload: merged,
@@ -154,11 +203,40 @@ export function resolveWorkload(
   };
 }
 
+/**
+ * Resolve every workload in the manifest, with ports assigned up front so each
+ * one can be told where the others are.
+ */
+export function resolveAll(
+  man: OrchdManifest,
+  opts: { profile?: string; portBase?: number; configDir: string },
+): Resolved[] {
+  const workloads = man.workloads ?? [];
+  if (workloads.length === 0) throw new Error('manifest has no workloads');
+  const ports = assignPorts(workloads, opts.portBase ?? 8080);
+  return workloads.map((w) =>
+    resolveWorkload(man, {
+      workload: w.name,
+      profile: opts.profile,
+      port: String(ports[w.name]),
+      configDir: opts.configDir,
+      vars: varsFor(w.name, ports),
+    }),
+  );
+}
+
+/** Render a resolved workload as a shell line, env assignments included. */
+export function shellLine(r: Resolved): string {
+  const assigns = Object.entries(r.env).map(([k, v]) => `${k}=${shellQuote(v)}`);
+  return [...assigns, ...r.argv.map(shellQuote)].join(' ');
+}
+
 function parseArgs(args: string[]) {
   const out: {
     cmd?: string; workload?: string; port?: string; profile?: string;
     config?: string; install: boolean; help: boolean; json: boolean;
-  } = { install: true, help: false, json: false };
+    all: boolean; portBase?: number; settle?: number;
+  } = { install: true, help: false, json: false, all: false };
 
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
@@ -169,6 +247,9 @@ function parseArgs(args: string[]) {
       case '--profile': out.profile = args[++i]; break;
       case '-c': case '--config': out.config = args[++i]; break;
       case '--json': out.json = true; break;
+      case '--all': out.all = true; break;
+      case '--port-base': out.portBase = Number(args[++i]); break;
+      case '--settle': out.settle = Number(args[++i]); break;
       case '--no-install': out.install = false; break;
       default:
         if (a.startsWith('-')) throw new Error(`unknown option: ${a}`);
@@ -226,6 +307,95 @@ const orchd: Command = async (ctx: CommandContext): Promise<number> => {
     return 0;
   }
 
+  if (opts.cmd === 'up' || (opts.cmd === 'resolve' && opts.all)) {
+    let all: Resolved[];
+    try {
+      all = resolveAll(man, {
+        profile: opts.profile,
+        portBase: opts.portBase,
+        configDir: dirOf(manifestPath),
+      });
+    } catch (e) {
+      ctx.stderr.write(`orchd: ${(e as Error).message}\n`);
+      return 1;
+    }
+
+    if (opts.cmd === 'resolve') {
+      if (opts.json) {
+        ctx.stdout.write(JSON.stringify(all.map((r) => ({
+          workload: r.workload.name,
+          cwd: r.cwd,
+          argv: r.argv,
+          env: r.env,
+          install: r.install ?? null,
+        }))) + '\n');
+      } else {
+        for (const r of all) ctx.stdout.write(`${r.workload.name}\t${shellLine(r)}\n`);
+      }
+      return 0;
+    }
+
+    // up: start everything at once. Each workload keeps its own cwd and env.
+    if (!ctx.executeCapture) {
+      ctx.stderr.write(
+        'orchd: this shell cannot run nested commands; use `orchd resolve --all` and run the lines\n',
+      );
+      return 1;
+    }
+
+    for (const r of all) {
+      const needs = opts.install && r.install && !ctx.vfs.exists(joinPath(r.cwd, 'node_modules'));
+      if (!needs) continue;
+      const installLine = r.install!.map(shellQuote).join(' ');
+      ctx.stdout.write(`orchd: ${r.workload.name}: installing (${installLine})\n`);
+      try {
+        await ctx.executeCapture(installLine, { cwd: r.cwd });
+      } catch (e) {
+        ctx.stderr.write(`orchd: ${r.workload.name}: install failed: ${(e as Error).message}\n`);
+        return 1;
+      }
+    }
+
+    // Start each workload as a BACKGROUND job. A shell runs one foreground
+    // command at a time and a dev server never exits, so foregrounding would
+    // boot only the first workload. Backgrounding also returns you to the
+    // prompt with everything running (`jobs` lists them).
+    //
+    // The `cd` matters: passing executeCapture a {cwd} does not survive
+    // backgrounding, because the job resolves its paths when it STARTS, by
+    // which time the capture has already restored the previous directory — the
+    // job then fails with ENOENT. For the same reason we let a job settle
+    // before the next `cd` moves the shell out from under it.
+    const settle = opts.settle ?? 500;
+    let prevCwd: string | null = null;
+    for (let i = 0; i < all.length; i++) {
+      const r = all[i];
+      const line = shellLine(r);
+      ctx.stdout.write(`orchd: ${r.workload.name} -> ${line} (cwd ${r.cwd})\n`);
+      try {
+        await ctx.executeCapture(`cd ${shellQuote(r.cwd)} && ${line} &`);
+      } catch (e) {
+        ctx.stderr.write(`orchd: ${r.workload.name}: ${(e as Error).message}\n`);
+        return 1;
+      }
+      // Only pay the settle delay when the next job would move the shell.
+      const nextCwd = all[i + 1]?.cwd;
+      if (nextCwd !== undefined && nextCwd !== r.cwd && settle > 0) {
+        await new Promise((res) => setTimeout(res, settle));
+      }
+      prevCwd = r.cwd;
+    }
+    // Leave the shell where it started rather than inside the last workload.
+    if (prevCwd !== null && prevCwd !== ctx.cwd) {
+      if (settle > 0) await new Promise((res) => setTimeout(res, settle));
+      try {
+        await ctx.executeCapture(`cd ${shellQuote(ctx.cwd)}`);
+      } catch { /* cosmetic only */ }
+    }
+    ctx.stdout.write(`orchd: ${all.length} workload(s) started; \`jobs\` to list them\n`);
+    return 0;
+  }
+
   if (opts.cmd !== 'resolve' && opts.cmd !== 'run') {
     ctx.stderr.write(`orchd: unknown command "${opts.cmd}"\n\n${USAGE}`);
     return 2;
@@ -244,7 +414,7 @@ const orchd: Command = async (ctx: CommandContext): Promise<number> => {
     return 1;
   }
 
-  const line = r.argv.map(shellQuote).join(' ');
+  const line = shellLine(r);
 
   if (opts.cmd === 'resolve') {
     // --json is the machine interface: a host driver needs the working
