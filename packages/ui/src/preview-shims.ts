@@ -14,7 +14,7 @@
  *
  * ```ts
  * // everything (what mountNoSwPreview uses)
- * buildPreviewShim({ port: 8081, hostPort: location.port })
+ * buildPreviewShim({ port: 8081, hostOrigin: location.origin })
  *
  * // just HTTP — no ws, no asset interception
  * buildPreviewShim({ port: 3000, include: ['fetch', 'xhr'] })
@@ -44,10 +44,13 @@ export interface PreviewShimOptions {
   /** In-VM port backing the preview document; the default for relative URLs. */
   port: number;
   /**
-   * Port of the EMBEDDING page, excluded from in-VM routing. In local dev the
-   * embedder is on loopback too, and its port is not an in-VM port.
+   * Origin of the EMBEDDING page — pass `location.origin` from the parent
+   * document. Needed both to recognise the embedder's own assets (they must
+   * reach the real network) and to accept a `/_sw/<port>/` prefix on its origin
+   * as ours to route. It cannot be read inside the preview: a `blob:` document
+   * reports `location.host` as the empty string.
    */
-  hostPort?: string | number;
+  hostOrigin?: string;
   /** Which patches to install. Defaults to all of them. */
   include?: ShimName[];
   /** How a request leaves the document. Defaults to `postMessage` to the parent. */
@@ -59,9 +62,9 @@ export interface PreviewShimOptions {
  * and `resolveTarget` (inlined from the real `resolveVmTarget` so the sandboxed
  * copy and the unit-tested copy cannot drift).
  */
-function runtime(port: number, hostPort: string): string {
+function runtime(port: number, hostOrigin: string): string {
   return `
-  var PORT=${port}, HOST_PORT=${JSON.stringify(hostPort)};
+  var PORT=${port}, HOST_ORIGIN=${JSON.stringify(hostOrigin)};
   var parentWin=window.parent, seq=0, pending=new Map(), wsConns=new Map();
   function b64enc(u8){var s='';for(var i=0;i<u8.length;i++)s+=String.fromCharCode(u8[i]);return btoa(s);}
   function b64dec(b){var s=atob(b),u=new Uint8Array(s.length);for(var i=0;i<s.length;i++)u[i]=s.charCodeAt(i);return u;}
@@ -75,7 +78,7 @@ function runtime(port: number, hostPort: string): string {
   });
   // Inlined verbatim from vm-routing.ts — same function, here and in its tests.
   var resolveVmTarget=${resolveVmTarget.toString()};
-  function resolveTarget(u){ return resolveVmTarget(u,PORT,HOST_PORT,location.host||''); }
+  function resolveTarget(u){ return resolveVmTarget(u,PORT,HOST_ORIGIN); }
   // "Does this go to the VM?" — for patches that re-enter through window.fetch,
   // which resolves the port itself.
   function tunnelable(u){ return resolveTarget(u)!==null; }
@@ -253,7 +256,7 @@ const FRAGMENTS: Record<ShimName, () => string> = {
  * so including them without `fetch` would leave them hitting the real network.
  */
 export function buildPreviewShim(options: PreviewShimOptions): string {
-  const { port, hostPort = '', include = ALL_SHIMS, transport = 'postMessage' } = options;
+  const { port, hostOrigin = '', include = ALL_SHIMS, transport = 'postMessage' } = options;
   if (transport !== 'postMessage') throw new Error(`preview shim: unsupported transport "${transport}"`);
 
   const wanted = ALL_SHIMS.filter((name) => include.includes(name));
@@ -263,5 +266,5 @@ export function buildPreviewShim(options: PreviewShimOptions): string {
   }
 
   const body = wanted.map((name) => FRAGMENTS[name]()).join('\n');
-  return `(function(){${runtime(port, String(hostPort || ''))}\n${body}\n})();`;
+  return `(function(){${runtime(port, String(hostOrigin || ''))}\n${body}\n})();`;
 }

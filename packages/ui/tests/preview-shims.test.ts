@@ -19,7 +19,7 @@ function parses(src: string): boolean {
 
 describe('buildPreviewShim', () => {
   it('produces valid JavaScript with every patch', () => {
-    const src = buildPreviewShim({ port: 8081, hostPort: '5173' });
+    const src = buildPreviewShim({ port: 8081, hostOrigin: 'http://localhost:5173' });
     expect(parses(src)).toBe(true);
     expect(src).toContain('window.fetch=');
     expect(src).toContain('window.XMLHttpRequest=');
@@ -62,10 +62,12 @@ describe('buildPreviewShim', () => {
     expect(src).toContain(resolveVmTarget.toString());
   });
 
-  it('bakes in the port and the excluded host port', () => {
-    const src = buildPreviewShim({ port: 8081, hostPort: 5173 });
+  it('bakes in the preview port and the embedder origin', () => {
+    // The embedder origin must be baked in by the parent: a blob: document
+    // reports location.host as the empty string, so it cannot be read inside.
+    const src = buildPreviewShim({ port: 8081, hostOrigin: 'https://lifo.sh' });
     expect(src).toContain('var PORT=8081');
-    expect(src).toContain('HOST_PORT="5173"');
+    expect(src).toContain('HOST_ORIGIN="https://lifo.sh"');
   });
 
   // The asset patches call window.fetch, so shipping them without the fetch
@@ -85,6 +87,6 @@ describe('buildPreviewShim', () => {
   });
 
   it('shimScript stays a thin wrapper (back-compat)', () => {
-    expect(shimScript(8081, '5173')).toBe(buildPreviewShim({ port: 8081, hostPort: '5173' }));
+    expect(shimScript(8081, 'http://localhost:5173')).toBe(buildPreviewShim({ port: 8081, hostOrigin: 'http://localhost:5173' }));
   });
 });

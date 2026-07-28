@@ -127,10 +127,10 @@ const bridge = new ServiceWorkerBridge(sb.kernel.portRegistry);
 bridge.attach(adapter);
 
 const PREVIEW_PORT = 8081; // where Metro would be — deliberately NOT tinbase
-const HOST_PORT = '5173'; // the embedding page, excluded from in-VM routing
+const HOST_ORIGIN = 'http://localhost:5173'; // the embedding page, excluded from in-VM routing
 
 // The exact function the shim inlines into the iframe, imported directly.
-const resolveTarget = (url) => resolveVmTarget(url, PREVIEW_PORT, HOST_PORT, '');
+const resolveTarget = (url) => resolveVmTarget(url, PREVIEW_PORT, HOST_ORIGIN);
 
 let seq = 0;
 async function shimFetch(url, { method = 'GET', headers = {}, body } = {}) {

@@ -44,8 +44,8 @@ async function vmFetch(kernel: Kernel, port: number, url: string, timeoutMs = 12
  * import `buildPreviewShim` directly to take a subset (e.g. HTTP only) in
  * another embedder.
  */
-export function shimScript(port: number, hostPort = ''): string {
-  return buildPreviewShim({ port, hostPort });
+export function shimScript(port: number, hostOrigin = ''): string {
+  return buildPreviewShim({ port, hostOrigin });
 }
 
 /**
@@ -167,9 +167,11 @@ export async function mountNoSwPreview(
   }
 
   // Inject router shim + transport shim before the bundle.
-  // The embedding page's port is excluded from in-VM routing (see resolveTarget).
-  const hostPort = typeof location !== 'undefined' ? location.port : '';
-  html = html.replace(/<head(\s[^>]*)?>/i, (h) => `${h}\n<script>${routerShim(bundleBlob, realBundlePath)}</script>\n<script>${shimScript(port, hostPort)}</script>`);
+  // Captured HERE, in the parent document: inside the blob preview
+  // `location.host` is the empty string, so the embedder's origin has to be
+  // baked in (see resolveVmTarget).
+  const hostOrigin = typeof location !== 'undefined' ? location.origin : '';
+  html = html.replace(/<head(\s[^>]*)?>/i, (h) => `${h}\n<script>${routerShim(bundleBlob, realBundlePath)}</script>\n<script>${shimScript(port, hostOrigin)}</script>`);
 
   // Serve the HTML as a blob.
   const hashPath = path && path !== '/' ? '#' + path.replace(/^\//, '') : '';

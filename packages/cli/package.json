@@ -1,6 +1,6 @@
 {
   "name": "lifo-sh",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "description": "Run Lifo (a Linux-like OS) in your terminal -- npx lifo-sh",
   "license": "MIT",
   "repository": {

@@ -9,8 +9,10 @@ import { resolveVmTarget } from '../src/vm-routing.js';
  * so testing it here tests what actually runs in the sandboxed document.
  */
 const PREVIEW = 8081;
-const resolve = (url: unknown, hostPort = '', locationHost = '') =>
-  resolveVmTarget(url, PREVIEW, hostPort, locationHost);
+/** `hostOrigin` is the EMBEDDING page's origin, captured in the parent document. */
+const resolve = (url: unknown, hostOrigin = '') => resolveVmTarget(url, PREVIEW, hostOrigin);
+const DEV = 'http://localhost:5173';
+const PROD = 'https://lifo.sh';
 
 describe('resolveVmTarget', () => {
   it('sends a root-absolute path to the preview port', () => {
@@ -71,10 +73,10 @@ describe('resolveVmTarget', () => {
   // naive "loopback ⇒ in-VM" rule sent requests for the playground's own origin
   // (and its /_cors proxy) to a non-existent in-VM port 5173.
   it('does not tunnel the embedding page’s own origin', () => {
-    expect(resolve('http://localhost:5173/assets/x.png', '5173')).toBeNull();
-    expect(resolve('http://localhost:5173/_cors?url=https://x.dev/y', '5173')).toBeNull();
+    expect(resolve('http://localhost:5173/assets/x.png', DEV)).toBeNull();
+    expect(resolve('http://localhost:5173/_cors?url=https://x.dev/y', DEV)).toBeNull();
     // …while a genuine sibling service on another loopback port still routes.
-    expect(resolve('http://localhost:54321/rest/v1/todos', '5173')).toEqual({
+    expect(resolve('http://localhost:54321/rest/v1/todos', DEV)).toEqual({
       port: 54321,
       path: '/rest/v1/todos',
     });
@@ -87,30 +89,57 @@ describe('resolveVmTarget', () => {
   // network and a registered service worker answered it: the SW-free preview
   // was quietly depending on a service worker.
   it('tunnels an embedder-origin URL that carries a /_sw/<port>/ prefix', () => {
-    expect(resolve('http://localhost:5173/_sw/54321/rest/v1/todos?select=*', '5173')).toEqual({
+    expect(resolve('http://localhost:5173/_sw/54321/rest/v1/todos?select=*', DEV)).toEqual({
       port: 54321,
       path: '/rest/v1/todos?select=*',
     });
     // …while the same origin WITHOUT the prefix still goes to the real network.
-    expect(resolve('http://localhost:5173/_cors?url=https://x.dev', '5173')).toBeNull();
-    expect(resolve('http://localhost:5173/assets/x.png', '5173')).toBeNull();
+    expect(resolve('http://localhost:5173/_cors?url=https://x.dev', DEV)).toBeNull();
+    expect(resolve('http://localhost:5173/assets/x.png', DEV)).toBeNull();
   });
 
   it('honours the boxId form on the embedder origin too', () => {
-    expect(resolve('http://localhost:5173/_sw/box_ab12/54321/auth/v1/token', '5173')).toEqual({
+    expect(resolve('http://localhost:5173/_sw/box_ab12/54321/auth/v1/token', DEV)).toEqual({
       port: 54321,
       path: '/auth/v1/token',
     });
   });
 
   it('never tunnels a foreign origin, even with a /_sw/ path', () => {
-    expect(resolve('https://evil.example.com/_sw/54321/rest/v1/todos', '5173')).toBeNull();
+    expect(resolve('https://evil.example.com/_sw/54321/rest/v1/todos', DEV)).toBeNull();
   });
 
-  it('tunnels a same-origin non-loopback URL to the preview port', () => {
-    expect(resolve('https://preview.example.dev/assets/x.png', '', 'preview.example.dev')).toEqual({
-      port: 8081,
-      path: '/assets/x.png',
+  // Regression: the embedder check used to compare against `location.host`, which
+  // is the empty string inside a blob: document. Every non-loopback embedder was
+  // therefore treated as foreign, so a deployed site's own
+  // https://<site>/_sw/<port>/… URL skipped the tunnel — while localhost worked,
+  // because the embedder happened to be loopback. Broken in production only.
+  it('tunnels a DEPLOYED embedder origin carrying a /_sw/<port>/ prefix', () => {
+    expect(resolve('https://lifo.sh/_sw/54321/rest/v1/todos', PROD)).toEqual({
+      port: 54321,
+      path: '/rest/v1/todos',
+    });
+    expect(resolve('https://lifo.sh/_sw/box_ab12/54321/rest/v1/todos', PROD)).toEqual({
+      port: 54321,
+      path: '/rest/v1/todos',
+    });
+  });
+
+  it('sends a deployed embedder’s own assets to the real network', () => {
+    expect(resolve('https://lifo.sh/assets/x.png', PROD)).toBeNull();
+    expect(resolve('https://lifo.sh/_cors?url=https://x.dev', PROD)).toBeNull();
+  });
+
+  it('still rejects a foreign origin when deployed', () => {
+    expect(resolve('https://evil.example.com/_sw/54321/x', PROD)).toBeNull();
+    expect(resolve('https://cdn.example.com/lib.js', PROD)).toBeNull();
+  });
+
+  it('routes a sibling loopback port even when the embedder is deployed', () => {
+    // The VM's ports are always loopback, whatever origin the page is served from.
+    expect(resolve('http://localhost:54321/rest/v1/todos', PROD)).toEqual({
+      port: 54321,
+      path: '/rest/v1/todos',
     });
   });
 });

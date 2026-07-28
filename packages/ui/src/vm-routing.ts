@@ -28,21 +28,30 @@ export interface VmTarget {
  * that same port. Callers pass the preview port as the default for anything
  * relative.
  *
- * @param url          The URL as the app wrote it (may be relative).
- * @param previewPort  Port backing the preview document itself.
- * @param hostPort     Port of the EMBEDDING page, or '' if unknown. Excluded
- *                     from in-VM routing: during local dev the embedder is on
- *                     loopback too (e.g. a playground on localhost:5173), and
- *                     its port is not an in-VM port — routing it into the
- *                     registry hits nothing.
- * @param locationHost `location.host` of the preview document; '' in a blob
- *                     document, which is why it cannot be relied on alone.
+ * @param url         The URL as the app wrote it (may be relative).
+ * @param previewPort Port backing the preview document itself.
+ * @param hostOrigin  Origin of the EMBEDDING page, e.g. `https://lifo.sh` or
+ *                    `http://localhost:5173`, captured in the parent document
+ *                    and passed in.
+ *
+ *                    It must be passed in rather than read here: inside a
+ *                    `blob:` document `location.host` is the empty string (only
+ *                    `location.origin` survives), so a check against
+ *                    `location.host` silently rejects every non-loopback
+ *                    embedder. That made an app's absolute
+ *                    `https://<site>/_sw/<port>/…` URL skip the tunnel in
+ *                    production while working locally, where the embedder
+ *                    happens to be loopback.
+ *
+ *                    Two things depend on knowing it: a URL on the embedder's
+ *                    own origin is same-origin (so a `/_sw/` prefix on it is
+ *                    ours to route), and without a prefix it is the embedder's
+ *                    own asset and must reach the real network.
  */
 export function resolveVmTarget(
   url: unknown,
   previewPort: number,
-  hostPort: string,
-  locationHost: string,
+  hostOrigin: string,
 ): VmTarget | null {
   if (!url) return null;
   const raw = String(url);
@@ -80,8 +89,18 @@ export function resolveVmTarget(
 
   const loopback = parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1';
 
+  // Is this the page doing the embedding? Compared by host, so the scheme and any
+  // default port don't matter.
+  let hostHost = '';
+  try {
+    hostHost = hostOrigin ? new URL(hostOrigin).host : '';
+  } catch {
+    hostHost = '';
+  }
+  const isEmbedder = hostHost !== '' && parsed.host === hostHost;
+
   // A genuinely foreign origin is never in-VM, whatever its path says.
-  if (!loopback && parsed.host !== locationHost) return null;
+  if (!loopback && !isEmbedder) return null;
 
   // An explicit /_sw/<port>/ prefix is an unambiguous routing instruction, so it
   // is honoured BEFORE the embedder-port exclusion below.
@@ -99,7 +118,7 @@ export function resolveVmTarget(
 
   // The embedding page's own origin is not an in-VM port. Its assets and its
   // CORS proxy must reach the real network.
-  if (loopback && hostPort && parsed.port === hostPort) return null;
+  if (isEmbedder) return null;
 
   return {
     port: loopback && parsed.port ? Number(parsed.port) : previewPort,

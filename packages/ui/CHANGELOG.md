@@ -1,5 +1,50 @@
 # @lifo-sh/ui
 
+## 0.8.2
+
+### Patch Changes
+
+- Fix SW-free preview routing on a deployed origin (it only worked on localhost)
+
+  The SW-free preview decided whether a URL belonged to the embedding page by
+  comparing against `location.host` — read inside the preview document. **Inside a
+  `blob:` document `location.host` is the empty string** (only `location.origin`
+  survives), so every non-loopback embedder was treated as a foreign origin and its
+  URLs were never tunnelled.
+
+  That made the previous release's fix work only where the embedder happened to be
+  loopback. In production:
+
+  | deployment                      | app requests                         | before                                                                                                   |
+  | ------------------------------- | ------------------------------------ | -------------------------------------------------------------------------------------------------------- |
+  | `https://lifo.sh`               | `https://lifo.sh/_sw/54321/…`        | not tunnelled → network → a registered service worker answered it, so it looked fine but was not SW-free |
+  | a host that unregisters `sw.js` | `https://<site>/_sw/<boxId>/54321/…` | not tunnelled → nothing answers → the app's API calls fail outright                                      |
+
+  The embedder's origin is now captured in the PARENT document, where
+  `location.host` is real, and passed into the shim. A URL on that origin is
+  same-origin: a `/_sw/<port>/` prefix on it is ours to route, and without a prefix
+  it is the embedder's own asset and goes to the real network. Loopback is still
+  accepted for local dev, and a genuinely foreign origin is still rejected even if
+  its path contains `/_sw/`.
+
+  **Signature change to two exports introduced in 0.8.0:**
+
+  ```diff
+  - resolveVmTarget(url, previewPort, hostPort, locationHost)
+  + resolveVmTarget(url, previewPort, hostOrigin)
+
+  - buildPreviewShim({ port, hostPort: location.port })
+  + buildPreviewShim({ port, hostOrigin: location.origin })
+  ```
+
+  Comparing by port could never distinguish a deployed embedder (no port) from an
+  in-VM one, so the port form was unfixable rather than merely awkward.
+  `mountNoSwPreview` and `PreviewBrowser` are unaffected — they pass this
+  themselves.
+
+- Updated dependencies
+  - @lifo-sh/core@0.8.2
+
 ## 0.8.1
 
 ### Patch Changes
