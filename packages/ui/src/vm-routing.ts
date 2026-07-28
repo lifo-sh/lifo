@@ -79,11 +79,27 @@ export function resolveVmTarget(
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
 
   const loopback = parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1';
-  if (loopback && hostPort && parsed.port === hostPort) return null;
+
+  // A genuinely foreign origin is never in-VM, whatever its path says.
   if (!loopback && parsed.host !== locationHost) return null;
 
+  // An explicit /_sw/<port>/ prefix is an unambiguous routing instruction, so it
+  // is honoured BEFORE the embedder-port exclusion below.
+  //
+  // This ordering is the whole ballgame for a blob: preview. React Native needs
+  // absolute URLs, so an app resolves its configured `/_sw/54321` against
+  // `location.origin` — which inside a blob document is the EMBEDDER's origin.
+  // The app therefore requests `http://localhost:5173/_sw/54321/rest/v1/todos`.
+  // Excluding the embedder's port first made that fall through to the real
+  // network, where a registered service worker would answer it: the SW-free
+  // preview silently depended on a service worker, which is exactly what it
+  // exists to avoid (iOS Chrome has no dependable one).
   const nested = parsed.pathname.match(swPrefix);
   if (nested) return { port: Number(nested[1]), path: (nested[2] || '/') + parsed.search };
+
+  // The embedding page's own origin is not an in-VM port. Its assets and its
+  // CORS proxy must reach the real network.
+  if (loopback && hostPort && parsed.port === hostPort) return null;
 
   return {
     port: loopback && parsed.port ? Number(parsed.port) : previewPort,

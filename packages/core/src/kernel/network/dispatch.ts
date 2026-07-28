@@ -41,6 +41,45 @@ export const DEFAULT_DISPATCH_TIMEOUT_MS = 120_000;
  */
 export const LIFO_HEADER = 'x-lifo';
 
+/**
+ * Response headers that make sense for a server on the public internet but not
+ * for one running inside the page, and that actively break a preview.
+ *
+ * A preview renders an in-VM server's document in a same-origin iframe. If the
+ * server sends `X-Frame-Options: DENY` or a CSP with `frame-ancestors 'none'`,
+ * the browser refuses to render it and the preview is blank — even though there
+ * is no cross-origin embedding happening and nothing to protect: the "server" is
+ * a JavaScript object in the very tab doing the framing.
+ *
+ * This is not one library's quirk. `helmet()` sets `X-Frame-Options: DENY` by
+ * default, so any Express app using it hits this, as does tinbase's studio.
+ *
+ * CSP goes too, not just its `frame-ancestors`: preview transports inject a small
+ * inline script into VM-served documents (to strip the URL prefix so client
+ * routers see a clean path), and a `script-src 'self'` policy blocks it. A
+ * dev preview of your own code is not the place to enforce a production CSP.
+ *
+ * Stripped only on the PREVIEW path. Tunnels, `curl` and `sandbox.fetch` see
+ * exactly what the server sent.
+ */
+export const PREVIEW_STRIPPED_HEADERS = [
+	'x-frame-options',
+	'content-security-policy',
+	'content-security-policy-report-only',
+];
+
+/**
+ * Copy `headers` without the headers that break framing a preview.
+ * Case-insensitive: header names arrive however the server wrote them.
+ */
+export function stripPreviewBlockingHeaders(headers: Record<string, string>): Record<string, string> {
+	const out: Record<string, string> = {};
+	for (const [key, value] of Object.entries(headers)) {
+		if (!PREVIEW_STRIPPED_HEADERS.includes(key.toLowerCase())) out[key] = value;
+	}
+	return out;
+}
+
 export interface DispatchInit {
 	method?: string;
 	/** Path + query as the server sees it, e.g. `/rest/v1/todos?select=*`. */

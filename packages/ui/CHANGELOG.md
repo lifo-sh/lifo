@@ -1,5 +1,48 @@
 # @lifo-sh/ui
 
+## 0.8.1
+
+### Patch Changes
+
+- Fix both preview engines against a server that sets security headers, and stop the SW-free preview depending on a service worker
+
+  Two bugs that only surfaced once tinbase 0.10.1 shipped a hardened studio and the
+  SW-free preview was driven for real.
+
+  **A server's anti-framing headers blanked the service-worker preview.**
+  `tinbase@0.10.1` began serving its studio with `x-frame-options: DENY` and a CSP
+  containing `frame-ancestors 'none'`. The service worker forwards real response
+  headers, so the browser refused to render the preview — while the SW-free engine
+  worked, because re-serving the document as a blob drops those headers. That
+  asymmetry is what made it look like the service worker had broken.
+
+  This is not specific to tinbase: `helmet()` sets `X-Frame-Options: DENY` by
+  default, so any in-VM Express app using it would blank a preview the same way.
+  `stripPreviewBlockingHeaders()` now removes `x-frame-options`,
+  `content-security-policy` and `content-security-policy-report-only` **on the
+  preview path only** — tunnels, `curl` and `sandbox.fetch` still see exactly what
+  the server sent. There is nothing for those headers to protect on a preview: the
+  "server" is a JavaScript object in the very tab doing the framing. CSP goes too,
+  not just its `frame-ancestors`, because preview transports inject an inline script
+  into VM-served documents and a `script-src 'self'` policy blocks it.
+
+  **The SW-free preview was quietly using the service worker.** React Native needs
+  absolute URLs, so an app resolves its configured `/_sw/54321` against
+  `location.origin` — which inside a `blob:` document is the EMBEDDER's origin. The
+  app therefore requests `http://localhost:5173/_sw/54321/rest/v1/todos`. The
+  embedder-port exclusion (which keeps the embedding page's own assets and CORS
+  proxy on the real network) ran before the `/_sw/<port>/` prefix check, so that URL
+  fell through to the network, where a registered service worker answered it. It
+  appeared to work while masking a total failure on any browser without a
+  dependable worker — the case the SW-free engine exists for.
+
+  An explicit `/_sw/<port>/` prefix is now honoured before the embedder-port
+  exclusion, and still after the foreign-origin rejection, so a hostile origin can't
+  route itself into the VM by putting `/_sw/` in its path.
+
+- Updated dependencies
+  - @lifo-sh/core@0.8.1
+
 ## 0.8.0
 
 ### Minor Changes

@@ -14,7 +14,7 @@ import { getUpgradeHandlers } from '../../node-compat/http.js';
 import { EventEmitter } from '../../node-compat/events.js';
 import { Buffer } from '../../node-compat/buffer.js';
 import { encodeFrame, FrameDecoder, OPCODE, splitHandshake } from './ws-frame.js';
-import { dispatchRequest } from './dispatch.js';
+import { dispatchRequest, stripPreviewBlockingHeaders } from './dispatch.js';
 
 interface SwRequestMessage {
 	type: 'request';
@@ -264,7 +264,15 @@ export class ServiceWorkerBridge {
 		const buf = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength
 			? bytes.buffer
 			: bytes.slice().buffer;
-		this.port?.postMessage({ type: 'response', requestId, statusCode, headers, bodyBuffer: buf }, [buf]);
+		this.port?.postMessage({
+			type: 'response',
+			requestId,
+			statusCode,
+			// An in-VM server's anti-framing headers would blank the preview it is
+			// being previewed in. See stripPreviewBlockingHeaders.
+			headers: stripPreviewBlockingHeaders(headers),
+			bodyBuffer: buf,
+		}, [buf]);
 	}
 
 	private async handleRequest(message: SwRequestMessage): Promise<void> {
