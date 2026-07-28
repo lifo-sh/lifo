@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { dispatchRequest, waitForPort, LIFO_HEADER } from '../../src/kernel/network/dispatch.js';
+import { dispatchRequest, waitForPort, LIFO_HEADER, stripPreviewBlockingHeaders } from '../../src/kernel/network/dispatch.js';
 import { PortBridge } from '../../src/kernel/network/PortBridge.js';
 import type { VirtualRequestHandler, VirtualResponse } from '../../src/kernel/index.js';
 
@@ -91,6 +91,42 @@ describe('dispatchRequest', () => {
       body: new TextEncoder().encode('{"a":1}'),
     });
     expect(seen).toBe('{"a":1}');
+  });
+});
+
+describe('stripPreviewBlockingHeaders', () => {
+  // Regression: tinbase 0.10.1 started sending `x-frame-options: DENY` and a CSP
+  // with `frame-ancestors 'none'` on its studio, which blanked the service-worker
+  // preview. helmet() sets the same X-Frame-Options by default, so any Express
+  // app using it would break a preview the same way.
+  it('drops the headers that stop a document being framed', () => {
+    const out = stripPreviewBlockingHeaders({
+      'content-type': 'text/html',
+      'x-frame-options': 'DENY',
+      'content-security-policy': "default-src 'self'; frame-ancestors 'none'",
+      'content-security-policy-report-only': "frame-ancestors 'none'",
+      etag: 'W/"abc"',
+    });
+    expect(out).toEqual({ 'content-type': 'text/html', etag: 'W/"abc"' });
+  });
+
+  it('matches header names case-insensitively', () => {
+    const out = stripPreviewBlockingHeaders({
+      'X-Frame-Options': 'SAMEORIGIN',
+      'Content-Security-Policy': "frame-ancestors 'none'",
+      'Content-Type': 'text/html',
+    });
+    expect(out).toEqual({ 'Content-Type': 'text/html' });
+  });
+
+  it('leaves everything else untouched, including other security headers', () => {
+    const headers = {
+      'content-type': 'application/json',
+      'x-content-type-options': 'nosniff',
+      'strict-transport-security': 'max-age=31536000',
+      'cache-control': 'no-cache',
+    };
+    expect(stripPreviewBlockingHeaders(headers)).toEqual(headers);
   });
 });
 

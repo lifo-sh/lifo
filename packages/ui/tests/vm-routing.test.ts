@@ -80,6 +80,33 @@ describe('resolveVmTarget', () => {
     });
   });
 
+  // Regression: this is the URL an Expo app actually requests. React Native
+  // needs absolute URLs, so the app resolves its configured `/_sw/54321` against
+  // location.origin — which inside a blob document is the EMBEDDER's origin. The
+  // embedder-port exclusion used to run first, so this fell through to the real
+  // network and a registered service worker answered it: the SW-free preview
+  // was quietly depending on a service worker.
+  it('tunnels an embedder-origin URL that carries a /_sw/<port>/ prefix', () => {
+    expect(resolve('http://localhost:5173/_sw/54321/rest/v1/todos?select=*', '5173')).toEqual({
+      port: 54321,
+      path: '/rest/v1/todos?select=*',
+    });
+    // …while the same origin WITHOUT the prefix still goes to the real network.
+    expect(resolve('http://localhost:5173/_cors?url=https://x.dev', '5173')).toBeNull();
+    expect(resolve('http://localhost:5173/assets/x.png', '5173')).toBeNull();
+  });
+
+  it('honours the boxId form on the embedder origin too', () => {
+    expect(resolve('http://localhost:5173/_sw/box_ab12/54321/auth/v1/token', '5173')).toEqual({
+      port: 54321,
+      path: '/auth/v1/token',
+    });
+  });
+
+  it('never tunnels a foreign origin, even with a /_sw/ path', () => {
+    expect(resolve('https://evil.example.com/_sw/54321/rest/v1/todos', '5173')).toBeNull();
+  });
+
   it('tunnels a same-origin non-loopback URL to the preview port', () => {
     expect(resolve('https://preview.example.dev/assets/x.png', '', 'preview.example.dev')).toEqual({
       port: 8081,
