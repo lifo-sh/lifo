@@ -1,5 +1,43 @@
 # @lifo-sh/core
 
+## 0.7.1
+
+### Patch Changes
+
+- node: fix ESM transform crashing on a regex literal inside a `${…}` template expression
+
+  `npx tinbase --engine pgmem` — the backend behind both Supabase examples — died on startup with:
+
+  ```
+  TypeError: [/…/node_modules/tinbase/dist/index.js] Cannot read properties of undefined (reading 'slice')
+  ```
+
+  The ESM→CJS string masker was at fault, not tinbase (which runs fine on the host on both 0.8.1 and
+  0.10.0). `scanBracedExpr` called the three-parameter `isRegexStart(prevChar, prevIdx, src)` with two
+  arguments:
+
+  ```js
+  const kind = isRegexStart(src, i); // src lands in prevChar, i in prevIdx, src is undefined
+  ```
+
+  `prevChar` then held the entire source, so the `/[A-Za-z_$]/` keyword check passed on any file
+  containing a letter and fell through to `src.slice(…)` on `undefined`. Every `/` inside a `${…}`
+  template expression — division or regex — threw.
+
+  Only the pgmem path happened to contain that shape, which is why just that engine broke:
+  `pg-mem/index.js`, `tinbase/dist/db/pgmem-engine.js` and `tinbase/dist/db/schema-diff.js` all build
+  SQL with `` `${l.replace(/'/g, "''")}` ``. A sweep of `transformEsmToCjs` over all 175 files in the
+  example's `node_modules` fails on exactly those three before the fix and none after.
+
+  `scanBracedExpr` now tracks `prevChar`/`prevIdx` the same way `maskStringLiterals` does — comments
+  transparent, a string or regex literal reported as a value — and passes all three arguments.
+
+  **Debugging note for next time:** the error names the _parent_ module being executed, not the module
+  whose transform threw. `tinbase/dist/index.js` was never the problem.
+
+- Updated dependencies
+  - @lifo-sh/ui@0.7.1
+
 ## 0.7.0
 
 ### Minor Changes

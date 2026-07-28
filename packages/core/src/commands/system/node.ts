@@ -340,6 +340,11 @@ function scanTemplateLiteral(src: string, i: number): number {
  */
 function scanBracedExpr(src: string, i: number): number {
 	let depth = 1;
+	// Previous significant char, tracked exactly as maskStringLiterals does: the
+	// '${' that opened this expression is an operator-ish context, comments are
+	// transparent, and a string/regex literal is a value → 'x'.
+	let prevChar = '{';
+	let prevIdx = i - 1;
 	while (i < src.length && depth > 0) {
 		const c = src[i];
 		if (c === '/' && i + 1 < src.length && src[i + 1] === '/') {
@@ -353,16 +358,29 @@ function scanBracedExpr(src: string, i: number): number {
 			continue;
 		}
 		if (c === '/') {
-			const kind = isRegexStart(src, i);
+			const kind = isRegexStart(prevChar, prevIdx, src);
 			if (kind) {
 				const end = scanRegexLiteral(src, i);
-				if (kind === 'strong' || isPlausibleRegex(src.slice(i, end))) { i = end; continue; }
+				if (kind === 'strong' || isPlausibleRegex(src.slice(i, end))) {
+					prevChar = 'x'; prevIdx = -1;
+					i = end;
+					continue;
+				}
 			}
 		}
-		if (c === "'" || c === '"') { i = scanQuoteLiteral(src, i); continue; }
-		if (c === '`') { i = scanTemplateLiteral(src, i); continue; }
+		if (c === "'" || c === '"') {
+			i = scanQuoteLiteral(src, i);
+			prevChar = 'x'; prevIdx = -1;
+			continue;
+		}
+		if (c === '`') {
+			i = scanTemplateLiteral(src, i);
+			prevChar = 'x'; prevIdx = -1;
+			continue;
+		}
 		if (c === '{') depth++;
 		else if (c === '}') depth--;
+		if (c !== ' ' && c !== '\t' && c !== '\n' && c !== '\r') { prevChar = c; prevIdx = i; }
 		i++;
 	}
 	return i;

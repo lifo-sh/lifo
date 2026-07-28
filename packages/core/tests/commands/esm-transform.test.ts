@@ -58,4 +58,31 @@ describe('transformEsmToCjs', () => {
     expect(out).toContain('require("w")');
     expect(noEsmSyntax(out)).toBe(true);
   });
+
+  // A regex literal inside a ${...} expression used to throw
+  // "Cannot read properties of undefined (reading 'slice')" — scanBracedExpr
+  // called isRegexStart() with the wrong arguments. This is the exact shape in
+  // tinbase's pgmem engine and pg-mem, so `npx tinbase --engine pgmem` died.
+  it('handles a regex literal inside a ${...} template expression', () => {
+    const src = [
+      'export function q(labels) {',
+      "  return `enum (${labels.map((l) => `'${l.replace(/'/g, \"''\")}'`).join(', ')})`;",
+      '}',
+      'import x from "y";',
+    ].join('\n');
+    const out = transformEsmToCjs(src);
+    expect(out).toContain('require("y")');
+    expect(noEsmSyntax(out)).toBe(true);
+  });
+
+  it('handles division inside a ${...} template expression', () => {
+    const src = [
+      'const s = `${a / b} and ${c / d}`;',
+      'import x from "y";',
+      'export { s };',
+    ].join('\n');
+    const out = transformEsmToCjs(src);
+    expect(out).toContain('require("y")');
+    expect(noEsmSyntax(out)).toBe(true);
+  });
 });
