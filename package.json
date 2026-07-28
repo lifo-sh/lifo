@@ -7,12 +7,13 @@
     "build:ui": "pnpm --filter @lifo-sh/ui build",
     "build:cli": "pnpm --filter lifo-sh build",
     "typecheck": "pnpm --filter @lifo-sh/core typecheck",
-    "test": "pnpm --filter @lifo-sh/core test && pnpm --filter lifo-pkg-git test",
+    "test": "pnpm --filter @lifo-sh/core test && pnpm --filter lifo-pkg-git test && pnpm --filter lifo-sh test",
     "dev": "pnpm --filter @lifo-sh/playground dev",
     "dev:cli": "pnpm --filter lifo-sh dev",
     "changeset": "changeset",
     "version": "changeset version",
-    "release": "pnpm build && pnpm changeset publish"
+    "release": "pnpm build && pnpm changeset publish",
+    "test:cli": "pnpm --filter lifo-sh test"
   },
   "devDependencies": {
     "@changesets/cli": "^2.29.8",

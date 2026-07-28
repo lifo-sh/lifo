@@ -1,5 +1,42 @@
 # lifo-sh
 
+## 0.10.1
+
+### Patch Changes
+
+- Fix `lifo snapshot list` finding nothing, and add tests to the CLI package
+
+  `listSnapshots()` filtered `.zip` while `snapshot save` writes `.tar.gz`, so
+  `lifo snapshot list` reported "No snapshots found" however many you had — a bug
+  introduced with the format change in 0.10.0. It now matches `.tar.gz`, and takes an
+  optional directory so it's testable without writing into a real home directory.
+
+  The CLI package also has tests for the first time — **22 across 4 files**, spawning
+  the built binary the way a user invokes it. That absence is why three bugs shipped:
+  this one, `new Shell()` called with 4 arguments instead of 5 (which crashed every
+  detached session at startup), and `ps`/`top`/`kill` handed a job table where a
+  `ProcessRegistry` was expected. Each was re-introduced deliberately to confirm the
+  new tests fail on it.
+
+  Coverage: a session boots and stays alive with nothing thrown; commands run; `ps`
+  lists the shell; `top`/`kill` don't throw; the host mount works both directions;
+  `--expose` answers `404 x-lifo: no-server` before the in-VM server exists, then
+  forwards to it on a different host port, reports each mapping, and keeps the session
+  alive when one mapping can't bind; `snapshot save` writes an archive whose manifest
+  carries the session's cwd and env, and that archive restores into a core box.
+
+  `parseExpose` moved to `src/args.ts` — `index.ts` runs `main()` at import time, so
+  nothing exported from it can be unit-tested.
+
+  Two things worth knowing for anyone extending these:
+
+  - Tests spawn `dist/index.js`, not the TypeScript source. `tsx src/index.ts` dies on
+    a `browser-metro` named export that the bundle resolves fine, which also means the
+    package's own `dev` script is currently broken.
+  - The child's `NODE_OPTIONS` is stripped. vitest puts its module loader there, and a
+    CLI booting under it resolves `browser-metro` differently and fails an ESM
+    named-export check — the child has to run like a user's shell, not a test worker.
+
 ## 0.10.0
 
 ### Minor Changes

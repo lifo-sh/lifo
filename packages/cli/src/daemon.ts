@@ -23,6 +23,7 @@
 
 import * as cp from 'node:child_process';
 import * as fs from 'node:fs';
+import type { ExposeMapping } from './args.js';
 import * as path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { SESSIONS_DIR } from './session.js';
@@ -88,7 +89,7 @@ export async function startDaemon(
   snapshotPath?: string,
   scriptPath?: string,
   /** `--expose vmPort:hostPort` mappings to forward to the daemon process. */
-  expose?: Array<{ vmPort: number; hostPort: number }>,
+  expose?: ExposeMapping[],
 ): Promise<string> {
   const id = generateId();
   const jsonPath = path.join(SESSIONS_DIR, `${id}.json`);

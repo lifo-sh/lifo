@@ -89,6 +89,7 @@ import {
 	listSnapshots,
 } from './snapshot.js';
 import { handleTunnel, createHostTunnelCommand } from './tunnel.js';
+import { parseExpose, type ExposeMapping } from './args.js';
 import { serialize, deserialize } from '@lifo-sh/core';
 
 // ─── CLI argument parsing ──────────────────────────────────────────────────────
@@ -134,17 +135,7 @@ interface CliOptions {
 	 * Publish in-VM ports on real host ports: `--expose 3000` or
 	 * `--expose 3000:8080` (vmPort:hostPort). Repeatable.
 	 */
-	expose?: Array<{ vmPort: number; hostPort: number }>;
-}
-
-/** Parse `--expose 3000` / `--expose 3000:8080`. hostPort defaults to vmPort. */
-function parseExpose(spec: string): { vmPort: number; hostPort: number } | null {
-	const [left, right] = spec.split(':');
-	const vmPort = Number(left);
-	const hostPort = right === undefined ? vmPort : Number(right);
-	const valid = (n: number) => Number.isInteger(n) && n >= 1 && n <= 65535;
-	if (!valid(vmPort) || !valid(hostPort)) return null;
-	return { vmPort, hostPort };
+	expose?: ExposeMapping[];
 }
 
 /**
@@ -160,7 +151,7 @@ function parseExpose(spec: string): { vmPort: number; hostPort: number } | null 
  */
 async function startExposedPorts(
 	kernel: Kernel,
-	mappings: Array<{ vmPort: number; hostPort: number }> | undefined,
+	mappings: ExposeMapping[] | undefined,
 	write: (text: string) => void,
 ): Promise<ExposedPort[]> {
 	if (!mappings || mappings.length === 0) return [];
@@ -299,7 +290,7 @@ async function runDaemon(
 	port?: number,
 	snapshotPath?: string,
 	/** `--expose` mappings; bound here because the daemon owns the kernel. */
-	expose?: Array<{ vmPort: number; hostPort: number }>,
+	expose?: ExposeMapping[],
 ): Promise<void> {
 	const socketPath = path.join(SESSIONS_DIR, `${id}.sock`);
 
