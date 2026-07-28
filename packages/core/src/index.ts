@@ -25,6 +25,17 @@ export {
 } from './kernel/network/dispatch.js';
 export type { DispatchInit, DispatchOptions, DispatchedResponse } from './kernel/network/dispatch.js';
 
+// In-VM WebSocket: the primitive behind sandbox.connect(), shared by the
+// service-worker/preview transport and the tunnel's socket stand-in.
+export { openWsPipe, VirtualUpgradeSocket } from './kernel/network/ws-pipe.js';
+export type { WsPipe, WsPipeHooks, WsPipeOptions } from './kernel/network/ws-pipe.js';
+export type {
+	VmWebSocket,
+	VmMessageEvent,
+	VmCloseEvent,
+	SandboxConnectOptions,
+} from './sandbox/vm-websocket.js';
+
 // Network Stack
 export { NetworkStack } from './kernel/network/index.js';
 export type {

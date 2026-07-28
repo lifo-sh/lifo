@@ -1,16 +1,17 @@
 # Plan: Host-side network API — `sandbox.fetch()` and `sandbox.connect()`
 
-> **Status: PR 1 shipped, PR 3 shipped for HTTP, PR 2 outstanding.**
+> **Status: complete.** All three PRs shipped.
 >
 > | | state |
 > | --- | --- |
 > | **PR 1** — `dispatch.ts`, `_donePromise` on the public type, all 7 call sites converted, `PortBridge` bug fixed | **done** |
 > | **PR 3 (HTTP half)** — `sandbox.fetch` + `sandbox.waitForPort` | **done** |
 > | **also landed** — multi-port nosw iframe shim + Admin-UI mount (see [SW-free multi-port](#sw-free-multi-port-transport) below) | **done** |
-> | **PR 2** — `ws-pipe.ts` extraction, collapsing the two duplicate upgrade sockets | **not started** |
-> | **PR 3 (ws half)** — `sandbox.connect(port, url)` | **not started**, blocked on PR 2 |
+> | **PR 2** — `ws-pipe.ts` extraction, collapsing the two duplicate upgrade sockets | **done** |
+> | **PR 3 (ws half)** — `sandbox.connect(port, url)` | **done** |
 >
-> Verified by `packages/core/tests/kernel/dispatch.test.ts` (12),
+> Verified by `packages/core/tests/kernel/dispatch.test.ts` (15),
+> `packages/core/tests/sandbox/sandbox-connect.test.ts` (8, against a real in-VM `ws` server),
 > `packages/core/tests/sandbox/sandbox-net.test.ts` (12),
 > `packages/ui/tests/preview-nosw-resolve.test.ts` (11) and `bench/test-host-net.mjs`
 > (12 checks against a real in-VM tinbase). No breaking changes.
@@ -261,9 +262,37 @@ Two more things the mount got wrong and now doesn't:
 - The playground rendered only `previewTabs[0]` in SW-free mode, so the Studio tab was
   unreachable. Both engines now render the same tabs.
 
+## What PR 2 actually shared (and what it didn't)
+
+The plan assumed both transports wanted the same frame-level pipe. Only one did.
+
+`ServiceWorkerBridge` speaks a **message**-level protocol: it hands its consumer whole,
+reassembled application messages. `WebSocketTunnel` speaks a **byte**-level one — it forwards raw
+socket bytes as `ws-data` and lets the relay do the framing — and it forwards the client's real
+headers (minus `Origin`, deliberately). Forcing the tunnel onto `openWsPipe` would have meant
+re-framing bytes it had just been handed unframed.
+
+So the split is: the **socket stand-in** (`VirtualUpgradeSocket`) is shared by both, which is where
+the actual duplication was; the **frame loop** lives in `openWsPipe` and is used by
+`ServiceWorkerBridge` and `sandbox.connect`. `ServiceWorkerBridge` went from 454 to 260 lines and
+`WebSocketTunnel` from 590 to 485.
+
+Two bugs surfaced while testing `sandbox.connect` against a real in-VM `ws` server:
+
+- **`Buffer.writeUIntBE` was missing** from the node-compat shim. `ws` uses it to write the 64-bit
+  length header, so **every in-VM WebSocket message over ~64 KB threw** while smaller ones worked.
+  That affects HMR payloads and realtime messages, not just this API. `writeUIntLE`, `readUIntBE`
+  and `readUIntLE` were added alongside.
+- **A greeting sent in the same write as the handshake could never reach an event handler.** The
+  caller only receives the socket after `await`, and `resolve()` costs extra microtask ticks, so
+  even a `queueMicrotask`-deferred emit ran first. Message events are now buffered until a handler
+  exists and flushed when one is attached.
+
 ## Risks and open questions
 
-- **HMR is the real risk** (PR 2). `ServiceWorkerBridge`'s ws path is load-bearing for both
+- ~~**HMR is the real risk** (PR 2).~~ *Resolved: the extraction was behaviour-preserving and
+  `bench/test-bm-hmr.mjs` still reports hot updates for both edits with no reload. The tunnel kept
+  its own byte-level forwarding — see below.* `ServiceWorkerBridge`'s ws path is load-bearing for both
   Vite and Metro in the playground, and the nosw engine has its own known sharp edges (the
   `ws:///hot` empty-host interception, the entry-as-blob-URL mapping). Mitigation: PR 2 is
   a pure extraction with no protocol change, tested against both engines and both bundlers

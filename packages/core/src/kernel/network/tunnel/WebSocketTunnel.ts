@@ -3,8 +3,12 @@ import type { NetworkStack } from '../NetworkStack.js';
 import { BaseTunnel } from './BaseTunnel.js';
 import { Buffer } from '../../../node-compat/buffer.js';
 import { getUpgradeHandlers } from '../../../node-compat/http.js';
+// The socket stand-in is shared with the service-worker/preview transport. The
+// FRAME loop is not: this tunnel forwards RAW socket bytes (`ws-data`) and lets
+// the relay frame them, and it forwards the client's real headers, so
+// openWsPipe's frame-level API would not fit.
+import { VirtualUpgradeSocket } from '../ws-pipe.js';
 import { dispatchRequest, LIFO_HEADER } from '../dispatch.js';
-import { EventEmitter } from '../../../node-compat/events.js';
 
 function bytesToBase64(bytes: Uint8Array): string {
 	let bin = '';
@@ -19,69 +23,7 @@ function base64ToBytes(b64: string): Uint8Array {
 	return out;
 }
 
-const textEncoder = new TextEncoder();
 
-/**
- * Duplex-socket stand-in handed to in-VM WebSocket servers (e.g. Vite's
- * bundled `ws` HMR server) via the http shim's 'upgrade' event. Bytes written
- * by the server (handshake response + WS frames) are relayed to the real
- * browser socket through the tunnel; browser bytes arrive via emit('data').
- */
-class VirtualUpgradeSocket extends EventEmitter {
-	readable = true;
-	writable = true;
-	destroyed = false;
-	remoteAddress = '127.0.0.1';
-	/** Node-internal-shaped state that ws pokes directly on socket close. */
-	_readableState = { endEmitted: false, ended: false };
-	_writableState = { finished: false, errorEmitted: false, ended: false };
-
-	constructor(
-		private sendBytes: (data: Uint8Array) => void,
-		private sendClose: () => void,
-	) {
-		super();
-	}
-
-	write(data: string | Uint8Array, encodingOrCb?: unknown, cb?: () => void): boolean {
-		const callback = typeof encodingOrCb === 'function' ? (encodingOrCb as () => void) : cb;
-		if (!this.destroyed) {
-			this.sendBytes(typeof data === 'string' ? textEncoder.encode(data) : data);
-		}
-		callback?.();
-		return true;
-	}
-
-	end(data?: string | Uint8Array): void {
-		if (data !== undefined && !this.destroyed) this.write(data);
-		this.destroy();
-	}
-
-	destroy(): this {
-		if (this.destroyed) return this;
-		this.destroyed = true;
-		this.readable = false;
-		this.writable = false;
-		this._readableState.endEmitted = true;
-		this._readableState.ended = true;
-		this._writableState.finished = true;
-		this.sendClose();
-		this.emit('close');
-		return this;
-	}
-
-	/** Pull-mode read — ws drains remaining bytes on close; nothing is buffered here. */
-	read(): null { return null; }
-	unshift(_chunk: unknown): void {}
-
-	setTimeout(): this { return this; }
-	setNoDelay(): this { return this; }
-	setKeepAlive(): this { return this; }
-	pause(): this { return this; }
-	resume(): this { return this; }
-	cork(): void {}
-	uncork(): void {}
-}
 
 /**
  * WebSocket Tunnel - Bridge virtual network to external WebSocket server

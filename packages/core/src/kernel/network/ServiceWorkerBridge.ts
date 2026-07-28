@@ -10,10 +10,7 @@
  */
 
 import type { VirtualRequestHandler } from '../index.js';
-import { getUpgradeHandlers } from '../../node-compat/http.js';
-import { EventEmitter } from '../../node-compat/events.js';
-import { Buffer } from '../../node-compat/buffer.js';
-import { encodeFrame, FrameDecoder, OPCODE, splitHandshake } from './ws-frame.js';
+import { openWsPipe, type WsPipe } from './ws-pipe.js';
 import { dispatchRequest, stripPreviewBlockingHeaders } from './dispatch.js';
 
 interface SwRequestMessage {
@@ -46,82 +43,6 @@ interface SwWsSendMessage {
 interface SwWsCloseMessage {
 	type: 'ws-close';
 	connId: string;
-}
-
-const textEncoder = new TextEncoder();
-
-function randomMask(out: Uint8Array): void {
-	if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
-		crypto.getRandomValues(out);
-	} else {
-		// Deterministic fallback (non-browser hosts / tests) — masking value is
-		// irrelevant to correctness, only presence of the mask bit matters.
-		for (let i = 0; i < out.length; i++) out[i] = (i * 41 + 7) & 0xff;
-	}
-}
-
-/**
- * Socket stand-in for a browser WebSocket piped through the service worker.
- * Same role as the tunnel's VirtualUpgradeSocket: the in-VM ws server (Vite
- * HMR) reads/writes RFC 6455 bytes here; the bridge frames/deframes to the
- * message-level protocol the browser shim speaks.
- */
-class SwUpgradeSocket extends EventEmitter {
-	readable = true;
-	writable = true;
-	destroyed = false;
-	remoteAddress = '127.0.0.1';
-	_readableState = { endEmitted: false, ended: false };
-	_writableState = { finished: false, errorEmitted: false, ended: false };
-
-	constructor(private onServerBytes: (bytes: Uint8Array) => void, private onClosed: () => void) {
-		super();
-	}
-
-	write(data: string | Uint8Array, encodingOrCb?: unknown, cb?: () => void): boolean {
-		const callback = typeof encodingOrCb === 'function' ? (encodingOrCb as () => void) : cb;
-		if (!this.destroyed) {
-			this.onServerBytes(typeof data === 'string' ? textEncoder.encode(data) : data);
-		}
-		callback?.();
-		return true;
-	}
-
-	end(data?: string | Uint8Array): void {
-		if (data !== undefined && !this.destroyed) this.write(data);
-		this.destroy();
-	}
-
-	destroy(): this {
-		if (this.destroyed) return this;
-		this.destroyed = true;
-		this.readable = false;
-		this.writable = false;
-		this._readableState.endEmitted = true;
-		this._writableState.finished = true;
-		this.onClosed();
-		this.emit('close');
-		return this;
-	}
-
-	read(): null { return null; }
-	unshift(): void {}
-	setTimeout(): this { return this; }
-	setNoDelay(): this { return this; }
-	setKeepAlive(): this { return this; }
-	pause(): this { return this; }
-	resume(): this { return this; }
-	cork(): void {}
-	uncork(): void {}
-}
-
-interface WsConnection {
-	socket: SwUpgradeSocket;
-	decoder: FrameDecoder;
-	handshakeDone: boolean;
-	/** Reassembly buffer for fragmented data frames. */
-	fragments: Uint8Array[];
-	fragmentOpcode: number;
 }
 
 function bytesToBase64(bytes: Uint8Array): string {
@@ -160,7 +81,7 @@ export class ServiceWorkerBridge {
 	/** Stable id for this box; the SW routes /_sw/<boxId>/<port>/ here. */
 	readonly boxId: string = makeBoxId();
 	private port: MessagePort | null = null;
-	private wsConns = new Map<string, WsConnection>();
+	private wsConns = new Map<string, WsPipe>();
 	private registration: ServiceWorkerRegistration | null = null;
 
 	constructor(private portRegistry: Map<number, VirtualRequestHandler>) {}
@@ -223,7 +144,7 @@ export class ServiceWorkerBridge {
 		this.detach();
 		// A reconnect means the SW restarted; any prior WS connections are dead
 		// (their frame state lived in the old SW). Vite's client will reopen.
-		for (const conn of this.wsConns.values()) conn.socket.destroy();
+		for (const pipe of this.wsConns.values()) pipe.close();
 		this.wsConns.clear();
 		this.port = port;
 		port.onmessage = (event: MessageEvent) => {
@@ -252,7 +173,7 @@ export class ServiceWorkerBridge {
 	 * and it no longer reconnects on controllerchange. Used when a box reboots.
 	 */
 	destroy(): void {
-		for (const conn of this.wsConns.values()) conn.socket.destroy();
+		for (const pipe of this.wsConns.values()) pipe.close();
 		this.wsConns.clear();
 		this.detach();
 		activeBridges.delete(this.boxId);
@@ -297,130 +218,43 @@ export class ServiceWorkerBridge {
 
 	/**
 	 * Open a WebSocket into the in-VM ws server on behalf of a browser shim.
-	 * Fabricates the HTTP upgrade so Vite's real ws server runs its handshake,
-	 * then bridges frames ⟷ the shim's message-level protocol.
+	 *
+	 * `openWsPipe` forges the HTTP upgrade so the real server runs its own
+	 * handshake and owns the frame/handshake handling; this method is only the
+	 * translation to the shim's message protocol.
 	 */
 	private handleWsOpen(msg: SwWsOpenMessage): void {
 		const { connId, port, url, protocol } = msg;
-		const upgradeHandler = getUpgradeHandlers(this.portRegistry).get(port);
-		if (!upgradeHandler) {
+
+		const pipe = openWsPipe(this.portRegistry, port, url, {
+			onOpen: () => this.port?.postMessage({ type: 'ws-opened', connId }),
+			onMessage: (payload, binary) => this.port?.postMessage({
+				type: 'ws-message',
+				connId,
+				data: bytesToBase64(payload),
+				binary,
+			}),
+			onClose: () => {
+				if (this.wsConns.delete(connId)) this.port?.postMessage({ type: 'ws-close', connId });
+			},
+		}, { protocol });
+
+		if (!pipe) {
 			this.port?.postMessage({ type: 'ws-close', connId });
 			return;
 		}
-
-		const conn: WsConnection = {
-			socket: null as unknown as SwUpgradeSocket,
-			decoder: new FrameDecoder(),
-			handshakeDone: false,
-			fragments: [],
-			fragmentOpcode: 0,
-		};
-
-		const socket = new SwUpgradeSocket(
-			(bytes) => this.onServerBytes(connId, bytes),
-			() => {
-				if (this.wsConns.delete(connId)) {
-					this.port?.postMessage({ type: 'ws-close', connId });
-				}
-			},
-		);
-		conn.socket = socket;
-		this.wsConns.set(connId, conn);
-
-		// A fabricated Sec-WebSocket-Key; the shim provides no Origin (the ws
-		// server validates Origin against its own host and the browser page
-		// carries the preview origin) and no Extensions (skip permessage-deflate
-		// so the bridge never has to inflate).
-		const keyBytes = new Uint8Array(16);
-		randomMask(keyBytes);
-		const headers: Record<string, string> = {
-			upgrade: 'websocket',
-			connection: 'Upgrade',
-			'sec-websocket-version': '13',
-			'sec-websocket-key': bytesToBase64(keyBytes),
-		};
-		if (protocol) headers['sec-websocket-protocol'] = protocol;
-
-		const delivered = upgradeHandler({ method: 'GET', url, headers }, socket, new Uint8Array(0));
-		if (!delivered) {
-			this.wsConns.delete(connId);
-			socket.destroy();
-		}
+		this.wsConns.set(connId, pipe);
 	}
 
-	/** Bytes the in-VM ws server wrote toward the browser: 101 handshake, then frames. */
-	private onServerBytes(connId: string, bytes: Uint8Array): void {
-		const conn = this.wsConns.get(connId);
-		if (!conn) return;
-		let frameBytes = bytes;
-
-		if (!conn.handshakeDone) {
-			const split = splitHandshake(bytes);
-			if (!split) return; // handshake response not complete yet
-			conn.handshakeDone = true;
-			this.port?.postMessage({ type: 'ws-opened', connId });
-			if (split.rest.length === 0) return;
-			frameBytes = split.rest;
-		}
-
-		for (const frame of conn.decoder.push(frameBytes)) {
-			this.onServerFrame(connId, conn, frame);
-		}
-	}
-
-	private onServerFrame(connId: string, conn: WsConnection, frame: { opcode: number; payload: Uint8Array; fin: boolean }): void {
-		if (frame.opcode === OPCODE.ping) {
-			// Auto-pong on the shim's behalf.
-			conn.socket.emit('data', encodeFrame(OPCODE.pong, frame.payload, randomMask));
-			return;
-		}
-		if (frame.opcode === OPCODE.pong) return;
-		if (frame.opcode === OPCODE.close) {
-			conn.socket.destroy();
-			return;
-		}
-
-		// text / binary / continuation — reassemble fragments.
-		if (frame.opcode !== OPCODE.continuation) conn.fragmentOpcode = frame.opcode;
-		conn.fragments.push(frame.payload);
-		if (!frame.fin) return;
-
-		let total = 0;
-		for (const f of conn.fragments) total += f.length;
-		const full = new Uint8Array(total);
-		let off = 0;
-		for (const f of conn.fragments) { full.set(f, off); off += f.length; }
-		conn.fragments = [];
-
-		const binary = conn.fragmentOpcode === OPCODE.binary;
-		this.port?.postMessage({
-			type: 'ws-message',
-			connId,
-			data: bytesToBase64(full),
-			binary,
-		});
-	}
-
-	/** A message the browser shim sent → frame it (masked) into the ws server. */
+	/** A message the browser shim sent → into the ws server. */
 	private handleWsSend(msg: SwWsSendMessage): void {
-		const conn = this.wsConns.get(msg.connId);
-		if (!conn || conn.socket.destroyed) return;
-		const payload = base64ToBytes(msg.data);
-		const opcode = msg.binary ? OPCODE.binary : OPCODE.text;
-		// Emit a Buffer (not a raw Uint8Array): in-VM ws servers (e.g. Metro's HMR
-		// server via the `ws` package) parse frames with Buffer methods like
-		// readUInt16BE, which a plain Uint8Array lacks.
-		conn.socket.emit('data', Buffer.from(encodeFrame(opcode, payload, randomMask)));
+		this.wsConns.get(msg.connId)?.send(base64ToBytes(msg.data), msg.binary);
 	}
 
 	private handleWsClose(msg: SwWsCloseMessage): void {
-		const conn = this.wsConns.get(msg.connId);
-		if (!conn) return;
+		const pipe = this.wsConns.get(msg.connId);
+		if (!pipe) return;
 		this.wsConns.delete(msg.connId);
-		// Send a WS close frame, then tear the socket down.
-		if (!conn.socket.destroyed) {
-			conn.socket.emit('data', Buffer.from(encodeFrame(OPCODE.close, new Uint8Array(0), randomMask)));
-			conn.socket.destroy();
-		}
+		pipe.close();
 	}
 }

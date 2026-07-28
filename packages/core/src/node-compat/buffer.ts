@@ -269,6 +269,51 @@ export class Buffer extends Uint8Array {
     return offset + 4;
   }
 
+  /**
+   * Variable-width unsigned write, 1–6 bytes, big-endian.
+   *
+   * Needed by `ws`: a WebSocket frame carrying more than 65535 bytes uses the
+   * 64-bit length form, which `ws` writes with `writeUIntBE(len, offset, 6)`.
+   * Without this, any in-VM WebSocket message over ~64 KB threw
+   * "target.writeUIntBE is not a function" — so HMR payloads and large realtime
+   * messages failed while small ones worked.
+   *
+   * Uses arithmetic rather than bit shifts: `>>>` truncates to 32 bits, and this
+   * has to stay exact up to 6 bytes (2^48).
+   */
+  writeUIntBE(value: number, offset = 0, byteLength = 1): number {
+    let remaining = value;
+    for (let i = byteLength - 1; i >= 0; i--) {
+      this[offset + i] = remaining % 256;
+      remaining = Math.floor(remaining / 256);
+    }
+    return offset + byteLength;
+  }
+
+  /** Variable-width unsigned write, 1–6 bytes, little-endian. */
+  writeUIntLE(value: number, offset = 0, byteLength = 1): number {
+    let remaining = value;
+    for (let i = 0; i < byteLength; i++) {
+      this[offset + i] = remaining % 256;
+      remaining = Math.floor(remaining / 256);
+    }
+    return offset + byteLength;
+  }
+
+  /** Variable-width unsigned read, 1–6 bytes, big-endian. */
+  readUIntBE(offset = 0, byteLength = 1): number {
+    let value = 0;
+    for (let i = 0; i < byteLength; i++) value = value * 256 + this[offset + i];
+    return value;
+  }
+
+  /** Variable-width unsigned read, 1–6 bytes, little-endian. */
+  readUIntLE(offset = 0, byteLength = 1): number {
+    let value = 0;
+    for (let i = byteLength - 1; i >= 0; i--) value = value * 256 + this[offset + i];
+    return value;
+  }
+
   writeInt8(value: number, offset = 0): number {
     this[offset] = value & 0xff;
     return offset + 1;
