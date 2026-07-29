@@ -1,5 +1,27 @@
 # @lifo-sh/core
 
+## 0.10.2
+
+### Patch Changes
+
+- browser-metro: treat a numeric `lineHeight` as pixels
+
+  The className patch used React DOM's unitless-property list verbatim, which
+  includes `lineHeight` — correct for CSS, where a bare `line-height` is a font-size
+  multiplier, but wrong for React Native. `lineHeight: 24` in an app's style means
+  **24 pixels**; applied as `line-height: 24` it became a 24× multiplier, so text
+  rendered with enormous line spacing in the preview.
+
+  `lineHeight` is removed from that list, so it gets the `px` suffix like every other
+  dimensional property, matching RN and react-native-web. String values are still
+  passed through untouched, so `lineHeight: '1.5'` keeps working for anyone who wants
+  CSS semantics deliberately.
+
+  Also adds the first tests for these shims — the unit-suffix rule is now pinned
+  (`lineHeight` → px; `opacity`/`flex`/`fontWeight` untouched; strings preserved),
+  plus a check that the injected module still parses, since a syntax error there is
+  silent until an app renders.
+
 ## 0.10.0
 
 ### Minor Changes
