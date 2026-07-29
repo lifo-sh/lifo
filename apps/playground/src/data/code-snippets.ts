@@ -553,6 +553,10 @@ const CODE_ORCHD = `\
 <span class="code-comment"># ORCHD: boot a whole project from the manifest that</span>
 <span class="code-comment"># ships INSIDE it. One orchd.json describes the workloads</span>
 <span class="code-comment"># for a host, for Docker and for a Lifo box.</span>
+<span class="code-comment">#</span>
+<span class="code-comment"># orchd is a plain npm package — nothing Lifo-specific:</span>
+<span class="code-comment">#   npx orchd up          (on your machine)</span>
+<span class="code-comment">#   lifo install orchd    (in a box)</span>
 
 <span class="code-fn">orchd</span> up            <span class="code-comment"># starts every workload, each on its own port</span>
 <span class="code-fn">jobs</span>                <span class="code-comment"># api :3000 · mobile :8081 — prompt comes back</span>
@@ -572,9 +576,12 @@ const CODE_ORCHD = `\
 }
 
 <span class="code-comment"># \${url:api} resolves to http://localhost:3000 in a box,</span>
-<span class="code-comment"># and to whatever the api landed on elsewhere. The lifo</span>
-<span class="code-comment"># profile swaps real Metro for browser-metro — which is</span>
-<span class="code-comment"># why this boots with no node_modules at all.</span>`;
+<span class="code-comment"># and to whatever the api landed on elsewhere.</span>
+<span class="code-comment">#</span>
+<span class="code-comment"># No profile applies unless a runner asks for one: a host</span>
+<span class="code-comment"># runs the plain run entry (npm run dev, expo start),</span>
+<span class="code-comment"># while in a box the lifo profile swaps real Metro for</span>
+<span class="code-comment"># browser-metro — which is why this needs no node_modules.</span>`;
 
 export const codeSnippets: Record<string, string> = {
 	interactive: CODE_INTERACTIVE,

@@ -23,7 +23,7 @@
     "lifo-pkg-less": "workspace:*",
     "lifo-pkg-man": "workspace:*",
     "lifo-pkg-nano": "workspace:*",
-    "lifo-pkg-orchd": "workspace:*",
+    "orchd": "workspace:*",
     "lifo-pkg-vi": "workspace:*",
     "lucide-react": "^0.575.0",
     "monaco-editor": "^0.55.1",

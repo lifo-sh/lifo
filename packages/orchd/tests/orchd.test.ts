@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { VFS } from '@lifo-sh/core';
 import type { CommandContext, CommandOutputStream } from '@lifo-sh/core';
-import orchd, { applyProfile, assignPorts, expandArgv, resolveAll, resolveWorkload } from '../src/index.js';
+import orchd from '../src/lifo.js';
+import { applyProfile, assignPorts, expandArgv, resolveAll, resolveWorkload } from '../src/manifest.js';
 
 const MANIFEST = {
   name: 'rapidnative',
@@ -99,9 +100,24 @@ describe('resolution', () => {
   });
 
   it('resolves cwd from the manifest directory plus dir', () => {
-    const r = resolveWorkload(MANIFEST, { workload: 'mobile', port: '8081', configDir: '/proj' });
+    const r = resolveWorkload(MANIFEST, { workload: 'mobile', port: '8081', configDir: '/proj', profile: 'lifo' });
     expect(r.cwd).toBe('/proj/mobile');
     expect(r.argv).toEqual(['browser-metro', '--port', '8081']);
+  });
+
+  // The pure layer applies NO profile of its own — the runner chooses one. This
+  // is what lets the same package run a project's ordinary commands on a host
+  // (`npx orchd up`) while a box still gets browser-metro.
+  it('applies no profile unless the caller asks for one', () => {
+    const r = resolveWorkload(MANIFEST, { workload: 'mobile', port: '8081', configDir: '/proj' });
+    expect(r.argv).toEqual(['npx', 'expo', 'start', '--web', '--port', '8081']);
+    expect(r.env.BROWSER).toBeUndefined();
+  });
+
+  it('the in-box command still defaults to the lifo profile', async () => {
+    const { ctx } = ctxFor(['resolve', '--workload', 'mobile', '--port', '8081']);
+    expect(await orchd(ctx)).toBe(0);
+    expect(ctx.stdout.text).toContain('browser-metro');
   });
 
   it('passes the port via port_env when the workload asks for it', () => {

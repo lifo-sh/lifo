@@ -9,7 +9,7 @@
  * Run: node bench/test-orchd-up.mjs
  */
 import { Sandbox } from '../packages/core/dist/index.js';
-import orchdCommand from '../packages/lifo-pkg-orchd/dist/index.js';
+import orchdCommand from '../packages/orchd/dist/lifo.js';
 
 const APP = '/home/user/proj';
 const results = [];

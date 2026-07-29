@@ -1,15 +1,46 @@
-# lifo-pkg-orchd
+# orchd
 
-Run a workload described by an `orchd.json` inside [Lifo](https://lifo.sh).
-Install with `lifo install orchd`, or register it when embedding (see other
-lifo-pkg-* READMEs).
+Run a project from the `orchd.json` that ships inside it — on your machine, in
+Docker, or in a [Lifo](https://lifo.sh) box.
+
+```bash
+npx orchd up          # or: npm install -g orchd
+```
 
 [ORCHD](https://github.com/RapidNative/cloud) provisions per-project workloads
-across substrates — host processes, Docker containers, Lifo sandboxes. The same
-`orchd.json` describes all of them and travels *with* the project (inside a
-snapshot, a tarball, or an image), so whatever boots the project can read one
-file instead of being handed a command line. Inside a Lifo box, that is this
-command.
+across substrates. The same `orchd.json` describes all of them and travels *with*
+the project (inside a repo, a snapshot, a tarball, or an image), so whatever
+boots the project can read one file instead of being handed a command line.
+
+## One package, two runners
+
+| where | how it runs | what starts a workload |
+| --- | --- | --- |
+| your machine / CI / Docker | the `orchd` bin | a real child process |
+| inside a Lifo box | the `orchd` command | a job in the Lifo shell |
+
+Both sit on the same pure resolution layer (`orchd`'s main export), so `resolve`
+answers identically in either place — only execution differs.
+
+In a box the command registers itself through the `lifo.commands` field in
+`package.json`, which lifo keys on by *manifest field*, not by package name. So:
+
+```bash
+lifo install orchd    # in a box
+npm install -g orchd  # on a host
+```
+
+…install the same package. Embedders can import the box command directly:
+
+```ts
+import orchdCommand from 'orchd/lifo';
+sandbox.commands.register('orchd', orchdCommand);
+```
+
+**Profiles are not applied unless a runner asks for one.** On a host you get the
+project's ordinary commands (`npm run dev`, `expo start --web`); the in-box
+command defaults to `--profile lifo`. That is the whole point of profiles — see
+below.
 
 ## Usage
 
@@ -21,7 +52,7 @@ orchd up [options]                    start every workload, each on its own port
 
   -w, --workload <name>   workload to act on (default: the only one, if unambiguous)
   -p, --port <n>          port to bind; substituted for $PORT (default: $PORT env)
-      --profile <name>    profile to merge (default: lifo)
+      --profile <name>    profile to merge (default: none on a host, lifo in a box)
   -c, --config <path>     manifest path (default: ./orchd.json, then /orchd.json)
       --all               (resolve) the whole project, not one workload
       --json              (resolve) emit {cwd, argv, env, install} instead of a line
@@ -33,7 +64,25 @@ orchd up [options]                    start every workload, each on its own port
 
 ## Booting the whole project
 
-`orchd up` starts every workload at once:
+`orchd up` starts every workload at once. On a host it supervises them in the
+foreground, the way `docker compose up` does — interleaved output under a
+per-workload prefix, and Ctrl-C stops the set:
+
+```console
+$ npx orchd up
+orchd: api -> PORT=3000 npm run dev (cwd /work/demo/api)
+orchd: web -> API_URL=http://localhost:3000 PORT=3001 npm run dev (cwd /work/demo/web)
+api | api dev server on 3000
+web | web dev server on 3001
+^C
+orchd: stopping…
+```
+
+If any one workload exits, the rest are brought down and `up` exits with that
+workload's code — a half-booted project is not a useful state to be left in.
+
+In a box the same command backgrounds instead, because there you want the prompt
+back:
 
 ```console
 $ orchd up
@@ -57,16 +106,18 @@ is filled in:
 those siblings are separate subdomains; in a box everything shares localhost, so
 the manifest names them and `up` resolves the addresses.
 
-Workloads start as **background jobs** — a shell runs one foreground command at
-a time and a dev server never exits, so foregrounding would boot only the first
-one. `up` returns to the prompt with everything running; `jobs` lists them.
+Inside a box, workloads start as **background jobs** — a shell runs one
+foreground command at a time and a dev server never exits, so foregrounding
+would boot only the first one. `up` returns to the prompt with everything
+running; `jobs` lists them. On a host there is no such constraint, so `up`
+stays in the foreground and owns the children.
 
 ## Profiles
 
-The command a workload runs depends on what is executing it. Real Metro wants
-`expo start --web`; a Lifo box usually wants `browser-metro`, which bundles via
-a hosted pre-bundler instead of reading `node_modules`. One manifest, one
-override block:
+The command a workload runs depends on what is executing it. A host wants the
+project's real command — `npm run dev`, or `expo start --web`; a Lifo box usually
+wants `browser-metro`, which bundles via a hosted pre-bundler instead of reading
+`node_modules`. One manifest, one override block:
 
 ```jsonc
 {
@@ -82,6 +133,10 @@ override block:
   }]
 }
 ```
+
+The base `run` is what a host executes. `profiles.lifo` applies only when a
+runner asks for it, which the in-box command does by default and the bin does
+only with `--profile lifo`.
 
 `run`, `install` and `dir` replace wholesale when a profile overrides them;
 `env` merges key-wise, so a profile can add one variable without restating the
@@ -103,7 +158,11 @@ $ orchd resolve --workload mobile --port 8082 --json
 
 ## `resolve` vs `run` vs `up`
 
-Prefer **`resolve`** for anything long-running. `run` executes through
+`resolve --json` is the machine interface, and it is the same on both runners —
+a supervising host gets `{ cwd, argv, env, install }` and can run the workload
+with its own streaming, logging and signals.
+
+Inside a box, prefer **`resolve`** for anything long-running. There `run` executes through
 `ctx.executeCapture`, which buffers stdout/stderr and takes no `AbortSignal`, so
 a dev server started that way produces no output until it exits and is not torn
 down when the command is aborted. `run` is a convenience for interactive and
@@ -123,7 +182,7 @@ sandbox.shell.execute(spec.argv.join(' '), { cwd: spec.cwd, env: { ...sandbox.en
 await sandbox.waitForPort(8082);
 ```
 
-## Note on background jobs and the working directory
+## Note on background jobs and the working directory (box only)
 
 A backgrounded job resolves its paths when it **starts**, not when it is
 launched. Two consequences, both handled here but worth knowing:

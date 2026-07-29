@@ -3,7 +3,7 @@ import { PanelTopOpen, PanelTopClose } from 'lucide-react';
 import { Panel as RawPanel, type ImperativePanelHandle } from 'react-resizable-panels';
 import { Sandbox, ServiceWorkerBridge, pruneExpoModules } from '@lifo-sh/core';
 import gitCommand from 'lifo-pkg-git';
-import orchdCommand from 'lifo-pkg-orchd';
+import orchdCommand from 'orchd/lifo';
 import type { Terminal } from '@lifo-sh/ui';
 import { ExamplePanel } from '@/components/example-panel';
 import { PreviewTabs, type PreviewTab } from '@/components/preview-tabs';

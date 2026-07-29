@@ -15,7 +15,7 @@ export function orchdProjectFiles(dir: string): Record<string, string> {
             kind: 'node',
             dir: 'api',
             port: 3000,
-            run: ['node', 'index.js'],
+            run: ['npm', 'run', 'dev'],
             port_env: 'PORT',
           },
           {
@@ -99,7 +99,7 @@ http
 `,
 
     [`${dir}/api/package.json`]: JSON.stringify(
-      { name: 'orchd-demo-api', private: true, scripts: { start: 'node index.js' } },
+      { name: 'orchd-demo-api', private: true, scripts: { dev: 'node index.js' } },
       null,
       2,
     ) + '\n',
@@ -113,6 +113,15 @@ host, in Docker, and in a Lifo box. Only profiles.lifo differs.
 Getting started
 ---------------
   orchd up                       start every workload, each on its own port
+
+Nothing here is Lifo-specific. \`orchd\` is an ordinary npm package, so the same
+project and the same manifest run on your machine with:
+
+  npx orchd up                   (or: npm install -g orchd)
+
+There a workload is a real child process and \`up\` supervises in the foreground,
+Ctrl-C stopping the set. Here the shell backgrounds them so you get the prompt
+back.
 
 That's the whole thing: the api comes up on 3000, the app on 8081, and you get
 the prompt back. \`jobs\` lists what is running.
@@ -141,9 +150,11 @@ resolves to whatever the api landed on there. The app never has to know.
 
 Why there is no node_modules
 ----------------------------
-The mobile workload's default \`run\` is real Metro. The lifo profile swaps it for
-browser-metro, which bundles from the VFS — so the box boots without installing
-an Expo toolchain. Look at profiles.lifo in orchd.json to see the whole of it.
+The mobile workload's default \`run\` is real Metro — which is what you get on a
+host. Only in a box does the lifo profile swap it for browser-metro, which
+bundles from the VFS, so this boots without installing an Expo toolchain. No
+profile is applied unless a runner asks for one; the in-box command asks for
+\`lifo\`, the \`orchd\` bin does not. Look at profiles.lifo in orchd.json.
 `,
   };
 }
