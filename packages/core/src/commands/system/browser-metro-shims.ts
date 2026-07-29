@@ -195,13 +195,24 @@ React.createElement = function() {
   // ref callback that writes via element.style[k] = v after mount.
   var deferredUserStyle = null;
   if (cssObj && cleanedStyle && typeof cleanedStyle === "object" && !Array.isArray(cleanedStyle)) {
-    // Plain object: defer to ref only if it has any real keys. An empty
-    // object (often the post-_stripUndefined shape of a buggy user style)
-    // collapses to just cssObj — same as having no user style at all.
-    if (Object.keys(cleanedStyle).length > 0) {
-      deferredUserStyle = cleanedStyle;
+    if (cleanedStyle.$$css === true) {
+      // The style is itself a $$css token object — a parent component's
+      // converted className forwarded through {...rest} (e.g. a Surface
+      // wrapper spreading caller props onto its inner View). Merge the two
+      // token sets into ONE $$css object; the defer-to-ref path below would
+      // write tokens like el.style["gap-3"] = "gap-3" — invalid CSS
+      // properties, silently dropped — and the caller's classes would vanish.
+      // Caller tokens go last, mirroring cn(base, className) precedence.
+      props.style = Object.assign({}, cssObj, cleanedStyle);
+    } else {
+      // Plain object: defer to ref only if it has any real keys. An empty
+      // object (often the post-_stripUndefined shape of a buggy user style)
+      // collapses to just cssObj — same as having no user style at all.
+      if (Object.keys(cleanedStyle).length > 0) {
+        deferredUserStyle = cleanedStyle;
+      }
+      props.style = cssObj;
     }
-    props.style = cssObj;
   } else if (cssObj && Array.isArray(cleanedStyle) && cleanedStyle.length > 0) {
     // Array form — preserve previous behavior, styleq handles arrays.
     props.style = [cssObj].concat(cleanedStyle);
