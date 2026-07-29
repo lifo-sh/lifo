@@ -1,33 +1,46 @@
 {
-  "name": "lifo-pkg-orchd",
+  "name": "orchd",
   "version": "0.1.0",
-  "description": "Run a workload described by orchd.json inside Lifo",
+  "description": "Run a project from the orchd.json that ships inside it — on a host, in Docker, or in a Lifo box",
   "license": "MIT",
   "author": "Sanket Sahu",
   "type": "module",
   "main": "dist/index.js",
   "module": "dist/index.js",
   "types": "dist/index.d.ts",
+  "bin": {
+    "orchd": "dist/cli.js"
+  },
   "exports": {
     ".": {
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
+    },
+    "./lifo": {
+      "import": "./dist/lifo.js",
+      "types": "./dist/lifo.d.ts"
     }
   },
   "files": [
     "dist"
   ],
+  "engines": {
+    "node": ">=18"
+  },
   "publishConfig": {
     "access": "public"
   },
   "lifo": {
     "commands": {
-      "orchd": "./dist/index.js"
+      "orchd": "./dist/lifo.js"
     }
   },
   "keywords": [
-    "lifo-pkg",
-    "orchd"
+    "orchd",
+    "orchestration",
+    "monorepo",
+    "dev-server",
+    "lifo-pkg"
   ],
   "scripts": {
     "build": "vite build",
@@ -45,6 +58,7 @@
   },
   "devDependencies": {
     "@lifo-sh/core": "workspace:*",
+    "@types/node": "^22.19.11",
     "typescript": "^5.7.0",
     "vite": "^6.0.0",
     "vite-plugin-dts": "^4.5.0",

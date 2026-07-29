@@ -25,6 +25,7 @@
     "lifo-pkg-less",
     "lifo-pkg-man",
     "lifo-pkg-nano",
-    "lifo-pkg-vi"
+    "lifo-pkg-vi",
+    "orchd"
   ]
 }

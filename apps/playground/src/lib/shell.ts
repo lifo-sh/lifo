@@ -36,7 +36,7 @@ import viCommand from 'lifo-pkg-vi';
 import calCommand from 'lifo-pkg-cal';
 import bcCommand from 'lifo-pkg-bc';
 import manCommand from 'lifo-pkg-man';
-import orchdCommand from 'lifo-pkg-orchd';
+import orchdCommand from 'orchd/lifo';
 
 /**
  * CORS-proxy env for every browser box (git clone, expo, etc. can't reach

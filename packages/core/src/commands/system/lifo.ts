@@ -58,13 +58,26 @@ async function lifoInstall(
     return 1;
   }
 
-  // Resolve: if user types "ffmpeg", install "lifo-pkg-ffmpeg"
-  const npmName = name.startsWith('lifo-pkg-') ? name : `lifo-pkg-${name}`;
+  // Resolve: if the user types "ffmpeg", install "lifo-pkg-ffmpeg". But a lifo
+  // command can also ship inside an ordinary npm package — the runtime keys on
+  // the `lifo` field in package.json, not on the name (see readLifoManifest) —
+  // so `lifo install orchd` must be able to land the package actually called
+  // `orchd`. Try the convention first, then the bare name.
+  const candidates =
+    name.startsWith('lifo-pkg-') ? [name] : [`lifo-pkg-${name}`, name];
 
-  ctx.stdout.write(`Installing ${npmName} globally...\n`);
-
-  // Install directly (no shell.execute round-trip)
-  const exitCode = await npmInstallGlobal(npmName, ctx, registry);
+  let npmName = candidates[0];
+  let exitCode = 1;
+  for (const candidate of candidates) {
+    npmName = candidate;
+    ctx.stdout.write(`Installing ${npmName} globally...\n`);
+    // Install directly (no shell.execute round-trip)
+    exitCode = await npmInstallGlobal(npmName, ctx, registry);
+    if (exitCode === 0) break;
+    if (candidate !== candidates[candidates.length - 1]) {
+      ctx.stdout.write(`lifo: ${npmName} not found, trying ${candidates[candidates.length - 1]}...\n`);
+    }
+  }
   if (exitCode !== 0) return exitCode;
 
   // After npm install, check for lifo manifest and re-register with lifo runtime
@@ -98,7 +111,12 @@ async function lifoRemove(
     return 1;
   }
 
-  const npmName = name.startsWith('lifo-pkg-') ? name : `lifo-pkg-${name}`;
+  // Mirror install's resolution: prefer the lifo-pkg-* convention, but remove a
+  // bare-named package (e.g. `orchd`) if that is what is actually installed.
+  const npmName =
+    name.startsWith('lifo-pkg-') ? name
+    : ctx.vfs.exists(join(GLOBAL_MODULES, `lifo-pkg-${name}`)) ? `lifo-pkg-${name}`
+    : name;
   const pkgDir = join(GLOBAL_MODULES, npmName);
 
   if (!ctx.vfs.exists(pkgDir)) {
