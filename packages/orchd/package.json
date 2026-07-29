@@ -1,7 +1,7 @@
 {
   "name": "orchd",
-  "version": "0.1.0",
-  "description": "Run a project from the orchd.json that ships inside it — on a host, in Docker, or in a Lifo box",
+  "version": "8.0.0",
+  "description": "Run a project from the orchd.json that ships inside it \u2014 on a host, in Docker, or in a Lifo box",
   "license": "MIT",
   "author": "Sanket Sahu",
   "type": "module",

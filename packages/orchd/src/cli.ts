@@ -70,7 +70,7 @@ function pipePrefixed(child: ChildProcess, prefix: string): void {
   }
 }
 
-function spawnWorkload(r: Resolved, opts: { prefix?: string } = {}): ChildProcess {
+function spawnWorkload(r: Resolved, opts: { prefix?: string; group?: boolean } = {}): ChildProcess {
   const [cmd, ...args] = r.argv;
   const child = spawn(cmd, args, {
     cwd: r.cwd,
@@ -79,9 +79,32 @@ function spawnWorkload(r: Resolved, opts: { prefix?: string } = {}): ChildProces
     // No shell: argv is already an array, and going through a shell would make
     // quoting the caller's problem and orphan the process group on teardown.
     shell: false,
+    // `up` gives each workload its own process group so teardown can signal the
+    // whole tree. A real `run` is usually a launcher — `npm run dev` execs npm,
+    // which spawns the server as a GRANDCHILD — and child.kill() would reap only
+    // npm, orphaning the server still holding the port. Interactive Ctrl-C hides
+    // this (the tty signals the foreground group), but our own teardown paths do
+    // not. See killTree.
+    //
+    // Not used for `run`, where stdio is inherited: a detached child sits outside
+    // the terminal's foreground group and gets SIGTTIN the moment it reads stdin,
+    // which would break interactive dev servers.
+    detached: opts.group === true,
   });
   if (opts.prefix) pipePrefixed(child, opts.prefix);
   return child;
+}
+
+/** Signal a workload's whole process group, falling back to the child alone. */
+function killTree(child: ChildProcess, signal: NodeJS.Signals): void {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  try {
+    // Negative pid = the process group created by detached: true.
+    if (child.pid !== undefined) process.kill(-child.pid, signal);
+  } catch {
+    // ESRCH (already gone) or EPERM — the direct kill is the best remaining try.
+    child.kill(signal);
+  }
 }
 
 function runToCompletion(r: Resolved, argv: string[], label: string): Promise<void> {
@@ -113,9 +136,7 @@ async function up(all: Resolved[]): Promise<number> {
   const teardown = (signal: NodeJS.Signals = 'SIGTERM') => {
     if (shuttingDown) return;
     shuttingDown = true;
-    for (const child of children.values()) {
-      if (child.exitCode === null && child.signalCode === null) child.kill(signal);
-    }
+    for (const child of children.values()) killTree(child, signal);
   };
   process.on('SIGINT', () => { process.stderr.write('\norchd: stopping…\n'); teardown('SIGINT'); });
   process.on('SIGTERM', () => teardown('SIGTERM'));
@@ -123,7 +144,7 @@ async function up(all: Resolved[]): Promise<number> {
   const exits: Promise<void>[] = [];
   all.forEach((r, i) => {
     process.stderr.write(`orchd: ${r.workload.name} -> ${shellLine(r)} (cwd ${r.cwd})\n`);
-    const child = spawnWorkload(r, { prefix: prefixer(r.workload.name, width, i) });
+    const child = spawnWorkload(r, { prefix: prefixer(r.workload.name, width, i), group: true });
     children.set(r.workload.name, child);
     exits.push(new Promise<void>((res) => {
       child.on('error', (e) => {
