@@ -140,5 +140,4 @@ See them all on [rapidnative.com/open-source](https://www.rapidnative.com/open-s
 
 ## License
 
-
 MIT
