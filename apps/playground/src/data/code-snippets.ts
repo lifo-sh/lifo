@@ -549,6 +549,33 @@ app.<span class="code-fn">listen</span>(<span class="code-const">3000</span>)
 <span class="code-comment"># the preview pane loads /_sw/3000/ — the Express app</span>
 <span class="code-comment"># served from inside your browser, API + static and all.</span>`;
 
+const CODE_ORCHD = `\
+<span class="code-comment"># ORCHD: boot a whole project from the manifest that</span>
+<span class="code-comment"># ships INSIDE it. One orchd.json describes the workloads</span>
+<span class="code-comment"># for a host, for Docker and for a Lifo box.</span>
+
+<span class="code-fn">orchd</span> up            <span class="code-comment"># starts every workload, each on its own port</span>
+<span class="code-fn">jobs</span>                <span class="code-comment"># api :3000 · mobile :8081 — prompt comes back</span>
+
+<span class="code-comment"># inspect instead of running:</span>
+<span class="code-fn">orchd</span> list          <span class="code-comment"># the workloads in the manifest</span>
+<span class="code-fn">orchd</span> resolve --all --json
+<span class="code-comment">#   ↳ { cwd, argv, env, install } per workload — exactly</span>
+<span class="code-comment">#     what a supervising host would execute</span>
+
+<span class="code-comment"># orchd.json — workloads refer to each other by NAME:</span>
+{
+  <span class="code-string">"name"</span>: <span class="code-string">"mobile"</span>, <span class="code-string">"port"</span>: <span class="code-const">8081</span>,
+  <span class="code-string">"run"</span>: [<span class="code-string">"npx"</span>, <span class="code-string">"expo"</span>, <span class="code-string">"start"</span>, <span class="code-string">"--web"</span>, <span class="code-string">"--port"</span>, <span class="code-string">"$PORT"</span>],
+  <span class="code-string">"env"</span>: { <span class="code-string">"EXPO_PUBLIC_API_URL"</span>: <span class="code-string">"\${url:api}"</span> },
+  <span class="code-string">"profiles"</span>: { <span class="code-string">"lifo"</span>: { <span class="code-string">"run"</span>: [<span class="code-string">"browser-metro"</span>, <span class="code-string">"."</span>] } }
+}
+
+<span class="code-comment"># \${url:api} resolves to http://localhost:3000 in a box,</span>
+<span class="code-comment"># and to whatever the api landed on elsewhere. The lifo</span>
+<span class="code-comment"># profile swaps real Metro for browser-metro — which is</span>
+<span class="code-comment"># why this boots with no node_modules at all.</span>`;
+
 export const codeSnippets: Record<string, string> = {
 	interactive: CODE_INTERACTIVE,
 	headless: CODE_HEADLESS,
@@ -572,4 +599,5 @@ export const codeSnippets: Record<string, string> = {
 	'create-expo-app': CODE_CREATE_EXPO_APP,
 	'browser-metro': CODE_BROWSER_METRO,
 	'expo-supabase': CODE_EXPO_SUPABASE,
+	orchd: CODE_ORCHD,
 };
