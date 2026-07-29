@@ -58,9 +58,12 @@ var React = require("react");
 var _orig = React.createElement;
 
 // React's set of CSS properties whose numeric values are unitless (no px
-// suffix). Mirrors React DOM's internal list. Used when applying user
-// style via element.style[k] = v in a ref callback — numeric values for
-// any other key default to pixels (RN convention).
+// suffix). Mirrors React DOM's internal list, EXCEPT lineHeight: CSS allows
+// unitless line-height (a font-size multiplier) but RN/react-native-web
+// treat numeric lineHeight as pixels, so it must get a px suffix here.
+// Used when applying user style via element.style[k] = v in a ref
+// callback — numeric values for any other key default to pixels (RN
+// convention).
 var _UNITLESS = {
   animationIterationCount: true, aspectRatio: true, borderImageOutset: true,
   borderImageSlice: true, borderImageWidth: true, boxFlex: true,
@@ -69,7 +72,7 @@ var _UNITLESS = {
   flexNegative: true, flexOrder: true, gridArea: true, gridRow: true,
   gridRowEnd: true, gridRowSpan: true, gridRowStart: true, gridColumn: true,
   gridColumnEnd: true, gridColumnSpan: true, gridColumnStart: true,
-  fontWeight: true, lineClamp: true, lineHeight: true, opacity: true,
+  fontWeight: true, lineClamp: true, opacity: true,
   order: true, orphans: true, scale: true, tabSize: true, widows: true,
   zIndex: true, zoom: true,
 };
