@@ -44,12 +44,15 @@ function run(args: string[], cwd: string): { code: number; stdout: string; stder
   }
 }
 
+// Ports live in a high, unlikely range on purpose: 3000/3001 collide with a
+// developer's own dev servers, and a test asking for JSON then gets a Next.js
+// HTML page instead.
 const TWO_SERVERS = {
   name: 'e2e',
   workloads: [
-    { name: 'api', kind: 'node', dir: 'api', port: 3000, run: ['node', 'index.js'], port_env: 'PORT' },
+    { name: 'api', kind: 'node', dir: 'api', port: 34100, run: ['node', 'index.js'], port_env: 'PORT' },
     {
-      name: 'web', kind: 'node', dir: 'web', port: 3001, run: ['node', 'index.js'], port_env: 'PORT',
+      name: 'web', kind: 'node', dir: 'web', port: 34101, run: ['node', 'index.js'], port_env: 'PORT',
       env: { API_URL: '${url:api}' },
       // Present so we can prove a host does NOT pick it up.
       profiles: { lifo: { run: ['browser-metro', '.'] } },
@@ -100,7 +103,7 @@ describe('orchd bin', () => {
     const dir = project(TWO_SERVERS);
     const { stdout } = run(['resolve', '--all', '--json'], dir);
     const web = JSON.parse(stdout).find((r: { workload: string }) => r.workload === 'web');
-    expect(web.env.API_URL).toBe('http://localhost:3000');
+    expect(web.env.API_URL).toBe('http://localhost:34100');
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -151,8 +154,8 @@ describe('orchd bin', () => {
       }
     };
 
-    expect(await fetchJson(3000)).toEqual({ workload: 'api', port: 3000 });
-    expect(await fetchJson(3001)).toEqual({ workload: 'web', port: 3001 });
+    expect(await fetchJson(34100)).toEqual({ workload: 'api', port: 34100 });
+    expect(await fetchJson(34101)).toEqual({ workload: 'web', port: 34101 });
     // Output carries a per-workload prefix, the way `docker compose up` does.
     expect(out).toMatch(/api\s*\|/);
 
@@ -160,14 +163,54 @@ describe('orchd bin', () => {
     child.kill('SIGINT');
     await exited;
     // Both children are gone with the supervisor: nothing still holds the ports.
-    await expect(fetch('http://127.0.0.1:3000/').catch(() => 'refused')).resolves.toBe('refused');
+    await expect(fetch('http://127.0.0.1:34100/').catch(() => 'refused')).resolves.toBe('refused');
   }, 40_000);
+
+  // Regression: real `run` commands are launchers. `npm run dev` execs npm,
+  // which spawns the server as a GRANDCHILD, so signalling only the direct child
+  // reaped npm and orphaned the server — still holding its port after teardown.
+  // Interactive Ctrl-C masked it, because the tty signals the whole foreground
+  // group. Here the launcher is a plain node script so the test needs no npm.
+  it('tears down grandchildren too, not just the launcher it spawned', async () => {
+    const dir = project(
+      {
+        workloads: [
+          { name: 'viaLauncher', kind: 'node', dir: 'svc', port: 34120, run: ['node', 'launch.js'], port_env: 'PORT' },
+        ],
+      },
+      { 'svc/index.js': SERVER('deep'), 'svc/launch.js': `require('child_process').spawn(process.execPath, ['index.js'], { cwd: __dirname, stdio: 'inherit' });\nsetInterval(() => {}, 1000);\n` },
+    );
+    const child = spawn(process.execPath, [CLI, 'up', '--no-install'], { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'] });
+    running = child;
+
+    const deadline = Date.now() + 20_000;
+    for (;;) {
+      try { await fetch('http://127.0.0.1:34120/'); break; } catch (e) {
+        if (Date.now() > deadline) throw e;
+        await new Promise((r) => setTimeout(r, 150));
+      }
+    }
+
+    const exited = new Promise<void>((res) => child.on('exit', () => res()));
+    child.kill('SIGINT');
+    await exited;
+
+    // The grandchild must be gone with the launcher. Poll briefly: the port is
+    // released asynchronously, but an orphan holds it indefinitely.
+    let freed = false;
+    for (let i = 0; i < 20 && !freed; i++) {
+      try { await fetch('http://127.0.0.1:34120/'); await new Promise((r) => setTimeout(r, 150)); }
+      catch { freed = true; }
+    }
+    expect(freed, 'port 34120 still served after teardown — a grandchild was orphaned').toBe(true);
+    rmSync(dir, { recursive: true, force: true });
+  }, 45_000);
 
   it('up stops the whole set when one workload exits', async () => {
     const dir = project(
       {
         workloads: [
-          { name: 'ok', kind: 'node', dir: 'ok', port: 3010, run: ['node', 'index.js'], port_env: 'PORT' },
+          { name: 'ok', kind: 'node', dir: 'ok', port: 34110, run: ['node', 'index.js'], port_env: 'PORT' },
           { name: 'bad', kind: 'node', dir: 'bad', run: ['node', 'index.js'] },
         ],
       },
