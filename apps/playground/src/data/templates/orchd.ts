@@ -103,5 +103,47 @@ http
       null,
       2,
     ) + '\n',
+
+    [`${dir}/README.txt`]: `ORCHD — boot a whole project from the manifest inside it
+========================================================
+
+orchd.json describes this project's workloads once, and the same file works on a
+host, in Docker, and in a Lifo box. Only profiles.lifo differs.
+
+Getting started
+---------------
+  orchd up                       start every workload, each on its own port
+
+That's the whole thing: the api comes up on 3000, the app on 8081, and you get
+the prompt back. \`jobs\` lists what is running.
+
+Other commands
+--------------
+  orchd list                     the workloads in the manifest
+  orchd resolve -w api           the exact command line it would run
+  orchd resolve --all --json     { cwd, argv, env, install } per workload —
+                                 what a supervising host would execute
+  orchd up --no-install          skip the install step
+  orchd up --port-base 9000      assign ports from 9000 up
+  orchd --help                   everything else
+
+\`orchd\` on its own prints that help and exits 2 — \`up\` is the verb that starts
+things.
+
+How the app finds the api
+-------------------------
+Workloads refer to each other by NAME, not by a hardcoded address:
+
+  "env": { "EXPO_PUBLIC_API_URL": "\${url:api}" }
+
+In a box that resolves to http://localhost:3000. On a host with subdomains it
+resolves to whatever the api landed on there. The app never has to know.
+
+Why there is no node_modules
+----------------------------
+The mobile workload's default \`run\` is real Metro. The lifo profile swaps it for
+browser-metro, which bundles from the VFS — so the box boots without installing
+an Expo toolchain. Look at profiles.lifo in orchd.json to see the whole of it.
+`,
   };
 }

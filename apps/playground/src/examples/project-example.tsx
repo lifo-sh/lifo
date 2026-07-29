@@ -3,6 +3,7 @@ import { PanelTopOpen, PanelTopClose } from 'lucide-react';
 import { Panel as RawPanel, type ImperativePanelHandle } from 'react-resizable-panels';
 import { Sandbox, ServiceWorkerBridge, pruneExpoModules } from '@lifo-sh/core';
 import gitCommand from 'lifo-pkg-git';
+import orchdCommand from 'lifo-pkg-orchd';
 import type { Terminal } from '@lifo-sh/ui';
 import { ExamplePanel } from '@/components/example-panel';
 import { PreviewTabs, type PreviewTab } from '@/components/preview-tabs';
@@ -73,7 +74,18 @@ export function ProjectExample({ title, subtitle, files, cwd, previewPort, previ
       cwd,
       env: { ...browserCorsEnv(), ...env },
     });
-    sb.commands.register('git', gitCommand);
+    // Register the same packages the EXTRA terminals get (see bootExtraTerminal).
+    // Terminal 0 builds its registry through Sandbox.create rather than
+    // bootShell, so without this it silently lacked whatever `pkgs` asked for —
+    // the ORCHD example passed pkgs={['git','orchd']} and still answered
+    // "orchd: command not found" in the first terminal.
+    const wanted = pkgs ?? ['git'];
+    if (wanted.includes('git')) sb.commands.register('git', gitCommand);
+    if (wanted.includes('orchd')) sb.commands.register('orchd', orchdCommand);
+    if (wanted.includes('ffmpeg')) {
+      const { default: ffmpegCommand } = await import('lifo-pkg-ffmpeg');
+      sb.commands.register('ffmpeg', ffmpegCommand);
+    }
     sandboxRef.current = sb;
     setSandbox(sb);
 
