@@ -10,3 +10,6 @@ allowBuilds:
   esbuild: true
   # msw's script only installs the browser service-worker stub, which nothing here uses.
   msw: false
+
+minimumReleaseAgeExclude:
+  - browser-metro@1.0.32
