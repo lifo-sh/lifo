@@ -1,5 +1,61 @@
 # @lifo-sh/core
 
+## 0.10.3
+
+### Patch Changes
+
+- 6c89b00: browser-metro className patch: merge forwarded `$$css` token objects instead of dropping them. When a custom component's caller-supplied `className` (already converted to a `$$css` style object) was spread via `{...rest}` onto an inner element that had its own `className`, the patch treated it as a plain user style and deferred it to per-property `el.style["gap-3"] = "gap-3"` writes — invalid CSS properties, silently discarded — so the caller's classes never rendered. Token objects are now merged into one `$$css` object, caller tokens last, matching `cn(base, className)` precedence.
+- Depend on browser-metro 1.0.32, which fixes the preview router shim treating a
+  blob URL's own uuid as the current route.
+
+  `browser-metro` was pinned exactly at 1.0.31, so consumers that had already moved
+  to `^1.0.32` got a _second_, nested copy at
+  `node_modules/@lifo-sh/core/node_modules/browser-metro@1.0.31` — and since the
+  shim is injected by whichever copy core imports, the fix never reached the running
+  preview. The pin stays exact to match this package's existing style; it just moves
+  to the fixed version.
+
+  The upstream fix is RapidNative/reactnative-run#41: `parseUrl` no longer reads a
+  `blob:` URL's inner pathname (which _is_ the blob uuid), so a router calling
+  `history.replaceState(state, '', location.href)` on init — React Navigation does —
+  can no longer latch `/<blob-uuid>` as the current route and strand the preview on
+  Expo Router's "Unmatched Route".
+
+  Note this is one of two copies of that shim; `@lifo-sh/ui` carries its own, fixed
+  separately in the same release.
+
+- 421ba7f: `lifo install <name>` can now install a lifo command that ships inside an
+  ordinary npm package, not just a `lifo-pkg-*` one. The runtime always keyed
+  command discovery on the `lifo` field in package.json rather than the package
+  name, but the install/remove sugar unconditionally rewrote `foo` to
+  `lifo-pkg-foo` — so `lifo install orchd` could never find the package actually
+  called `orchd`. It now tries the convention first and falls back to the bare
+  name; `lifo remove` resolves against whichever is installed.
+- Updated dependencies [4c3257c]
+  - @lifo-sh/ui@0.10.3
+
+## 0.10.2
+
+### Patch Changes
+
+- browser-metro: treat a numeric `lineHeight` as pixels
+
+  The className patch used React DOM's unitless-property list verbatim, which
+  includes `lineHeight` — correct for CSS, where a bare `line-height` is a font-size
+  multiplier, but wrong for React Native. `lineHeight: 24` in an app's style means
+  **24 pixels**; applied as `line-height: 24` it became a 24× multiplier, so text
+  rendered with enormous line spacing in the preview.
+
+  `lineHeight` is removed from that list, so it gets the `px` suffix like every other
+  dimensional property, matching RN and react-native-web. String values are still
+  passed through untouched, so `lineHeight: '1.5'` keeps working for anyone who wants
+  CSS semantics deliberately.
+
+  Also adds the first tests for these shims — the unit-suffix rule is now pinned
+  (`lineHeight` → px; `opacity`/`flex`/`fontWeight` untouched; strings preserved),
+  plus a check that the injected module still parses, since a syntax error there is
+  silent until an app renders.
+
 ## 0.10.0
 
 ### Minor Changes

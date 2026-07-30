@@ -123,6 +123,21 @@ src/
 tests/                   # Mirrors src/ structure with full coverage
 ```
 
+## Related projects
+
+Lifo is built by the team behind **[RapidNative](https://rapidnative.com)** — AI that
+generates production-ready React Native apps and UIs from a prompt — alongside these
+open-source tools:
+
+| Project | What it is |
+| --- | --- |
+| [RapidNative](https://rapidnative.com) | AI that generates production-ready React Native apps and UIs from a prompt |
+| [tinbase](https://tinbase.dev) | A Supabase-compatible backend without Docker — one process, real Postgres, runs in the browser |
+| [ORCHD](https://rapidnative.github.io/orchd) | A multi-tenant workload orchestrator — per-tenant workloads that sleep when idle and wake on the next request |
+| [jetplane](https://sanketsahu.github.io/jetplane) | A Metro plugin and a thin dev server for Expo — many dev environments per machine |
+
+See them all on [rapidnative.com/open-source](https://www.rapidnative.com/open-source).
+
 ## License
 
 MIT

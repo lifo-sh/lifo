@@ -93,7 +93,27 @@ function routerShim(bundleBlob: string, realBundlePath: string): string {
   }
   function parseUrl(url) {
     var s = String(url);
-    if (s.indexOf('blob:') === 0) { try { var inner = new OrigURL(s.slice(5)); s = inner.pathname + inner.search + inner.hash; } catch(e) {} }
+    // A blob: URL identifies THIS document, so its path segment is the blob UUID and is
+    // never a route. Take the route from the fragment instead — the same convention the
+    // initial mount uses when it reads location.hash, and what sync() writes back.
+    //
+    // Reading inner.pathname here instead meant that any router calling
+    // history.replaceState(state, '', location.href) on init — React Navigation does —
+    // latched '/<blob-uuid>' as the current route. __ROUTER_SHIM_HASH__ then reported the
+    // UUID, and a host that restores that hash on reload (to preserve the in-app route
+    // across a rebuild) remounted at blob:<new-uuid>#<old-uuid> → "Unmatched Route".
+    //
+    // Only a preview whose route is "/" could hit it, because that is the one case where
+    // the mount URL carries no fragment for the shim to read back, so the home screen
+    // broke alone while its siblings kept working. It was also racy: it only bit when the
+    // router's replaceState ran before the first sync() had written the hash.
+    if (s.indexOf('blob:') === 0) {
+      var fragIdx = s.indexOf('#');
+      // No fragment means the URL tells us nothing about the route; keep where we are
+      // rather than adopting the UUID.
+      s = fragIdx >= 0 ? (s.slice(fragIdx + 1) || '/') : (virtualPathname + virtualSearch);
+      if (s.charAt(0) !== '/') s = '/' + s;
+    }
     try { var u = new OrigURL(s, virtualOrigin); return { pathname: u.pathname, search: u.search, hash: u.hash }; } catch(e) {}
     var pathname = s, search = '', hash = '';
     var hi = pathname.indexOf('#'); if (hi >= 0) { hash = pathname.slice(hi); pathname = pathname.slice(0, hi); }

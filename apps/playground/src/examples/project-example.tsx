@@ -3,6 +3,7 @@ import { PanelTopOpen, PanelTopClose } from 'lucide-react';
 import { Panel as RawPanel, type ImperativePanelHandle } from 'react-resizable-panels';
 import { Sandbox, ServiceWorkerBridge, pruneExpoModules } from '@lifo-sh/core';
 import gitCommand from 'lifo-pkg-git';
+import orchdCommand from 'orchd/lifo';
 import type { Terminal } from '@lifo-sh/ui';
 import { ExamplePanel } from '@/components/example-panel';
 import { PreviewTabs, type PreviewTab } from '@/components/preview-tabs';
@@ -25,6 +26,8 @@ export interface ProjectExampleProps {
   /** Offer "Prune node_modules" in the box menu (Expo projects) — shrinks the
    *  box to just what Metro needs before snapshotting. */
   pruneable?: boolean;
+  /** Extra in-VM packages to register in this example's shells (git is always on). */
+  pkgs?: Array<'git' | 'ffmpeg' | 'orchd'>;
 }
 
 /**
@@ -33,7 +36,7 @@ export interface ProjectExampleProps {
  * preview, split by a resizable handle. The SW bridge serves /_sw/<boxId>/<port>/
  * so each example routes to its own VM.
  */
-export function ProjectExample({ title, subtitle, files, cwd, previewPort, previews, env, pruneable }: ProjectExampleProps) {
+export function ProjectExample({ title, subtitle, files, cwd, previewPort, previews, env, pruneable, pkgs }: ProjectExampleProps) {
   const hasPreview = !!(previews?.length || previewPort);
   // Always present the preview as Chrome-like tabs, even for a single port.
   const previewTabs: PreviewTab[] = previews?.length
@@ -71,7 +74,18 @@ export function ProjectExample({ title, subtitle, files, cwd, previewPort, previ
       cwd,
       env: { ...browserCorsEnv(), ...env },
     });
-    sb.commands.register('git', gitCommand);
+    // Register the same packages the EXTRA terminals get (see bootExtraTerminal).
+    // Terminal 0 builds its registry through Sandbox.create rather than
+    // bootShell, so without this it silently lacked whatever `pkgs` asked for —
+    // the ORCHD example passed pkgs={['git','orchd']} and still answered
+    // "orchd: command not found" in the first terminal.
+    const wanted = pkgs ?? ['git'];
+    if (wanted.includes('git')) sb.commands.register('git', gitCommand);
+    if (wanted.includes('orchd')) sb.commands.register('orchd', orchdCommand);
+    if (wanted.includes('ffmpeg')) {
+      const { default: ffmpegCommand } = await import('lifo-pkg-ffmpeg');
+      sb.commands.register('ffmpeg', ffmpegCommand);
+    }
     sandboxRef.current = sb;
     setSandbox(sb);
 
@@ -88,7 +102,7 @@ export function ProjectExample({ title, subtitle, files, cwd, previewPort, previ
     if (!sb) return;
     void bootShell(term, sb.kernel, {
       network: true,
-      pkgs: ['git'],
+      pkgs: pkgs ?? ['git'],
       cwd,
       env: { ...browserCorsEnv(), ...env },
     });

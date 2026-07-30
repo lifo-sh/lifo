@@ -109,6 +109,9 @@ importers:
       monaco-editor:
         specifier: ^0.55.1
         version: 0.55.1
+      orchd:
+        specifier: workspace:*
+        version: link:../../packages/orchd
       radix-ui:
         specifier: ^1.6.1
         version: 1.6.1(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
@@ -193,8 +196,8 @@ importers:
         specifier: ^8.17.0
         version: 8.17.0
       browser-metro:
-        specifier: 1.0.31
-        version: 1.0.31
+        specifier: 1.0.32
+        version: 1.0.32
       ws:
         specifier: ^8.19.0
         version: 8.19.0
@@ -387,6 +390,27 @@ importers:
       '@lifo-sh/core':
         specifier: workspace:*
         version: link:../core
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      vite:
+        specifier: ^6.0.0
+        version: 6.4.1(@types/node@22.19.11)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)
+      vite-plugin-dts:
+        specifier: ^4.5.0
+        version: 4.5.4(@types/node@22.19.11)(rollup@4.59.0)(supports-color@8.1.1)(typescript@5.9.3)(vite@6.4.1(@types/node@22.19.11)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0))
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.4(@types/node@22.19.11)(jiti@2.6.1)(lightningcss@1.31.1)(msw@2.14.6(@types/node@22.19.11)(typescript@5.9.3))(supports-color@8.1.1)(tsx@4.21.0)
+
+  packages/orchd:
+    devDependencies:
+      '@lifo-sh/core':
+        specifier: workspace:*
+        version: link:../core
+      '@types/node':
+        specifier: ^22.19.11
+        version: 22.19.11
       typescript:
         specifier: ^5.7.0
         version: 5.9.3
@@ -2549,8 +2573,8 @@ packages:
     resolution: {integrity: sha512-yQbXgO/OSZVD2IsiLlro+7Hf6Q18EJrKSEsdoMzKePKXct3gvD8oLcOQdIzGupr5Fj+EDe8gO/lxc1BzfMpxvA==}
     engines: {node: '>=8'}
 
-  browser-metro@1.0.31:
-    resolution: {integrity: sha512-7H5ruaIw3gI6t/8r/RR+foHdZABoVJZtgW0NKZvnPLSer1VRP4j4P7X6Xj4Wei41GxbegE8F0lItSEfr8ilPCA==}
+  browser-metro@1.0.32:
+    resolution: {integrity: sha512-P0Fafi5ENgn2jseeym85WIkgSpJmm3CQqNYcsqKqSGO+glRViJhvSKaIF9jMYFT6Rd2+liFcdlYbMgzsfKvZBA==}
 
   browserslist@4.28.4:
     resolution: {integrity: sha512-MTc8i/x9jBQd1iMw2CFGS+rwMa07eYjLR0CCTLDACl9xhxy+nIs3KeML/biicXtk9JrZ6dnnTatmc7ErPXIxqw==}
@@ -3804,10 +3828,6 @@ packages:
   picomatch@2.3.1:
     resolution: {integrity: sha512-JU3teHTNjmE2VCGFzuY8EXzCDVwEqB2a8fsIvwaStHhAWJEeVd1o1QD80CU6+ZdEXXSLbSsuLwJjkCBWqRQUVA==}
     engines: {node: '>=8.6'}
-
-  picomatch@4.0.3:
-    resolution: {integrity: sha512-5gTmgEY/sqK6gFXLIsQNH19lWb4ebPDLA4SdLP7dsWkIXHWlG66oPuVvXSGFPppYZz8ZDZq0dYYrbHfBCVUb1Q==}
-    engines: {node: '>=12'}
 
   picomatch@4.0.5:
     resolution: {integrity: sha512-RvwwcruNjI1ncT5xRakeyS9Lf8lcItv34KD+aif+VH9kduAyfYBipGh12274xtenIPZ119/R9BdTBa8gAwSh0A==}
@@ -6177,7 +6197,7 @@ snapshots:
     dependencies:
       '@types/estree': 1.0.8
       estree-walker: 2.0.2
-      picomatch: 4.0.3
+      picomatch: 4.0.5
     optionalDependencies:
       rollup: 4.59.0
 
@@ -6539,7 +6559,7 @@ snapshots:
 
   '@vue/compiler-core@3.5.28':
     dependencies:
-      '@babel/parser': 7.29.0
+      '@babel/parser': 7.29.7
       '@vue/shared': 3.5.28
       entities: 7.0.1
       estree-walker: 2.0.2
@@ -6704,7 +6724,7 @@ snapshots:
     dependencies:
       fill-range: 7.1.1
 
-  browser-metro@1.0.31:
+  browser-metro@1.0.32:
     dependencies:
       '@sveltejs/acorn-typescript': 1.0.11(acorn@8.17.0)
       acorn: 8.17.0
@@ -7193,10 +7213,6 @@ snapshots:
   fastq@1.20.1:
     dependencies:
       reusify: 1.1.0
-
-  fdir@6.5.0(picomatch@4.0.3):
-    optionalDependencies:
-      picomatch: 4.0.3
 
   fdir@6.5.0(picomatch@4.0.5):
     optionalDependencies:
@@ -7885,8 +7901,6 @@ snapshots:
 
   picomatch@2.3.1: {}
 
-  picomatch@4.0.3: {}
-
   picomatch@4.0.5: {}
 
   pify@4.0.1: {}
@@ -8446,8 +8460,8 @@ snapshots:
 
   tinyglobby@0.2.15:
     dependencies:
-      fdir: 6.5.0(picomatch@4.0.3)
-      picomatch: 4.0.3
+      fdir: 6.5.0(picomatch@4.0.5)
+      picomatch: 4.0.5
 
   tinypool@1.1.1: {}
 
@@ -8642,8 +8656,8 @@ snapshots:
   vite@6.4.1(@types/node@22.19.11)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0):
     dependencies:
       esbuild: 0.25.12
-      fdir: 6.5.0(picomatch@4.0.3)
-      picomatch: 4.0.3
+      fdir: 6.5.0(picomatch@4.0.5)
+      picomatch: 4.0.5
       postcss: 8.5.6
       rollup: 4.59.0
       tinyglobby: 0.2.15
