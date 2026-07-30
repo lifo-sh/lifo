@@ -116,10 +116,33 @@ function _stripUndefined(style) {
   return out;
 }
 
+// React Native style shorthands that are NOT CSS properties. The deferred-ref
+// path writes keys straight onto el.style, bypassing react-native-web's
+// translation — so el.style["paddingVertical"] is silently dropped by the
+// browser and the spacing just doesn't apply. Expand them here the way RNW
+// would. start/end map to CSS logical properties (writing-direction aware).
+var _RN_STYLE_SHORTHANDS = {
+  paddingVertical: ["paddingTop", "paddingBottom"],
+  paddingHorizontal: ["paddingLeft", "paddingRight"],
+  marginVertical: ["marginTop", "marginBottom"],
+  marginHorizontal: ["marginLeft", "marginRight"],
+  paddingStart: ["paddingInlineStart"],
+  paddingEnd: ["paddingInlineEnd"],
+  marginStart: ["marginInlineStart"],
+  marginEnd: ["marginInlineEnd"],
+  insetInline: ["left", "right"],
+  insetBlock: ["top", "bottom"],
+};
+
 // Apply a single style key/value to a DOM element. Numeric values get a
 // px suffix unless the key is in the unitless list. Null/undefined skipped.
 function _applyStyleKey(el, key, value) {
   if (value == null) return;
+  var expand = _RN_STYLE_SHORTHANDS[key];
+  if (expand) {
+    for (var i = 0; i < expand.length; i++) _applyStyleKey(el, expand[i], value);
+    return;
+  }
   if (typeof value === "number" && !_UNITLESS[key]) value = value + "px";
   try { el.style[key] = value; } catch (e) {}
 }
