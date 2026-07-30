@@ -1,5 +1,11 @@
 # @lifo-sh/core
 
+## 0.10.5
+
+### Patch Changes
+
+- b305914: Bump browser-metro to 1.0.33: `Alert.alert` / `Alert.prompt` now work in the web preview — the react-native shim renders an iOS-style DOM dialog (all button counts, cancel/destructive styles, prompt input) instead of react-native-web's silent no-op. Also carries the router-shim blob-uuid route fix line (1.0.32).
+
 ## 0.10.3
 
 ### Patch Changes

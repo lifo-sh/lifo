@@ -1,5 +1,12 @@
 # lifo-sh
 
+## 0.10.5
+
+### Patch Changes
+
+- Updated dependencies [b305914]
+  - @lifo-sh/core@0.10.5
+
 ## 0.10.3
 
 ### Patch Changes
