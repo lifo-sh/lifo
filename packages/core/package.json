@@ -1,7 +1,7 @@
 {
   "name": "@lifo-sh/core",
   "version": "0.10.5",
-  "description": "Linux-like OS engine for JavaScript -- kernel, shell, VFS, and 60+ commands",
+  "description": "A tiny Linux-like OS in TypeScript for browsers, Node and serverless -- kernel, shell, VFS, and 60+ commands",
   "license": "MIT",
   "repository": {
     "type": "git",
