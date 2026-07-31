@@ -1,6 +1,6 @@
 # Lifo
 
-A Linux-like operating system that runs anywhere JavaScript does -- in a browser tab or a Node.js process (server-side). Not a VM, not an emulator -- a clean-room reimplementation of Unix in TypeScript, where the JS runtime is the kernel and its APIs are the system calls.
+A tiny Linux-like operating system, written in TypeScript, that runs anywhere JavaScript does -- a browser tab, a Node.js process, a serverless function. Not a VM, not an emulator -- a clean-room reimplementation of Unix in TypeScript, where the JS runtime is the kernel and its APIs are the system calls.
 
 ```
 ┌──────────────────────────────────────────────────┐
