@@ -200,8 +200,9 @@ ${headExtra}${editorBlock}<script>(function(){var B=${bundleVersion},H=${hmrSeq}
 /**
  * Extract Tailwind theme config from a tailwind.config.js/ts file content.
  * Returns a script string for the Tailwind CDN runtime configuration.
+ * Exported for tests.
  */
-function extractTailwindConfig(content: string): string {
+export function extractTailwindConfig(content: string): string {
   try {
     let configString = '';
     let moduleExportsIndex = content.indexOf('module.exports');
@@ -209,10 +210,17 @@ function extractTailwindConfig(content: string): string {
     if (moduleExportsIndex !== -1) {
       const braceIndex = content.indexOf('{', moduleExportsIndex);
       if (braceIndex !== -1) {
-        let depth = 0, inString = false, stringChar = '';
+        // Comments must be skipped before quote tracking: an apostrophe in a
+        // comment ("the source's fonts") otherwise opens a phantom string and
+        // the closing brace is never found, silently dropping the whole theme.
+        let depth = 0, inString = false, stringChar = '', inLineComment = false, inBlockComment = false;
         for (let i = braceIndex; i < content.length; i++) {
           const char = content[i];
           const prevChar = i > 0 ? content[i - 1] : '';
+          if (inLineComment) { if (char === '\n') inLineComment = false; continue; }
+          if (inBlockComment) { if (char === '/' && prevChar === '*') inBlockComment = false; continue; }
+          if (!inString && char === '/' && content[i + 1] === '/') { inLineComment = true; i++; continue; }
+          if (!inString && char === '/' && content[i + 1] === '*') { inBlockComment = true; i++; continue; }
           if ((char === '"' || char === "'" || char === '`') && prevChar !== '\\') {
             if (!inString) { inString = true; stringChar = char; }
             else if (char === stringChar) { inString = false; stringChar = ''; }
