@@ -448,6 +448,19 @@ export function createBrowserMetroCommand(kernel: Kernel): Command {
         bvfs.write('/__expo_ctx.js', buildExpoRouteContext(bvfs));
         changes.push({ path: '/__expo_ctx.js', type: 'update' });
       }
+      // Self-heal the synthetic expo-router entry. It exists only in the
+      // bundler VFS (ensureEntry writes it once at startup) — so anything that
+      // removes it (a generation that wrote a real root index.tsx and later
+      // deleted it, or any stray delete event for the path) permanently fails
+      // every subsequent build with "Entry module /index.tsx is missing from
+      // the bundle". Regeneration is idempotent and cheap; __expo_ctx.js is
+      // refreshed with it so the entry never requires a context that is gone.
+      if (bvfs.getPackageMain() === 'expo-router/entry' && !bvfs.exists('/index.tsx')) {
+        bvfs.write('/__expo_ctx.js', buildExpoRouteContext(bvfs));
+        bvfs.write('/index.tsx', buildExpoRouterEntry());
+        changes.push({ path: '/__expo_ctx.js', type: 'update' }, { path: '/index.tsx', type: 'create' });
+        ctx.stdout.write('browser-metro: synthetic entry was removed — regenerated.\n');
+      }
       building = true;
       try {
         if (!currentBundle) {
