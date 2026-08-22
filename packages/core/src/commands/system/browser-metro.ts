@@ -401,9 +401,11 @@ export function createBrowserMetroCommand(kernel: Kernel): Command {
         const q = new URLSearchParams(query || '');
         const cb = Number(q.get('b') || 0), ch = Number(q.get('h') || 0);
         res.statusCode = 200; res.headers['content-type'] = 'application/json';
+        // `building` / `pending` let hosts (the editor's bundle checkpoint) wait
+        // for the debounced rebuild to finish before snapshotting /index.bundle.
         res.body = cb < bundleVersion
-          ? JSON.stringify({ reload: true, bundleVersion, buildError })
-          : JSON.stringify({ reload: false, bundleVersion, hmrSeq, buildError, updates: hmrLog.filter((u) => u.seq > ch) });
+          ? JSON.stringify({ reload: true, bundleVersion, buildError, building, pending: pending.size })
+          : JSON.stringify({ reload: false, bundleVersion, hmrSeq, buildError, building, pending: pending.size, updates: hmrLog.filter((u) => u.seq > ch) });
       } else if (path.startsWith(ASSET_PREFIX + '/')) {
         const full = dir + path.slice(ASSET_PREFIX.length);
         try {
