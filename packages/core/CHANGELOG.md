@@ -1,5 +1,15 @@
 # @lifo-sh/core
 
+## 0.10.11
+
+### Patch Changes
+
+- 2ba6a3a: Update the package description to match Lifo's positioning: "A tiny Linux-like
+  OS in TypeScript for browsers, Node and serverless". No code change — but the
+  npm description is the first thing most people read, so it should not describe a
+  narrower set of runtimes than the library supports.
+- b4398bb: NativeWind shim: color-scheme preference moves from localStorage to sessionStorage, so editor tabs no longer share one theme key across projects (cross-tab theme flicker); same-tab iframe sync is preserved.
+
 ## 0.10.5
 
 ### Patch Changes

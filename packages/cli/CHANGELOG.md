@@ -1,5 +1,13 @@
 # lifo-sh
 
+## 0.10.11
+
+### Patch Changes
+
+- Updated dependencies [2ba6a3a]
+- Updated dependencies [b4398bb]
+  - @lifo-sh/core@0.10.11
+
 ## 0.10.5
 
 ### Patch Changes
