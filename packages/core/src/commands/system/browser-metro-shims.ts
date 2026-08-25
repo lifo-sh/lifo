@@ -342,9 +342,13 @@ var _STORAGE_KEY = "__nativewind_color_scheme";
 var _listeners = new Set();
 var _userPref = null;
 
-// Restore persisted preference from localStorage (shared across iframes)
-if (typeof window !== "undefined" && window.localStorage) {
-  try { _userPref = window.localStorage.getItem(_STORAGE_KEY); } catch(e) {}
+// Restore persisted preference from sessionStorage. sessionStorage on purpose:
+// it is shared by same-origin iframes WITHIN one tab (the artboard sync this
+// shim wants) but isolated between tabs — localStorage was origin-wide, so two
+// editor tabs previewing different projects fought over this one key and the
+// theme flickered whenever either tab wrote it.
+if (typeof window !== "undefined" && window.sessionStorage) {
+  try { _userPref = window.sessionStorage.getItem(_STORAGE_KEY); } catch(e) {}
 }
 
 function _getSystemScheme() {
@@ -360,15 +364,16 @@ function _getEffective() {
 
 function _persistAndBroadcast(pref) {
   _userPref = pref;
-  if (typeof window !== "undefined" && window.localStorage) {
-    try { window.localStorage.setItem(_STORAGE_KEY, pref); } catch(e) {}
+  if (typeof window !== "undefined" && window.sessionStorage) {
+    try { window.sessionStorage.setItem(_STORAGE_KEY, pref); } catch(e) {}
   }
   var eff = _getEffective();
   _listeners.forEach(function(l) { l(eff); });
 }
 
 if (typeof window !== "undefined") {
-  // Sync across iframes via localStorage storage event
+  // Sync across same-tab iframes via the storage event (sessionStorage events
+  // only reach windows in the same tab, which is exactly the scope we want)
   window.addEventListener("storage", function(e) {
     if (e.key === _STORAGE_KEY && e.newValue) {
       _userPref = e.newValue;
