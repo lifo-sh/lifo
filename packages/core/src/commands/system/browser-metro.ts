@@ -277,6 +277,31 @@ function buildEditorHeadBlock(env: Record<string, string>, tailwindConfigScript:
 
 interface HmrEntry { seq: number; update: { updatedModules: Record<string, string>; removedModules: string[]; reverseDepsMap?: Record<string, string[]> } }
 
+/**
+ * Register (or refresh) a binary asset in the bundler VFS.
+ *
+ * Assets that exist when the command starts are seeded by readFileMap as
+ * `{ content: '', isExternal: true }`, which is what makes the bundler emit a
+ * `{ uri: ASSET_PREFIX + path }` stub for them. Assets written AFTER startup
+ * (a chat attachment uploaded mid-session, an image the agent downloads) used
+ * to be dropped from the change list entirely — the bundler VFS never learned
+ * the path existed, `walkDeps` skipped the unresolvable require, and the
+ * preview crashed with "Module not found: /assets/<file>" until the sandbox was
+ * recreated. Registering the entry here and reporting it as a change makes the
+ * next rebuild add the asset module (and, via HMR, re-execute its dependents).
+ *
+ * VirtualFS.write() always marks entries non-external (the stub would then
+ * export the bare filename instead of a URI), and browser-metro 1.0.36 has no
+ * external-aware write — so the entry goes in through the public map API.
+ */
+export function upsertExternalAsset(bvfs: VirtualFS, rel: string): FileChange['type'] {
+  const existed = bvfs.exists(rel);
+  const files = bvfs.toFileMap();
+  files[rel] = { content: '', isExternal: true };
+  bvfs.replaceAll(files);
+  return existed ? 'update' : 'create';
+}
+
 export function createBrowserMetroCommand(kernel: Kernel): Command {
   return async (ctx) => {
     const rest = ctx.args.slice(1);
@@ -438,7 +463,13 @@ export function createBrowserMetroCommand(kernel: Kernel): Command {
           if (bvfs.exists(rel)) { bvfs.delete(rel); changes.push({ path: rel, type: 'delete' }); if (rel.startsWith('/app/')) routeStructureChanged = true; }
           continue;
         }
-        if (ASSET_EXT.test(rel)) { assetBlobs.delete(ASSET_PREFIX + rel); continue; }
+        if (ASSET_EXT.test(rel)) {
+          // Bytes changed (or arrived): drop the cached blob so materializeAssets
+          // re-reads the VFS, and make sure the bundler can resolve the path.
+          assetBlobs.delete(ASSET_PREFIX + rel);
+          changes.push({ path: rel, type: upsertExternalAsset(bvfs, rel) });
+          continue;
+        }
         const existed = bvfs.exists(rel);
         try { bvfs.write(rel, decoder.decode(kernel.vfs.readFile(abs) as Uint8Array)); } catch { continue; }
         changes.push({ path: rel, type: existed ? 'update' : 'create' });
