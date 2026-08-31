@@ -12,4 +12,4 @@ allowBuilds:
   msw: false
 
 minimumReleaseAgeExclude:
-  - browser-metro@1.0.32 || 1.0.33 || 1.0.36
+  - browser-metro@1.0.32 || 1.0.33 || 1.0.36 || 1.4.2
