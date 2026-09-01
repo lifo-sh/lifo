@@ -1,5 +1,12 @@
 # lifo-sh
 
+## 0.10.14
+
+### Patch Changes
+
+- Updated dependencies
+  - @lifo-sh/core@0.10.14
+
 ## 0.10.13
 
 ### Patch Changes
