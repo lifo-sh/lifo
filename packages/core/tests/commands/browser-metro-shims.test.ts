@@ -58,3 +58,74 @@ describe('className patch — numeric style units', () => {
     expect(() => new Function(CLASSNAME_PATCH_MODULE)).not.toThrow();
   });
 });
+
+/**
+ * Run the whole patch module against a stubbed require() so we can call the
+ * patched React.createElement and inspect what props each element type gets.
+ */
+function runPatch(opts: { rnThrows?: boolean } = {}) {
+  const View = { displayName: 'View' };
+  const Image = { displayName: 'Image' };
+  const RN = { View, Image, Text: { displayName: 'Text' } };
+  const calls: Array<{ type: unknown; props: Record<string, unknown> | null }> = [];
+  const React = {
+    createElement: (type: unknown, props: Record<string, unknown> | null) => {
+      calls.push({ type, props });
+      return { type, props };
+    },
+  };
+  const requireStub = (name: string) => {
+    if (name === 'react') return React;
+    if (name === 'react-native') {
+      if (opts.rnThrows) throw new Error('not bundled');
+      return RN;
+    }
+    throw new Error(`unexpected require: ${name}`);
+  };
+  new Function('require', 'module', 'exports', CLASSNAME_PATCH_MODULE)(
+    requireStub, { exports: {} }, {},
+  );
+  return { React, RN, calls };
+}
+
+describe('className patch — which element types are converted', () => {
+  it('converts className to a $$css style on RN primitives', () => {
+    const { React, RN } = runPatch();
+    const el = React.createElement(RN.Image, { className: 'h-36 w-full' }) as {
+      props: { className?: string; style?: Record<string, unknown> };
+    };
+    expect(el.props.className).toBeUndefined();
+    expect(el.props.style).toEqual({ $$css: true, 'h-36': 'h-36', 'w-full': 'w-full' });
+  });
+
+  // Regression: converting on EVERY type deleted className before user
+  // components could read it — a component interpolating a caller-passed
+  // className into its own template got '' and the caller's classes vanished
+  // (an image cover sized by h-36 collapsed to 0px in the preview).
+  it('leaves user function components untouched so they can read className', () => {
+    const { React } = runPatch();
+    const UserComponent = () => null;
+    const props = { className: 'h-36 w-full', other: 1 };
+    const el = React.createElement(UserComponent, props) as { props: Record<string, unknown> };
+    expect(el.props).toBe(props); // passthrough, not even cloned
+    expect(el.props.className).toBe('h-36 w-full');
+    expect(el.props.style).toBeUndefined();
+  });
+
+  it('leaves DOM tags untouched (the Tailwind CDN styles class attributes natively)', () => {
+    const { React } = runPatch();
+    const props = { className: 'h-36' };
+    const el = React.createElement('div', props) as { props: Record<string, unknown> };
+    expect(el.props).toBe(props);
+  });
+
+  it('falls back to converting everywhere when react-native cannot be required', () => {
+    const { React } = runPatch({ rnThrows: true });
+    const UserComponent = () => null;
+    const el = React.createElement(UserComponent, { className: 'h-36' }) as {
+      props: { className?: string; style?: Record<string, unknown> };
+    };
+    expect(el.props.className).toBeUndefined();
+    expect(el.props.style).toEqual({ $$css: true, 'h-36': 'h-36' });
+  });
+});

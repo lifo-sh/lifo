@@ -162,12 +162,46 @@ function _classNameToCss(cn) {
   return obj;
 }
 
+// Which element types get the className -> $$css style conversion. Real
+// nativewind maps className onto styles only for REGISTERED components (the
+// RN primitives); every other component receives className as an ordinary
+// prop to read and merge into its own inner elements — the
+// ({ className }) => <View className={base + " " + className} /> pattern.
+// Converting on EVERY type stripped className from such components before
+// they ever saw it: the prop was deleted, the component fell back to its
+// default (usually ""), and the caller's classes silently vanished (observed
+// as an image cover sized by a caller-passed h-36 collapsing to 0px height).
+// Restricting conversion to primitives keeps the prop flowing until it
+// reaches a View/Text/Image/etc., where RNW would otherwise drop it.
+// Primitives are collected lazily (first element render) from
+// react-native(-web)'s exports; if that require ever fails we fall back to
+// converting everywhere — the old behavior — instead of leaving the whole
+// page unstyled.
+var _prims = null; // null = not built yet; array = identity list; false = convert everything
+function _shouldConvert(type) {
+  if (_prims === null) {
+    try {
+      var RN = require("react-native");
+      var names = ["View", "Text", "Image", "ImageBackground", "TextInput",
+        "Pressable", "TouchableOpacity", "TouchableHighlight",
+        "TouchableWithoutFeedback", "TouchableNativeFeedback", "ScrollView",
+        "FlatList", "SectionList", "VirtualizedList", "SafeAreaView",
+        "KeyboardAvoidingView", "Modal", "ActivityIndicator", "Switch",
+        "RefreshControl", "StatusBar"];
+      var list = [];
+      for (var i = 0; i < names.length; i++) if (RN[names[i]]) list.push(RN[names[i]]);
+      _prims = list.length ? list : false;
+    } catch (e) { _prims = false; }
+  }
+  return _prims === false || _prims.indexOf(type) !== -1;
+}
+
 React.createElement = function() {
   var args = Array.prototype.slice.call(arguments);
   var type = args[0];
   var props = args[1];
 
-  if (!props || typeof type === "string") {
+  if (!props || typeof type === "string" || !_shouldConvert(type)) {
     return _orig.apply(this, args);
   }
 
