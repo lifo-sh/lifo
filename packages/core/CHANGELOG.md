@@ -1,5 +1,11 @@
 # @lifo-sh/core
 
+## 0.10.14
+
+### Patch Changes
+
+- browser-metro preview: stop stripping `className` from user components. The classname patch converted `className` → `$$css` style on every element type, deleting the prop before user components that read it (e.g. `({ className }) => <View className={base + ' ' + className} />`) ever saw it — the caller's classes silently vanished, observed as images sized by a caller-passed `h-36` collapsing to 0px. Conversion is now gated to react-native(-web) primitives (collected lazily by identity), matching real nativewind semantics; if the require fails it falls back to converting everywhere.
+
 ## 0.10.13
 
 ### Patch Changes
