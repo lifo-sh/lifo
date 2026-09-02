@@ -1,5 +1,11 @@
 # @lifo-sh/core
 
+## 0.10.15
+
+### Patch Changes
+
+- Bump browser-metro to 1.4.4: web-preview stubs for react-native-purchases (RevenueCat), @sentry/react-native, and react-native-google-mobile-ads (AdMob), so apps using the native SDK skills render in the editor preview instead of failing to resolve native-only packages.
+
 ## 0.10.14
 
 ### Patch Changes

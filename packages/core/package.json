@@ -1,6 +1,6 @@
 {
   "name": "@lifo-sh/core",
-  "version": "0.10.14",
+  "version": "0.10.15",
   "description": "A tiny Linux-like OS in TypeScript for browsers, Node and serverless -- kernel, shell, VFS, and 60+ commands",
   "license": "MIT",
   "repository": {
@@ -44,7 +44,7 @@
   },
   "dependencies": {
     "acorn": "^8.17.0",
-    "browser-metro": "1.4.2",
+    "browser-metro": "1.4.4",
     "ws": "^8.19.0"
   },
   "peerDependencies": {
