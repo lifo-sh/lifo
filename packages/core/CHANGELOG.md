@@ -1,3 +1,9 @@
+## 0.10.23
+
+### Patch Changes
+
+- `sandbox.commands.run()` now honours `signal` and `timeout`. They were wired to an internal `AbortController` that was never passed to the shell, so aborting did nothing, a timeout never fired, and — because `run()` is a serial queue — every command queued behind a long-running one (such as `browser-metro`) waited forever. `Shell.execute` accepts a `signal` and threads it to the interpreter, the same path `kill <pid>` uses. In the RapidNative editor this is what lets a saved `EXPO_PUBLIC_*` env change (a user's own Supabase key) restart browser-metro instead of hanging behind the old run.
+
 ## 0.10.22
 
 ### Patch Changes
