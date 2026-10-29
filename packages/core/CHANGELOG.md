@@ -1,3 +1,11 @@
+## 0.10.26
+
+### Patch Changes
+
+- `grep -c "" file` counts lines again. grep treated an empty pattern as no pattern and took the file as the pattern, so the command failed with "missing file operand".
+- An unquoted word that expands to nothing (`$UNSET`, `$(true)`) is removed from the arguments, as in POSIX sh. Quoted empty words (`""`, `''`, `"$UNSET"`) stay as empty arguments.
+- `printf` reuses its format until every argument is consumed: `printf '%s\n' a b c` prints three lines.
+
 ## 0.10.25
 
 ### Patch Changes

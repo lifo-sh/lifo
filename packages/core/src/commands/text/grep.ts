@@ -141,7 +141,10 @@ const command: Command = async (ctx) => {
    * The last of -E/-F/-G on the command line wins, as in GNU grep.
    */
   let mode: 'bre' | 'ere' | 'fixed' = 'bre';
-  let pattern = '';
+  // undefined, not '': an empty pattern is a real pattern that matches every line (`grep -c "" f`
+  // counts lines). Testing it for truthiness skipped "" and took the FILE as the pattern, so the
+  // command failed with "missing file operand".
+  let pattern: string | undefined;
   const files: string[] = [];
   const includeGlobs: RegExp[] = [];
   const excludeGlobs: RegExp[] = [];
@@ -156,7 +159,7 @@ const command: Command = async (ctx) => {
       // including the pattern itself — was pushed into `files`, so the command failed with
       // "missing pattern".
       i++;
-      if (!pattern && i < args.length) {
+      if (pattern === undefined && i < args.length) {
         pattern = args[i++];
       }
       break;
@@ -226,7 +229,7 @@ const command: Command = async (ctx) => {
         }
       }
       i++;
-    } else if (!pattern) {
+    } else if (pattern === undefined) {
       pattern = arg;
       i++;
     } else {
@@ -238,7 +241,7 @@ const command: Command = async (ctx) => {
     files.push(args[i++]);
   }
 
-  if (!pattern) {
+  if (pattern === undefined) {
     ctx.stderr.write('grep: missing pattern\n');
     return 2;
   }

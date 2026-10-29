@@ -20,6 +20,10 @@ export async function expandWords(words: WordPart[][], ctx: ExpandContext): Prom
   for (const word of words) {
     const expanded = await expandWordParts(word, ctx);
 
+    // An unquoted word that expands to nothing (`$UNSET`, `$(true)`) is removed, as in POSIX sh.
+    // A word with any quoted part (`""`, `''`, `"$UNSET"`) stays, as an empty argument.
+    if (expanded === '' && word.every((part) => part.quoted === 'none')) continue;
+
     // Glob expansion only for unquoted parts
     if (hasUnquotedGlob(word, expanded)) {
       const globResults = expandGlob(expanded, ctx.cwd, ctx.vfs);
