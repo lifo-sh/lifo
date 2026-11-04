@@ -1,3 +1,9 @@
+## 0.10.27
+
+### Patch Changes
+
+- browser-metro 1.5.17 (pinned from 1.5.10). Apps using pdfjs-dist 6 bundle again: its worker wrapper writes `import("${url}")` inside a string, and the bundle failed fetching the package "${url}" (reactnative-run#153). Brings 1.5.11-1.5.16 along (JSON imports, first-scan speed-up, shared host cache), which the RapidNative editor already ran through its own override.
+
 ## 0.10.26
 
 ### Patch Changes
