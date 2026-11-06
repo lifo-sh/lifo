@@ -1,3 +1,10 @@
+## 0.10.29
+
+### Patch Changes
+
+- `awk`: associative arrays (`a[k]`, `a[i,j]`, `in`, `for (k in a)`, `delete`, `length(a)`), `split()`, user functions (arrays by reference, recursion), `getline` (next record, `var`, `< file`), `close()` and `do … while`; CONVFMT/OFMT number formatting. `!seen[$0]++` and `{c[$1]++} END{…}` work (lifo-sh/lifo#117).
+- Text commands (`grep`, `sed`, `awk`, `sort`, `head`, `tail`, `cut`, `uniq`, `nl`, `rev`, `wc`, `diff`) read files whose extension is missing or unknown (Makefile, Dockerfile, LICENSE, `.mjs`, `.lock`, …). These used to be skipped as "binary file" without being read. The first bytes now decide, as in GNU grep: a NUL byte means binary.
+
 ## 0.10.28
 
 ### Patch Changes

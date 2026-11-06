@@ -745,3 +745,57 @@ describe('awk', () => {
     expect(ctx.stdout.text).toBe('1 a\n2 b\n3 c\n');
   });
 });
+
+
+describe('text commands read files without a known extension', () => {
+  function fs() {
+    const vfs = new VFS();
+    vfs.writeFile('/Makefile', 'build:\n\tnode build.mjs\n');
+    vfs.writeFile('/Dockerfile', 'FROM node:22\nRUN npm ci\n');
+    vfs.writeFile('/check.mjs', "import fs from 'node:fs';\nconsole.log('ok');\n");
+    vfs.writeFile('/blob.bin', new Uint8Array([0x89, 0x50, 0x00, 0x01, 0x02]));
+    vfs.writeFile('/raw', new Uint8Array([0x41, 0x00, 0x42]));
+    return vfs;
+  }
+  async function run(name: string, args: string[], vfs: VFS) {
+    const mods: Record<string, () => Promise<{ default: (ctx: CommandContext) => Promise<number> }>> = {
+      grep: () => import('../../src/commands/text/grep.js'),
+      sed: () => import('../../src/commands/text/sed.js'),
+      awk: () => import('../../src/commands/text/awk.js'),
+      head: () => import('../../src/commands/text/head.js'),
+      sort: () => import('../../src/commands/text/sort.js'),
+      wc: () => import('../../src/commands/text/wc.js'),
+    };
+    const { default: cmd } = await mods[name]();
+    const ctx = createContext(vfs, args);
+    const code = await cmd(ctx);
+    return { code, out: ctx.stdout.text, err: ctx.stderr.text };
+  }
+
+  it('grep reads a Makefile and a .mjs file', async () => {
+    const vfs = fs();
+    expect((await run('grep', ['node', '/Makefile'], vfs)).out).toBe('\tnode build.mjs\n');
+    expect((await run('grep', ['node:fs', '/check.mjs'], vfs)).out).toContain("import fs from 'node:fs';");
+  });
+
+  it('sed -i edits a Dockerfile in place', async () => {
+    const vfs = fs();
+    const r = await run('sed', ['-i', 's/node:22/node:24/', '/Dockerfile'], vfs);
+    expect(r.err).toBe('');
+    expect(vfs.readFileString('/Dockerfile')).toBe('FROM node:24\nRUN npm ci\n');
+  });
+
+  it('awk, head, sort and wc read an extensionless text file', async () => {
+    const vfs = fs();
+    expect((await run('awk', ['{print $1}', '/Dockerfile'], vfs)).out).toBe('FROM\nRUN\n');
+    expect((await run('head', ['-n', '1', '/Makefile'], vfs)).out).toBe('build:\n');
+    expect((await run('sort', ['/Dockerfile'], vfs)).out).toBe('FROM node:22\nRUN npm ci\n');
+    expect((await run('wc', ['-l', '/Dockerfile'], vfs)).out).toContain('2');
+  });
+
+  it('still skips real binary content, by extension or by a NUL byte', async () => {
+    const vfs = fs();
+    expect((await run('grep', ['A', '/raw'], vfs)).err).toContain('binary file');
+    expect((await run('sed', ['s/a/b/', '/blob.bin'], vfs)).err).toContain('binary file');
+  });
+});

@@ -1,7 +1,7 @@
 import type { Command } from '../types.js';
 import { resolve } from '../../utils/path.js';
 import { VFSError } from '../../kernel/vfs/index.js';
-import { getMimeType, isBinaryMime } from '../../utils/mime.js';
+import { isBinaryFile } from '../../utils/mime.js';
 
 /**
  * Shell-style glob to RegExp, for --include / --exclude / --exclude-dir.
@@ -343,7 +343,7 @@ const command: Command = async (ctx) => {
                 if (!fileIsSearchable(f)) {
                   continue;
                 }
-                if (isBinaryMime(getMimeType(f))) {
+                if (isBinaryFile(ctx.vfs, f)) {
                   continue;
                 }
                 const content = ctx.vfs.readFileString(f);
@@ -361,7 +361,7 @@ const command: Command = async (ctx) => {
         if (!fileIsSearchable(path)) {
           continue;
         }
-        if (isBinaryMime(getMimeType(path))) {
+        if (isBinaryFile(ctx.vfs, path)) {
           ctx.stderr.write(`grep: ${file}: binary file, skipping\n`);
           continue;
         }
