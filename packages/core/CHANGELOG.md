@@ -1,3 +1,11 @@
+## 0.10.28
+
+### Patch Changes
+
+- `sed`: BRE patterns treat `| + ? ( ) { }` as literal characters and `\| \+ \? \( \) \{ \}` as the special forms, as GNU sed does. `-E`/`-r` switch to ERE. Bracket expressions keep `|` and POSIX classes. `addr,+N` addresses work. A RapidNative agent's `sed -i` rename had corrupted an 831-line file, because `|` was read as alternation and every repair matched nothing (lifo-sh/lifo#115).
+- `tr`: POSIX classes (`[:print:]`, `[:space:]`, …), ranges, escapes and octal, `-c/-C/-d/-s/-t` and combined flags, SET2 padding, `[c*n]` and `[=c=]`.
+- `awk`: a real expression parser, adding the ternary, comparisons, arithmetic, regex match, concatenation, `printf`, `if/while/for`, `next/exit`, expression and range patterns, `-v`, FS/OFS/ORS, and the string builtins with `sub/gsub/match`. Arrays, `split()`, functions and `getline` fail with a clear "not supported" message instead of printing wrong output.
+
 ## 0.10.27
 
 ### Patch Changes
