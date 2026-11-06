@@ -4,7 +4,12 @@ import { VFSError } from '../../kernel/vfs/index.js';
 import { getMimeType, isBinaryMime } from '../../utils/mime.js';
 
 /** One address: line number, $ (last line), or /regex/. */
-type SedAddress = { kind: 'line'; line: number } | { kind: 'last' } | { kind: 're'; re: RegExp };
+type SedAddress =
+  | { kind: 'line'; line: number }
+  | { kind: 'last' }
+  | { kind: 're'; re: RegExp }
+  /** GNU `addr1,+N`: addr1 and the N lines after it (second address only). */
+  | { kind: 'plus'; count: number };
 
 interface SedExpr {
   type: 's' | 'd' | 'p' | 'q';
@@ -15,6 +20,8 @@ interface SedExpr {
   addr2?: SedAddress;
   /** Range state: currently inside an addr1,addr2 window. */
   inRange?: boolean;
+  /** For `addr1,+N`: last line number of the current window. */
+  rangeEnd?: number;
 }
 
 /** Convert a sed replacement to JS `String.replace` syntax:
@@ -39,18 +46,135 @@ function convertReplacement(rep: string): string {
   return out;
 }
 
-/** Translate common BRE atoms to JS regex (sed defaults to BRE: \( \) \{ \} \+ \?). */
-function breToJs(pattern: string): string {
-  return pattern
-    .replace(/\\\(/g, '(').replace(/\\\)/g, ')')
-    .replace(/\\\{/g, '{').replace(/\\\}/g, '}')
-    .replace(/\\\+/g, '+').replace(/\\\?/g, '?')
-    .replace(/\\\|/g, '|');
+/** JS character-class bodies for POSIX bracket classes like `[[:space:]]`. */
+const POSIX_CLASSES: Record<string, string> = {
+  alpha: 'a-zA-Z',
+  digit: '0-9',
+  alnum: 'a-zA-Z0-9',
+  upper: 'A-Z',
+  lower: 'a-z',
+  space: ' \\t\\n\\r\\f\\v',
+  blank: ' \\t',
+  punct: '!-\\/:-@\\[-`{-~',
+  print: '\\x20-\\x7e',
+  graph: '\\x21-\\x7e',
+  cntrl: '\\x00-\\x1f\\x7f',
+  xdigit: '0-9A-Fa-f',
+  word: '\\w',
+};
+
+/** Characters that are special in ERE but literal in BRE (their escaped
+ *  forms are the special ones in BRE, GNU-style). */
+const BRE_SWAPPED = '(){}|+?';
+
+/** Translate a POSIX bracket expression starting at `p[start] === '['`.
+ *  Returns the JS class and the index just past the closing `]`, or null if
+ *  the bracket never closes. Inside brackets only `]` (when not first), `^`
+ *  (when first), `-` and `[:class:]` are special; a backslash is literal
+ *  except for the GNU `\n`, `\t`, `\\` and `\]` escapes. */
+function translateBracket(p: string, start: number): { js: string; end: number } | null {
+  let i = start + 1;
+  let out = '[';
+  if (p[i] === '^') { out += '^'; i++; }
+  let first = true;
+  while (i < p.length) {
+    const c = p[i];
+    if (c === ']' && !first) return { js: out + ']', end: i + 1 };
+    first = false;
+    if (c === '[' && (p[i + 1] === ':' || p[i + 1] === '.' || p[i + 1] === '=')) {
+      const kind = p[i + 1];
+      const close = p.indexOf(kind + ']', i + 2);
+      if (close === -1) return null;
+      const name = p.slice(i + 2, close);
+      if (kind === ':') {
+        const cls = POSIX_CLASSES[name];
+        if (cls === undefined) return null;
+        out += cls;
+      } else {
+        // Collating symbol / equivalence class: treat as the literal text.
+        for (const ch of name) out += '\\' + ch;
+      }
+      i = close + 2;
+      continue;
+    }
+    if (c === '\\') {
+      const n = p[i + 1];
+      if (n === 'n') { out += '\\n'; i += 2; continue; }
+      if (n === 't') { out += '\\t'; i += 2; continue; }
+      if (n === '\\') { out += '\\\\'; i += 2; continue; }
+      if (n === ']') { out += '\\]'; i += 2; continue; }
+      out += '\\\\'; i++; continue; // literal backslash
+    }
+    if (c === '[' || c === ']') { out += '\\' + c; i++; continue; }
+    out += c;
+    i++;
+  }
+  return null;
+}
+
+/** Translate a POSIX regex (BRE by default, ERE with -E/-r) to JS RegExp
+ *  source. In BRE, unescaped `( ) { } | + ?` are literal and `\( \) \{ \}
+ *  \| \+ \?` are special; in ERE it is the other way round. `delim` is the
+ *  `s`/address delimiter: `\<delim>` always means that character literally. */
+export function posixToJs(pattern: string, ere = false, delim?: string): string {
+  let out = '';
+  // At the start of the regex or a group/alternative: `*` is literal and
+  // (in BRE) `^` is an anchor.
+  let atStart = true;
+  let i = 0;
+  const lit = (ch: string) => (/[\\^$.*+?()[\]{}|\/-]/.test(ch) ? '\\' + ch : ch);
+  while (i < pattern.length) {
+    const c = pattern[i];
+    if (c === '\\') {
+      const n = pattern[i + 1];
+      if (n === undefined) { out += '\\\\'; i++; continue; }
+      i += 2;
+      if (delim !== undefined && n === delim) { out += lit(n); atStart = false; continue; }
+      if (BRE_SWAPPED.includes(n)) {
+        if (ere) { out += '\\' + n; atStart = false; continue; }
+        out += n;
+        atStart = n === '(' || n === '|';
+        continue;
+      }
+      if (n === '<' || n === '>') { out += '\\b'; continue; }
+      if (n === '`') { out += '^'; continue; }
+      if (n === "'") { out += '$'; continue; }
+      out += '\\' + n; // \. \* \[ \1 \n \t \w \s \b ...
+      atStart = false;
+      continue;
+    }
+    if (c === '[') {
+      const br = translateBracket(pattern, i);
+      if (!br) { out += '\\['; i++; atStart = false; continue; }
+      out += br.js;
+      i = br.end;
+      atStart = false;
+      continue;
+    }
+    if (c === '*' && atStart) { out += '\\*'; i++; atStart = false; continue; }
+    if (c === '^') {
+      if (ere || atStart) { out += '^'; i++; continue; } // still at start: `^*` → literal *
+      out += '\\^'; i++; continue;
+    }
+    if (c === '$') {
+      const rest = pattern.slice(i + 1);
+      if (ere || rest === '' || rest.startsWith('\\)') || rest.startsWith('\\|')) { out += '$'; i++; continue; }
+      out += '\\$'; i++; atStart = false; continue;
+    }
+    if (ere && atStart && (c === '+' || c === '?' || c === '{')) { out += '\\' + c; i++; atStart = false; continue; }
+    if (!ere && BRE_SWAPPED.includes(c)) { out += '\\' + c; i++; atStart = false; continue; }
+    if (ere && (c === '(' || c === '|')) { out += c; i++; atStart = true; continue; }
+    if (c === '/') { out += '\\/'; i++; atStart = false; continue; }
+    out += c;
+    i++;
+    atStart = false;
+  }
+  return out;
 }
 
 /** Parse a sed script (possibly several `;`-separated commands, each with
  *  optional addresses) into SedExpr[]. Returns null on a parse error. */
-function parseScript(script: string): SedExpr[] | null {
+function parseScript(script: string, ere = false): SedExpr[] | null {
   const exprs: SedExpr[] = [];
   let i = 0;
   const len = script.length;
@@ -70,12 +194,12 @@ function parseScript(script: string): SedExpr[] | null {
       i++;
       let re = '';
       while (i < len && script[i] !== '/') {
-        if (script[i] === '\\' && script[i + 1] === '/') { re += '/'; i += 2; continue; }
+        if (script[i] === '\\' && i + 1 < len) { re += script[i] + script[i + 1]; i += 2; continue; }
         re += script[i++];
       }
       if (script[i] !== '/') return null;
       i++;
-      try { return { kind: 're', re: new RegExp(breToJs(re)) }; } catch { return null; }
+      try { return { kind: 're', re: new RegExp(posixToJs(re, ere, '/')) }; } catch { return null; }
     }
     return undefined;
   };
@@ -91,9 +215,18 @@ function parseScript(script: string): SedExpr[] | null {
       expr.addr1 = a1;
       if (script[i] === ',') {
         i++;
-        const a2 = parseAddress();
-        if (a2 === null || a2 === undefined) return null;
-        expr.addr2 = a2;
+        if (script[i] === '+') {
+          // GNU `addr1,+N`
+          i++;
+          let n = '';
+          while (i < len && script[i] >= '0' && script[i] <= '9') n += script[i++];
+          if (!n) return null;
+          expr.addr2 = { kind: 'plus', count: parseInt(n, 10) };
+        } else {
+          const a2 = parseAddress();
+          if (a2 === null || a2 === undefined) return null;
+          expr.addr2 = a2;
+        }
       }
     }
     skipBlank();
@@ -113,7 +246,9 @@ function parseScript(script: string): SedExpr[] | null {
       const parts: string[] = [];
       let current = '';
       while (i < len && parts.length < 2) {
-        if (script[i] === '\\' && script[i + 1] === delim) { current += delim; i += 2; continue; }
+        // In the pattern keep `\<delim>` so posixToJs reads it as a literal
+        // delimiter; in the replacement it is just the delimiter character.
+        if (script[i] === '\\' && script[i + 1] === delim) { current += parts.length === 0 ? '\\' + delim : delim; i += 2; continue; }
         if (script[i] === '\\') { current += script[i] + (script[i + 1] ?? ''); i += 2; continue; }
         if (script[i] === delim) { parts.push(current); current = ''; i++; continue; }
         current += script[i++];
@@ -128,7 +263,7 @@ function parseScript(script: string): SedExpr[] | null {
       if (flagStr.includes('g')) flags += 'g';
       if (flagStr.includes('i') || flagStr.includes('I')) flags += 'i';
       let regex: RegExp;
-      try { regex = new RegExp(breToJs(parts[0]), flags); } catch { return null; }
+      try { regex = new RegExp(posixToJs(parts[0], ere, delim), flags); } catch { return null; }
 
       expr.type = 's';
       expr.pattern = regex;
@@ -146,9 +281,24 @@ function parseScript(script: string): SedExpr[] | null {
  *  and stateful addr1,addr2 ranges. */
 function matches(expr: SedExpr, line: string, lineNo: number, lastLineNo: number): boolean {
   const test = (a: SedAddress): boolean =>
-    a.kind === 'last' ? lineNo === lastLineNo : a.kind === 'line' ? lineNo === a.line : a.re.test(line);
+    a.kind === 'last' ? lineNo === lastLineNo
+      : a.kind === 'line' ? lineNo === a.line
+      : a.kind === 're' ? a.re.test(line)
+      : false;
   if (!expr.addr1) return true;
   if (!expr.addr2) return test(expr.addr1);
+  if (expr.addr2.kind === 'plus') {
+    if (expr.inRange) {
+      if (lineNo >= (expr.rangeEnd ?? 0)) expr.inRange = false;
+      return true;
+    }
+    if (test(expr.addr1)) {
+      expr.rangeEnd = lineNo + expr.addr2.count;
+      expr.inRange = expr.addr2.count > 0;
+      return true;
+    }
+    return false;
+  }
   // Range: turns on at addr1, off after addr2.
   if (expr.inRange) {
     if (test(expr.addr2) || (expr.addr2.kind === 'line' && lineNo >= expr.addr2.line)) expr.inRange = false;
@@ -165,6 +315,7 @@ function matches(expr: SedExpr, line: string, lineNo: number, lastLineNo: number
 const command: Command = async (ctx) => {
   let inPlace = false;
   let suppress = false; // -n
+  let ere = false; // -E / -r
   const scripts: string[] = [];
   const files: string[] = [];
 
@@ -180,9 +331,7 @@ const command: Command = async (ctx) => {
     } else if ((arg === '-e' || arg === '--expression') && i + 1 < ctx.args.length) {
       scripts.push(ctx.args[++i]);
     } else if (arg === '-E' || arg === '-r' || arg === '--regexp-extended') {
-      // ERE: our breToJs translation makes BRE behave like ERE already, and
-      // plain ERE patterns pass through JS regex — accepted as a no-op.
-      continue;
+      ere = true;
     } else if (scripts.length === 0 && !arg.startsWith('-')) {
       scripts.push(arg);
     } else {
@@ -197,7 +346,7 @@ const command: Command = async (ctx) => {
 
   const parsedExprs: SedExpr[] = [];
   for (const s of scripts) {
-    const parsed = parseScript(s);
+    const parsed = parseScript(s, ere);
     if (!parsed) {
       ctx.stderr.write(`sed: invalid expression: ${s}\n`);
       return 1;
