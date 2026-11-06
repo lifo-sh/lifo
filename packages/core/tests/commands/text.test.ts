@@ -348,6 +348,92 @@ describe('sed', () => {
   });
 });
 
+describe('sed BRE/ERE translation', () => {
+  async function run(args: string[], stdin: string) {
+    const { default: sed } = await import('../../src/commands/text/sed.js');
+    const ctx = createContext(new VFS(), args, '/', stdin);
+    const code = await sed(ctx);
+    return { code, out: ctx.stdout.text, err: ctx.stderr.text };
+  }
+
+  it('treats an unescaped | as literal (customer repro)', async () => {
+    const r = await run(['s/^xx|/X/'], 'xx|| yy\n');
+    expect(r.code).toBe(0);
+    expect(r.out).toBe('X| yy\n');
+  });
+
+  it('matches a literal | at the start of the line', async () => {
+    expect((await run(['s/^|| //'], '|| \'Day Package\',\n')).out).toBe("'Day Package',\n");
+  });
+
+  it('matches a literal | in the middle', async () => {
+    expect((await run(['s/a|b/X/g'], 'a|b ab a|b\n')).out).toBe('X ab X\n');
+  });
+
+  it('treats \\| as alternation in BRE', async () => {
+    expect((await run(['s/cat\\|dog/pet/g'], 'cat dog cow\n')).out).toBe('pet pet cow\n');
+  });
+
+  it('supports \\( \\) groups with \\1 and & in the replacement', async () => {
+    expect((await run(['s/\\(foo\\)\\(bar\\)/\\2\\1 [&]/'], 'foobar\n')).out).toBe('barfoo [foobar]\n');
+  });
+
+  it('treats unescaped ( ) as literal in BRE', async () => {
+    expect((await run(['s/f(x)/g/'], 'y = f(x)\n')).out).toBe('y = g\n');
+  });
+
+  it('treats unescaped + ? { } as literal in BRE', async () => {
+    expect((await run(['s/a+b?/X/'], 'a+b? ab\n')).out).toBe('X ab\n');
+    expect((await run(['s/{x}/Y/'], 'o{x}o\n')).out).toBe('oYo\n');
+  });
+
+  it('treats \\+ \\? \\{n\\} as operators in BRE', async () => {
+    expect((await run(['s/a\\+/X/'], 'baaac\n')).out).toBe('bXc\n');
+    expect((await run(['s/colou\\?r/C/g'], 'color colour\n')).out).toBe('C C\n');
+    expect((await run(['s/a\\{2\\}/X/'], 'aaa\n')).out).toBe('Xa\n');
+  });
+
+  it('keeps | literal inside a bracket expression', async () => {
+    expect((await run(['s/[|,]/;/g'], 'a|b,c\n')).out).toBe('a;b;c\n');
+    expect((await run(['-E', 's/[|]+/;/g'], 'a||b\n')).out).toBe('a;b\n');
+  });
+
+  it('supports POSIX classes in bracket expressions', async () => {
+    expect((await run(['s/[[:space:]]\\+$//'], 'trail   \n')).out).toBe('trail\n');
+    expect((await run(['s/[^[:alnum:]]//g'], 'a-b_c!1\n')).out).toBe('abc1\n');
+  });
+
+  it('treats a leading * and a non-initial ^ / non-final $ literally in BRE', async () => {
+    expect((await run(['s/*x/Y/'], 'a*x\n')).out).toBe('aY\n');
+    expect((await run(['s/a^b$c/Z/'], 'a^b$c\n')).out).toBe('Z\n');
+  });
+
+  it('keeps -E/-r semantics: unescaped operators special, escaped literal', async () => {
+    expect((await run(['-E', 's/cat|dog/pet/g'], 'cat dog\n')).out).toBe('pet pet\n');
+    expect((await run(['-r', 's/(a+)(b?)/<\\1|\\2>/'], 'aab\n')).out).toBe('<aa|b>\n');
+    expect((await run(['-E', 's/a\\|b/X/'], 'a|b\n')).out).toBe('X\n');
+    expect((await run(['-E', 's/x{2}/Y/'], 'xxx\n')).out).toBe('Yx\n');
+  });
+
+  it('treats an escaped delimiter as that literal character', async () => {
+    expect((await run(['s|a\\|b|X|'], 'a|b\n')).out).toBe('X\n');
+    expect((await run(['s/\\/usr\\/bin/BIN/'], '/usr/bin/env\n')).out).toBe('BIN/env\n');
+  });
+
+  it('applies BRE rules to /regex/ addresses', async () => {
+    expect((await run(['-n', '/^||/p'], 'a\n|| b\nc\n')).out).toBe('|| b\n');
+  });
+
+  it('supports the GNU addr,+N address form', async () => {
+    const input = Array.from({ length: 60 }, (_, k) => `L${k + 1}`).join('\n') + '\n';
+    const r = await run(['-n', '33,+20p'], input);
+    expect(r.code).toBe(0);
+    expect(r.out).toBe(Array.from({ length: 21 }, (_, k) => `L${k + 33}`).join('\n') + '\n');
+    expect((await run(['/^b/,+1d'], 'a\nb\nc\nd\nb\ne\n')).out).toBe('a\nd\n');
+    expect((await run(['-n', '2,+0p'], 'a\nb\nc\n')).out).toBe('b\n');
+  });
+});
+
 describe('awk', () => {
   it('prints specific field', async () => {
     const vfs = new VFS();
