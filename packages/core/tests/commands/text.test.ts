@@ -314,6 +314,128 @@ describe('tr', () => {
   });
 });
 
+describe('tr (GNU semantics)', () => {
+  async function tr(args: string[], stdin: string) {
+    const { default: cmd } = await import('../../src/commands/text/tr.js');
+    const ctx = createContext(new VFS(), args, '/', stdin);
+    const code = await cmd(ctx);
+    return { code, out: ctx.stdout.text, err: ctx.stderr.text };
+  }
+
+  it('-cd keeps only [:print:] and newline', async () => {
+    expect((await tr(['-cd', '[:print:]\\n'], 'Ab c\x01\td!\n')).out).toBe('Ab cd!\n');
+  });
+
+  it('maps [:lower:] to [:upper:] and back', async () => {
+    expect((await tr(['[:lower:]', '[:upper:]'], 'Hello')).out).toBe('HELLO');
+    expect((await tr(['[:upper:][:lower:]', '[:lower:][:upper:]'], 'aBc')).out).toBe('AbC');
+  });
+
+  it('deletes classes', async () => {
+    expect((await tr(['-d', '[:space:]'], 'a b\tc\n')).out).toBe('abc');
+    expect((await tr(['-d', '[:digit:][:punct:]'], 'a1,b2!')).out).toBe('ab');
+  });
+
+  it('-cs squeezes the complement into one separator', async () => {
+    expect((await tr(['-cs', '[:alnum:]', '\\n'], 'one, two;  three')).out).toBe('one\ntwo\nthree');
+  });
+
+  it('-c translates the complement', async () => {
+    expect((await tr(['-c', 'a-z\\n', '_'], 'ab C!\n')).out).toBe('ab___\n');
+  });
+
+  it('pads SET2 with its last char, and -t truncates SET1', async () => {
+    expect((await tr(['abc', 'x'], 'aabbcc')).out).toBe('xxxxxx');
+    expect((await tr(['-t', 'abc', 'xy'], 'abc')).out).toBe('xyc');
+    expect((await tr(['a-z', '[X*]'], 'hello')).out).toBe('XXXXX');
+  });
+
+  it('handles escapes, octal and escaped ranges', async () => {
+    expect((await tr(['\\n', ' '], 'a\nb\n')).out).toBe('a b ');
+    expect((await tr(['\\101', 'z'], 'ABA')).out).toBe('zBz');
+    expect((await tr(['-d', '\\000-\\037'], 'a\x01b\x1f')).out).toBe('ab');
+    expect((await tr(['\\\\', '/'], 'a\\b')).out).toBe('a/b');
+  });
+
+  it('-ds deletes SET1 then squeezes SET2', async () => {
+    expect((await tr(['-ds', 'a', 'b'], 'aabbbcc')).out).toBe('bcc');
+  });
+
+  it('-s with translation squeezes the translated chars', async () => {
+    expect((await tr(['-s', 'a-z', 'A-Z'], 'aabbc')).out).toBe('ABC');
+  });
+
+  it('rejects an unknown class', async () => {
+    const r = await tr(['-d', '[:nope:]'], 'x');
+    expect(r.code).toBe(1);
+    expect(r.err).toContain('invalid character class');
+  });
+});
+
+describe('awk expressions', () => {
+  async function awk(args: string[], stdin = '', vfs = new VFS()) {
+    const { default: cmd } = await import('../../src/commands/text/awk.js');
+    const ctx = createContext(vfs, args, '/', stdin);
+    const code = await cmd(ctx);
+    return { code, out: ctx.stdout.text, err: ctx.stderr.text };
+  }
+
+  it('ternary in print arguments', async () => {
+    expect((await awk(['{print NR==1 ? "first" : "rest"}'], 'a\nb\n')).out).toBe('first\nrest\n');
+    expect((await awk(['{print ($1 > 2 ? "big" : "small")}'], '1\n3\n')).out).toBe('small\nbig\n');
+  });
+
+  it('ternary in an assignment', async () => {
+    expect((await awk(['{x = $1 > 2 ? "big" : "small"; print x}'], '1\n3\n')).out).toBe('small\nbig\n');
+    expect((await awk(['{ s += $1 > 1 ? $1 : 0 } END { print s }'], '1\n2\n3\n')).out).toBe('5\n');
+  });
+
+  it('nested ternary is right-associative', async () => {
+    expect((await awk(['{print $1 < 0 ? "neg" : $1 == 0 ? "zero" : "pos"}'], '-1\n0\n5\n')).out).toBe('neg\nzero\npos\n');
+    expect((await awk(['{print "n=" ($1 % 2 ? "odd" : "even")}'], '3\n4\n')).out).toBe('n=odd\nn=even\n');
+  });
+
+  it('expression patterns, if/else and loops', async () => {
+    expect((await awk(['NR==2'], 'a\nb\nc\n')).out).toBe('b\n');
+    expect((await awk(['$2 > 10 {print $1}'], 'x 5\ny 20\n')).out).toBe('y\n');
+    expect((await awk(['{if ($1 > 1) print "y"; else print "n"}'], '1\n2\n')).out).toBe('n\ny\n');
+    expect((await awk(['BEGIN{i=0; while(i<3){printf "%d", i; i++}; print ""}'])).out).toBe('012\n');
+    expect((await awk(['BEGIN{for(i=1;i<=3;i++) s = s i; print s}'])).out).toBe('123\n');
+    expect((await awk(['/b/,/c/'], 'a\nb\nx\nc\nd\n')).out).toBe('b\nx\nc\n');
+  });
+
+  it('printf, builtins and number output', async () => {
+    expect((await awk(['{printf "%-5s|%3d|%.2f\\n", $1, $2, $3}'], 'ab 7 3.14159\n')).out).toBe('ab   |  7|3.14\n');
+    expect((await awk(['{print toupper(substr($1,2,3)), length, index($1,"c")}'], 'abcdef\n')).out).toBe('BCD 6 3\n');
+    expect((await awk(['{gsub(/o/,"0"); print}'], 'foo boo\n')).out).toBe('f00 b00\n');
+    expect((await awk(['BEGIN{print 1/3, 10/2, 2^10}'])).out).toBe('0.333333 5 1024\n');
+    expect((await awk(['{print x "|" $5 "|"}'], 'a\n')).out).toBe('||\n');
+  });
+
+  it('-v, FS in BEGIN, OFS and field assignment', async () => {
+    expect((await awk(['-v', 'n=3', 'BEGIN{print n*2}'])).out).toBe('6\n');
+    expect((await awk(['BEGIN{FS=":"}{print $2}'], 'a:b:c\n')).out).toBe('b\n');
+    expect((await awk(['BEGIN{OFS="-"}{$2="X"; print}'], 'a b c\n')).out).toBe('a-X-c\n');
+  });
+
+  it('print > file writes to the VFS', async () => {
+    const vfs = new VFS();
+    const r = await awk(['{print $1 > "/out.txt"}'], 'a 1\nb 2\n', vfs);
+    expect(r.code).toBe(0);
+    expect(vfs.readFileString('/out.txt')).toBe('a\nb\n');
+  });
+
+  it('prints nothing for empty input', async () => {
+    expect((await awk(['{print}'], '')).out).toBe('');
+  });
+
+  it('reports unsupported features instead of mis-evaluating', async () => {
+    const r = await awk(['{a[$1]++}'], 'x\n');
+    expect(r.code).toBe(2);
+    expect(r.err).toContain('arrays');
+  });
+});
+
 describe('sed', () => {
   let vfs: VFS;
 
