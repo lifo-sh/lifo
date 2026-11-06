@@ -430,9 +430,170 @@ describe('awk expressions', () => {
   });
 
   it('reports unsupported features instead of mis-evaluating', async () => {
-    const r = await awk(['{a[$1]++}'], 'x\n');
+    const r = await awk(['{print | "sort"}'], 'x\n');
     expect(r.code).toBe(2);
-    expect(r.err).toContain('arrays');
+    expect(r.err).toContain('print | command is not supported');
+    const g = await awk(['BEGIN{"date" | getline d}']);
+    expect(g.code).toBe(2);
+    expect(g.err).toContain('not supported');
+  });
+});
+
+describe('awk arrays, functions, getline', () => {
+  async function awk(args: string[], stdin = '', vfs = new VFS()) {
+    const { default: cmd } = await import('../../src/commands/text/awk.js');
+    const ctx = createContext(vfs, args, '/', stdin);
+    const code = await cmd(ctx);
+    return { code, out: ctx.stdout.text, err: ctx.stderr.text };
+  }
+
+  it('!seen[$0]++ drops duplicate lines', async () => {
+    const r = await awk(['!seen[$0]++'], 'a\nb\na\nc\nb\n');
+    expect(r.code).toBe(0);
+    expect(r.out).toBe('a\nb\nc\n');
+  });
+
+  it('counts with c[$1]++ and walks keys in insertion order', async () => {
+    const r = await awk(['{c[$1]++} END{for(k in c) print k, c[k]}'], 'x 1\ny 2\nx 3\nz 4\nx 5\n');
+    expect(r.code).toBe(0);
+    expect(r.out).toBe('x 3\ny 1\nz 1\n');
+  });
+
+  it('sums with s[$1]+=$2', async () => {
+    const r = await awk(['{s[$1]+=$2} END{for(k in s) print k, s[k]}'], 'a 1\nb 2\na 3.5\n');
+    expect(r.out).toBe('a 4.5\nb 2\n');
+  });
+
+  it('multi-subscripts join with SUBSEP, and (i,j) in a', async () => {
+    const r = await awk(['BEGIN{a[1,2]=3; for(k in a){split(k,p,SUBSEP); print p[1], p[2], a[k]}; print ((1,2) in a), ((2,1) in a)}']);
+    expect(r.out).toBe('1 2 3\n1 0\n');
+    expect((await awk(['BEGIN{SUBSEP=":"; a["x","y"]=1; for(k in a) print k}'])).out).toBe('x:y\n');
+  });
+
+  it('`in` tests membership without creating the element; a reference creates it', async () => {
+    expect((await awk(['BEGIN{if ("x" in a) print "yes"; print length(a); a["y"]; print length(a), ("y" in a)}'])).out).toBe('0\n1 1\n');
+    expect((await awk(['{if (!($1 in a)) print "new", $1; a[$1]}'], 'p\nq\np\n')).out).toBe('new p\nnew q\n');
+  });
+
+  it('an unset element compares as 0 and as ""', async () => {
+    expect((await awk(['{if (c[$1] == 0) print "first", $1; c[$1]++}'], 'a\nb\na\n')).out).toBe('first a\nfirst b\n');
+    expect((await awk(['BEGIN{if (a[1] == "") print "empty"}'])).out).toBe('empty\n');
+  });
+
+  it('delete a[k] and delete a', async () => {
+    expect((await awk(['BEGIN{a[1];a[2];a[3]; delete a[2]; for(k in a) printf "%s ", k; delete a; print length(a)}'])).out).toBe('1 3 0\n');
+    expect((await awk(['BEGIN{a[1,2]=1; delete a[1,2]; print length(a)}'])).out).toBe('0\n');
+  });
+
+  it('for-in supports break/continue and deleting while iterating', async () => {
+    expect((await awk(['BEGIN{for(i=1;i<=5;i++) a[i]=i; for(k in a){ if (k==2) continue; if (k==4) break; printf "%s", k }; print ""}'])).out).toBe('13\n');
+    expect((await awk(['BEGIN{a[1];a[2];a[3]; for(k in a){ delete a; n++ }; print n, length(a)}'])).out).toBe('1 0\n');
+  });
+
+  it('evaluates a subscript once in a[i++]++ and a[i++] += x', async () => {
+    expect((await awk(['BEGIN{i=1; a[i++]++; print i, a[1], length(a)}'])).out).toBe('2 1 1\n');
+    expect((await awk(['BEGIN{i=1; a[i++] += 5; print i, a[1]}'])).out).toBe('2 5\n');
+  });
+
+  it('numeric keys go through CONVFMT; print uses OFMT', async () => {
+    expect((await awk(['BEGIN{a[0.1+0.2]=1; a[1]=2; a["1"]++; for(k in a) print k, a[k]}'])).out).toBe('0.3 1\n1 3\n');
+    expect((await awk(['BEGIN{CONVFMT="%.2f"; x = 3.14159 ""; a[3.14159]=1; for(k in a) print x, k; print 3.14159, 17 ""}'])).out).toBe('3.14 3.14\n3.14159 17\n');
+    expect((await awk(['BEGIN{OFMT="%.2f"; print 3.14159, 3.14159 ""}'])).out).toBe('3.14 3.14159\n');
+  });
+
+  it('errors on scalar/array misuse', async () => {
+    const a = await awk(['BEGIN{x=1; x[1]=2}']);
+    expect(a.code).toBe(2);
+    expect(a.err).toContain('as an array');
+    const b = await awk(['BEGIN{a[1]=1; print a}']);
+    expect(b.code).toBe(2);
+    expect(b.err).toContain('scalar context');
+  });
+
+  it('split() with a single-char, regex, default-FS and empty separator', async () => {
+    expect((await awk(['BEGIN{n=split("a:b:c", p, ":"); print n, p[1], p[3]}'])).out).toBe('3 a c\n');
+    expect((await awk(['BEGIN{n=split("a1b22c", p, /[0-9]+/); print n, p[1], p[2], p[3]}'])).out).toBe('3 a b c\n');
+    expect((await awk(['BEGIN{n=split("a.b", p, "."); print n, p[2]}'])).out).toBe('2 b\n');
+    expect((await awk(['BEGIN{n=split("x--y-z", p, "-+"); print n, p[2]}'])).out).toBe('3 y\n');
+    expect((await awk(['BEGIN{n=split("  x \t y  ", p); print n, p[1] p[2]}'])).out).toBe('2 xy\n');
+    expect((await awk(['-F,', '{n=split($0, p); print n, p[2]}'], 'a,b c,d\n')).out).toBe('3 b c\n');
+    expect((await awk(['BEGIN{n=split("abc", p, ""); print n, p[3]}'])).out).toBe('3 c\n');
+  });
+
+  it('split() clears the array and returns 0 for an empty string', async () => {
+    expect((await awk(['BEGIN{split("a b c", p); n=split("", p); print n, length(p)}'])).out).toBe('0 0\n');
+    expect((await awk(['BEGIN{split("a b c", p); split("x", p); print length(p), p[1]}'])).out).toBe('1 x\n');
+  });
+
+  it('split() pieces compare numerically when they look numeric', async () => {
+    expect((await awk(['BEGIN{split("10 9", p); print (p[1] > p[2])}'])).out).toBe('1\n');
+  });
+
+  it('recursive user function (factorial, fibonacci)', async () => {
+    const r = await awk(['function fact(n) { return n <= 1 ? 1 : n * fact(n - 1) }\nBEGIN { print fact(5), fact(10) }']);
+    expect(r.code).toBe(0);
+    expect(r.out).toBe('120 3628800\n');
+    expect((await awk(['function fib(n){ if (n < 2) return n; return fib(n-1) + fib(n-2) } BEGIN{print fib(15)}'])).out).toBe('610\n');
+  });
+
+  it('arrays are passed by reference, scalars by value, extra params are locals', async () => {
+    expect((await awk(['function fill(arr, n,   i) { for (i = 1; i <= n; i++) arr[i] = i * i }\nBEGIN { fill(sq, 3); print sq[1], sq[2], sq[3], length(sq), i }'])).out).toBe('1 4 9 3 \n');
+    expect((await awk(['function inc(x) { x++; return x } BEGIN { y = 1; print inc(y), y }'])).out).toBe('2 1\n');
+    expect((await awk(['function f(a,   t) { t = a * 2; return t } BEGIN { t = 5; print f(3), t }'])).out).toBe('6 5\n');
+    expect((await awk(['function clr(a) { delete a } BEGIN { b[1]; b[2]; clr(b); print length(b) }'])).out).toBe('0\n');
+    expect((await awk(['function sum(a,   k, s) { for (k in a) s += a[k]; return s } {v[NR]=$1} END { print sum(v) }'], '3\n4\n5\n')).out).toBe('12\n');
+  });
+
+  it('functions over records, globals, no-return and multi-line definitions', async () => {
+    expect((await awk(['function max(a, b) { return a > b ? a : b } { m = max(m, $1) } END { print m }'], '3\n10\n7\n')).out).toBe('10\n');
+    expect((await awk(['function bump() { n++ } { bump() } END { print n }'], 'a\nb\n')).out).toBe('2\n');
+    expect((await awk(['function g() { } function h() { return } BEGIN { print "[" g() h() "]" }'])).out).toBe('[]\n');
+    expect((await awk(['function trim(s)\n{\n  sub(/^ +/, "", s)\n  sub(/ +$/, "", s)\n  return s\n}\n{ print "<" trim($0) ">" }'], '  hi there  \n')).out).toBe('<hi there>\n');
+  });
+
+  it('function errors', async () => {
+    const a = await awk(['BEGIN { nope(1) }']);
+    expect(a.code).toBe(2);
+    expect(a.err).toContain('nope is not defined');
+    const b = await awk(['BEGIN { return 1 }']);
+    expect(b.code).toBe(2);
+    expect(b.err).toContain('return outside a function');
+    const c = await awk(['function f(a) { return a } BEGIN { f(1, 2) }']);
+    expect(c.code).toBe(2);
+    const d = await awk(['function f(n) { return f(n + 1) } BEGIN { f(1) }']);
+    expect(d.code).toBe(2);
+    expect(d.err).toContain('too deep');
+  });
+
+  it('getline and getline var read the next main-input record', async () => {
+    expect((await awk(['NR==1{getline; print "after:", $0, NR}'], 'a\nb\nc\n')).out).toBe('after: b 2\n');
+    expect((await awk(['{getline nxt; print $0 "+" nxt}'], 'a\nb\nc\nd\n')).out).toBe('a+b\nc+d\n');
+    expect((await awk(['END{print (getline)}'], 'a\n')).out).toBe('0\n');
+    expect((await awk(['BEGIN{getline; print "first:", $0} {print}'], 'h\nx\ny\n')).out).toBe('first: h\nx\ny\n');
+  });
+
+  it('getline < file, getline var < file, close()', async () => {
+    const vfs = new VFS();
+    vfs.writeFile('/f.txt', '1\n2 x\n3\n');
+    expect((await awk(['BEGIN{while ((getline line < "/f.txt") > 0) s += line; print s}'], '', vfs)).out).toBe('6\n');
+    expect((await awk(['BEGIN{getline < "/f.txt"; getline < "/f.txt"; print $0, NF, NR}'], '', vfs)).out).toBe('2 x 2 0\n');
+    expect((await awk(['BEGIN{print (getline x < "/nope")}'], '', vfs)).out).toBe('-1\n');
+    expect((await awk(['BEGIN{getline a < "/f.txt"; close("/f.txt"); getline b < "/f.txt"; print a, b}'], '', vfs)).out).toBe('1 1\n');
+  });
+
+  it('two-file join with NR==FNR', async () => {
+    const vfs = new VFS();
+    vfs.writeFile('/keys.txt', 'b\nc\n');
+    vfs.writeFile('/data.txt', 'a 1\nb 2\nc 3\n');
+    expect((await awk(['NR==FNR{k[$1]; next} $1 in k', '/keys.txt', '/data.txt'], '', vfs)).out).toBe('b 2\nc 3\n');
+    expect((await awk(['FNR==1{print FILENAME} END{print NR}', '/keys.txt', '/data.txt'], '', vfs)).out).toBe('/keys.txt\n/data.txt\n5\n');
+  });
+
+  it('do … while runs the body at least once', async () => {
+    expect((await awk(['BEGIN{i=5; do { printf "%d ", i; i++ } while (i < 3); print ""}'])).out).toBe('5 \n');
+    expect((await awk(['BEGIN{i=0; do i++; while (i < 3); print i}'])).out).toBe('3\n');
+    expect((await awk(['BEGIN{do { if (++i == 2) break } while (1); print i}'])).out).toBe('2\n');
+    expect((await awk(['BEGIN{\n  do {\n    i++\n    if (i < 3) continue\n    n++\n  }\n  while (i < 5)\n  print i, n\n}'])).out).toBe('5 3\n');
   });
 });
 
