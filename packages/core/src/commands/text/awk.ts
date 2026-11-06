@@ -1,7 +1,7 @@
 import type { Command } from '../types.js';
 import { resolve } from '../../utils/path.js';
 import { VFSError } from '../../kernel/vfs/index.js';
-import { getMimeType, isBinaryMime } from '../../utils/mime.js';
+import { isBinaryFile } from '../../utils/mime.js';
 import { posixToJs } from './sed.js';
 
 /*
@@ -1455,7 +1455,7 @@ const command: Command = async (ctx) => {
       const path = resolve(ctx.cwd, file);
       try {
         ctx.vfs.stat(path);
-        if (isBinaryMime(getMimeType(path))) {
+        if (isBinaryFile(ctx.vfs, path)) {
           ctx.stderr.write(`awk: ${file}: binary file, skipping\n`);
           continue;
         }

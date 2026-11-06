@@ -112,3 +112,22 @@ export function getFileCategory(
 export function isBinaryMime(mime: string): boolean {
   return getFileCategory(mime) !== 'text';
 }
+
+/**
+ * Whether a text command (grep, sed, awk, sort, …) should skip a file as binary. A known extension
+ * decides as before. A missing or unknown one (Makefile, Dockerfile, LICENSE, .mjs, .lock, …) used
+ * to fall back to application/octet-stream and was skipped as "binary file" without being read; now
+ * the first bytes decide, as GNU grep does: a NUL byte means binary.
+ */
+export function isBinaryFile(vfs: { readFile(path: string): Uint8Array }, path: string): boolean {
+  const mime = getMimeType(path);
+  if (mime !== 'application/octet-stream') return isBinaryMime(mime);
+  try {
+    const bytes = vfs.readFile(path);
+    const n = Math.min(bytes.length, 8000);
+    for (let i = 0; i < n; i++) if (bytes[i] === 0) return true;
+    return false;
+  } catch {
+    return false; // let the command's own read report the error
+  }
+}
