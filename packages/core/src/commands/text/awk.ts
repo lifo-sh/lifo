@@ -8,12 +8,28 @@ import { posixToJs } from './sed.js';
  * A small awk: a tokenizer, a recursive-descent parser for awk's expression
  * grammar (assignment, ?:, || && ! ~ comparisons, concatenation, arithmetic,
  * ^, ++/--, $field) and the common statements (print/printf with > / >>,
- * if/else, while, for(;;), break/continue/next/exit, blocks), plus BEGIN/END,
- * /regex/, expression and range patterns, and the usual string builtins.
+ * if/else, while, do … while, for(;;), for (k in a), break/continue/next/exit,
+ * blocks), plus BEGIN/END, /regex/, expression and range patterns, and the
+ * usual string builtins.
+ *
+ * Associative arrays: a[k], a[i,j] (keys joined with SUBSEP), (k in a),
+ * (i,j) in a, delete a[k], delete a, split(s, a [, sep]), length(a).
+ * `for (k in a)` visits keys in insertion order (gawk's order is unspecified,
+ * so scripts cannot depend on it either way).
+ *
+ * User-defined functions: `function f(a, b,   locals) { … return x }`. Arrays
+ * are passed by reference, scalars by value, missing arguments are locals,
+ * and an untyped variable passed in becomes an array in the caller if the
+ * function uses it as one.
+ *
+ * getline: `getline`, `getline var` (next main-input record), `getline < file`,
+ * `getline var < file`, and close(file).
+ *
+ * Numbers convert to strings with CONVFMT (keys, concatenation) and print
+ * with OFMT; both default to "%.6g", integers print as integers.
  *
  * Not supported (reported as an error rather than silently mis-evaluated):
- * arrays and `for (k in a)`, split(), user-defined functions, getline,
- * `print | cmd`, `do … while`.
+ * `print | cmd`, `cmd | getline`, system().
  */
 
 class AwkError extends Error {}
@@ -28,6 +44,7 @@ type Tok =
   | { t: 'regex'; v: string }
   | { t: 'name'; v: string }
   | { t: 'func'; v: string }
+  | { t: 'ufunc'; v: string }
   | { t: 'op'; v: string }
   | { t: 'nl' }
   | { t: 'eof' };
@@ -123,6 +140,7 @@ function tokenize(src: string): Tok[] {
       i += name.length;
       if (BUILTINS.has(name) && src[i] === '(') toks.push({ t: 'func', v: name });
       else if (name === 'length') toks.push({ t: 'func', v: name }); // bare `length`
+      else if (!KEYWORDS.has(name) && src[i] === '(') toks.push({ t: 'ufunc', v: name }); // f(…)
       else toks.push({ t: 'name', v: name });
       continue;
     }
@@ -142,6 +160,8 @@ type Node =
   | { k: 'str'; v: string }
   | { k: 'regex'; v: string }
   | { k: 'var'; name: string }
+  | { k: 'index'; name: string; subs: Node[] }
+  | { k: 'in'; subs: Node[]; name: string }
   | { k: 'field'; e: Node }
   | { k: 'group'; e: Node }
   | { k: 'list'; items: Node[] }
@@ -155,7 +175,9 @@ type Node =
   | { k: 'match'; neg: boolean; l: Node; r: Node }
   | { k: 'concat'; l: Node; r: Node }
   | { k: 'incdec'; op: '++' | '--'; pre: boolean; target: Node }
-  | { k: 'call'; name: string; args: Node[] };
+  | { k: 'call'; name: string; args: Node[] }
+  | { k: 'ucall'; name: string; args: Node[] }
+  | { k: 'getline'; target?: Node; file?: Node };
 
 type Redirect = { mode: '>' | '>>'; target: Node };
 
@@ -165,6 +187,10 @@ type Stmt =
   | { k: 'expr'; e: Node }
   | { k: 'if'; c: Node; then: Stmt; else?: Stmt }
   | { k: 'while'; c: Node; body: Stmt }
+  | { k: 'do'; body: Stmt; c: Node }
+  | { k: 'forin'; v: string; arr: string; body: Stmt }
+  | { k: 'delete'; name: string; subs?: Node[] }
+  | { k: 'return'; e?: Node }
   | { k: 'for'; init?: Node; c?: Node; step?: Node; body: Stmt }
   | { k: 'block'; body: Stmt[] }
   | { k: 'next' }
@@ -180,6 +206,8 @@ type Pattern =
   | { k: 'range'; from: Node; to: Node; active: boolean };
 
 interface Rule { pattern: Pattern; action: Stmt[] | null }
+interface Func { params: string[]; body: Stmt[] }
+interface Program { rules: Rule[]; funcs: Map<string, Func>; mainGetline: boolean }
 
 // ── Parser ─────────────────────────────────────────────────────────────────
 
@@ -187,6 +215,10 @@ class Parser {
   private pos = 0;
   /** Inside an unparenthesised print argument list, `>` is a redirect. */
   private noGt = false;
+  private inFunc = false;
+  private funcs = new Map<string, Func>();
+  /** Does the program read main input with getline (so input must be ready for BEGIN)? */
+  private mainGetline = false;
   constructor(private toks: Tok[]) {}
 
   private peek(o = 0): Tok { return this.toks[Math.min(this.pos + o, this.toks.length - 1)]; }
@@ -204,11 +236,15 @@ class Parser {
     return `'${(t as { v: unknown }).v}'`;
   }
 
-  parseProgram(): Rule[] {
+  parseProgram(): Program {
     const rules: Rule[] = [];
     this.skipTerms();
     while (this.peek().t !== 'eof') {
-      if (this.isName('function') || this.isName('func')) throw new AwkError('user-defined functions are not supported');
+      if (this.isName('function') || this.isName('func')) {
+        this.parseFunction();
+        this.skipTerms();
+        continue;
+      }
       let pattern: Pattern;
       if (this.isName('BEGIN')) { this.pos++; pattern = { k: 'BEGIN' }; }
       else if (this.isName('END')) { this.pos++; pattern = { k: 'END' }; }
@@ -226,7 +262,58 @@ class Parser {
       rules.push({ pattern, action });
       this.skipTerms();
     }
-    return rules;
+    return { rules, funcs: this.funcs, mainGetline: this.mainGetline };
+  }
+
+  /** `function name(a, b,   locals) { … }` */
+  private parseFunction() {
+    this.pos++;
+    const nt = this.next();
+    if ((nt.t !== 'name' && nt.t !== 'ufunc') || KEYWORDS.has(nt.v)) {
+      this.pos--;
+      throw new AwkError(`syntax error: bad function name near ${this.describe()}`);
+    }
+    const name = nt.v;
+    if (this.funcs.has(name)) throw new AwkError(`function ${name} defined twice`);
+    this.expectOp('(');
+    const params: string[] = [];
+    this.skipNl();
+    while (!this.isOp(')')) {
+      const p = this.next();
+      if (p.t !== 'name' || KEYWORDS.has(p.v)) { this.pos--; throw new AwkError(`syntax error: bad parameter near ${this.describe()}`); }
+      if (p.v === name || params.includes(p.v)) throw new AwkError(`function ${name}: duplicate or invalid parameter ${p.v}`);
+      params.push(p.v);
+      this.skipNl();
+      if (!this.eatOp(',')) break;
+      this.skipNl();
+    }
+    this.expectOp(')');
+    this.skipNl();
+    const prev = this.inFunc;
+    this.inFunc = true;
+    const body = this.parseBlock();
+    this.inFunc = prev;
+    this.funcs.set(name, { params, body });
+  }
+
+  /** The subscript list after `name[`; the `[` is the current token. */
+  private parseSubscripts(): Node[] {
+    this.expectOp('[');
+    const prev = this.noGt;
+    this.noGt = false;
+    this.skipNl();
+    const subs = [this.parseExpr()];
+    while (this.eatOp(',')) { this.skipNl(); subs.push(this.parseExpr()); }
+    this.skipNl();
+    this.noGt = prev;
+    this.expectOp(']');
+    return subs;
+  }
+
+  private expectArrayName(what: string): string {
+    const t = this.next();
+    if (t.t !== 'name' || KEYWORDS.has(t.v)) { this.pos--; throw new AwkError(`syntax error: ${what} needs an array name near ${this.describe()}`); }
+    return t.v;
   }
 
   private parseBlock(): Stmt[] {
@@ -284,8 +371,12 @@ class Parser {
         case 'for': {
           this.pos++;
           this.expectOp('(');
-          if (this.peek().t === 'name' && this.peek(1).t === 'name' && (this.peek(1) as { v: string }).v === 'in') {
-            throw new AwkError('arrays (for … in) are not supported');
+          const t0 = this.peek(), t1 = this.peek(1), t2 = this.peek(2);
+          if (t0.t === 'name' && !KEYWORDS.has(t0.v) && t1.t === 'name' && t1.v === 'in'
+            && t2.t === 'name' && !KEYWORDS.has(t2.v) && this.isOp(')', 3)) {
+            this.pos += 4;
+            this.skipNl();
+            return { k: 'forin', v: t0.v, arr: t2.v, body: this.parseStmt() };
           }
           const init = this.isOp(';') ? undefined : this.parseExpr();
           this.expectOp(';');
@@ -298,7 +389,19 @@ class Parser {
           this.skipNl();
           return { k: 'for', init, c, step, body: this.parseStmt() };
         }
-        case 'do': throw new AwkError('do … while is not supported');
+        case 'do': {
+          this.pos++;
+          this.skipNl();
+          const body = this.parseStmt();
+          this.skipTerms();
+          if (!this.isName('while')) throw new AwkError(`syntax error: do needs a while near ${this.describe()}`);
+          this.pos++;
+          this.expectOp('(');
+          const c = this.parseExpr();
+          this.expectOp(')');
+          this.endSimple();
+          return { k: 'do', body, c };
+        }
         case 'break': this.pos++; this.endSimple(); return { k: 'break' };
         case 'continue': this.pos++; this.endSimple(); return { k: 'continue' };
         case 'next': this.pos++; this.endSimple(); return { k: 'next' };
@@ -327,9 +430,21 @@ class Parser {
           if (t.v === 'printf' && args.length === 0) throw new AwkError('printf: no format');
           return { k: t.v, args, redir } as Stmt;
         }
-        case 'getline': throw new AwkError('getline is not supported');
-        case 'delete': throw new AwkError('arrays (delete) are not supported');
-        case 'return': throw new AwkError('return outside a function');
+        case 'delete': {
+          this.pos++;
+          const name = this.expectArrayName('delete');
+          const subs = this.isOp('[') ? this.parseSubscripts() : undefined;
+          this.endSimple();
+          return { k: 'delete', name, subs };
+        }
+        case 'return': {
+          if (!this.inFunc) throw new AwkError('return outside a function');
+          this.pos++;
+          const tt = this.peek();
+          const e = tt.t === 'nl' || tt.t === 'eof' || this.isOp(';') || this.isOp('}') ? undefined : this.parseExpr();
+          this.endSimple();
+          return { k: 'return', e };
+        }
       }
     }
     const e = this.parseExpr();
@@ -356,7 +471,7 @@ class Parser {
     const left = this.parseTernary();
     const t = this.peek();
     if (t.t === 'op' && ['=', '+=', '-=', '*=', '/=', '%=', '^='].includes(t.v)) {
-      if (left.k !== 'var' && left.k !== 'field') throw new AwkError('syntax error: assignment to a non-variable');
+      if (left.k !== 'var' && left.k !== 'field' && left.k !== 'index') throw new AwkError('syntax error: assignment to a non-variable');
       this.pos++;
       this.skipNl();
       return { k: 'assign', op: t.v, target: left, e: this.parseAssign() };
@@ -389,9 +504,14 @@ class Parser {
     return l;
   }
 
+  /** `k in a`, `(i, j) in a`. */
   private parseIn(): Node {
-    const l = this.parseMatch();
-    if (this.isName('in')) throw new AwkError('arrays (in) are not supported');
+    let l = this.parseMatch();
+    while (this.isName('in')) {
+      this.pos++;
+      const name = this.expectArrayName('in');
+      l = { k: 'in', subs: l.k === 'list' ? l.items : [l], name };
+    }
     return l;
   }
 
@@ -406,6 +526,9 @@ class Parser {
 
   private parseCompare(): Node {
     const l = this.parseConcat();
+    if (this.isOp('|') && this.peek(1).t === 'name' && (this.peek(1) as { v: string }).v === 'getline') {
+      throw new AwkError('"cmd" | getline is not supported');
+    }
     const t = this.peek();
     if (t.t === 'op' && (['<', '<=', '==', '!=', '>='].includes(t.v) || (t.v === '>' && !this.noGt))) {
       this.pos++;
@@ -416,7 +539,7 @@ class Parser {
 
   private startsConcatOperand(): boolean {
     const t = this.peek();
-    if (t.t === 'num' || t.t === 'str' || t.t === 'func') return true;
+    if (t.t === 'num' || t.t === 'str' || t.t === 'func' || t.t === 'ufunc') return true;
     if (t.t === 'name') return !KEYWORDS.has(t.v);
     if (t.t === 'op') return t.v === '$' || t.v === '(' || t.v === '!' || t.v === '++' || t.v === '--' || t.v === '-';
     return false;
@@ -463,7 +586,7 @@ class Parser {
 
   private parsePostfix(): Node {
     const p = this.parsePrimary();
-    if ((p.k === 'var' || p.k === 'field') && (this.isOp('++') || this.isOp('--'))) {
+    if ((p.k === 'var' || p.k === 'field' || p.k === 'index') && (this.isOp('++') || this.isOp('--'))) {
       const op = (this.next() as { v: string }).v as '++' | '--';
       return { k: 'incdec', op, pre: false, target: p };
     }
@@ -477,8 +600,7 @@ class Parser {
       case 'str': return { k: 'str', v: t.v };
       case 'regex': return { k: 'regex', v: t.v };
       case 'func': {
-        if (t.v === 'split') throw new AwkError('split() needs arrays, which are not supported');
-        if (t.v === 'system' || t.v === 'close') throw new AwkError(`${t.v}() is not supported`);
+        if (t.v === 'system') throw new AwkError('system() is not supported');
         if (!this.isOp('(')) return { k: 'call', name: t.v, args: [] }; // bare `length`
         this.pos++;
         const args: Node[] = [];
@@ -491,12 +613,30 @@ class Parser {
         }
         this.noGt = prev;
         this.expectOp(')');
+        if (t.v === 'split' && (args.length < 2 || args.length > 3 || args[1].k !== 'var')) {
+          throw new AwkError('split(s, array [, sep]) needs an array name as its second argument');
+        }
         return { k: 'call', name: t.v, args };
       }
+      case 'ufunc': {
+        this.expectOp('(');
+        const args: Node[] = [];
+        const prev = this.noGt;
+        this.noGt = false;
+        this.skipNl();
+        if (!this.isOp(')')) {
+          args.push(this.parseExpr());
+          while (this.eatOp(',')) { this.skipNl(); args.push(this.parseExpr()); }
+        }
+        this.skipNl();
+        this.noGt = prev;
+        this.expectOp(')');
+        return { k: 'ucall', name: t.v, args };
+      }
       case 'name': {
-        if (t.v === 'getline') throw new AwkError('getline is not supported');
+        if (t.v === 'getline') return this.parseGetline();
         if (KEYWORDS.has(t.v)) throw new AwkError(`syntax error at '${t.v}'`);
-        if (this.isOp('[')) throw new AwkError('arrays are not supported');
+        if (this.isOp('[')) return { k: 'index', name: t.v, subs: this.parseSubscripts() };
         return { k: 'var', name: t.v };
       }
       case 'op': {
@@ -507,7 +647,7 @@ class Parser {
         }
         if (t.v === '++' || t.v === '--') {
           const target = this.parsePrimary();
-          if (target.k !== 'var' && target.k !== 'field') throw new AwkError(`syntax error: ${t.v} needs a variable`);
+          if (target.k !== 'var' && target.k !== 'field' && target.k !== 'index') throw new AwkError(`syntax error: ${t.v} needs a variable`);
           return { k: 'incdec', op: t.v, pre: true, target };
         }
         if (t.v === '-') return { k: 'neg', e: this.parseUnary() };
@@ -521,10 +661,7 @@ class Parser {
           this.skipNl();
           this.noGt = prev;
           this.expectOp(')');
-          if (items.length > 1) {
-            if (this.isName('in')) throw new AwkError('arrays (in) are not supported');
-            return { k: 'list', items };
-          }
+          if (items.length > 1) return { k: 'list', items };
           return { k: 'group', e: items[0] };
         }
         break;
@@ -534,10 +671,21 @@ class Parser {
     throw new AwkError(`syntax error near ${this.describe()}`);
   }
 
+  /** After `getline`: optional lvalue, optional `< file`. */
+  private parseGetline(): Node {
+    let target: Node | undefined;
+    const t = this.peek();
+    if ((t.t === 'name' && !KEYWORDS.has(t.v)) || this.isOp('$')) target = this.parsePrimary();
+    let file: Node | undefined;
+    if (this.eatOp('<')) file = this.parsePrimary();
+    else this.mainGetline = true;
+    return { k: 'getline', target, file };
+  }
+
   private parseIncPrefix(): Node {
     const op = (this.next() as { v: string }).v as '++' | '--';
     const target = this.parsePrimary();
-    if (target.k !== 'var' && target.k !== 'field') throw new AwkError(`syntax error: ${op} needs a variable`);
+    if (target.k !== 'var' && target.k !== 'field' && target.k !== 'index') throw new AwkError(`syntax error: ${op} needs a variable`);
     return { k: 'incdec', op, pre: true, target };
   }
 }
@@ -672,17 +820,93 @@ class NextSignal {}
 class ExitSignal { constructor(public code: number) {} }
 class BreakSignal {}
 class ContinueSignal {}
+class ReturnSignal { constructor(public value: V) {} }
+
+type AwkArray = Map<string, V | undefined>;
+
+/**
+ * An untyped variable passed to a function: it stays a scalar local unless the
+ * function uses it as an array, in which case the array is created in the
+ * caller's slot too (so it is shared by reference, as in gawk).
+ */
+class PendingArray {
+  constructor(private scope: Map<string, Slot>, private name: string) {}
+  materialize(): AwkArray {
+    const s = this.scope.get(this.name);
+    if (s instanceof Map) return s;
+    if (s instanceof PendingArray) { const a = s.materialize(); this.scope.set(this.name, a); return a; }
+    if (s === undefined) { const a: AwkArray = new Map(); this.scope.set(this.name, a); return a; }
+    throw new AwkError(`can't use scalar ${this.name} as an array`);
+  }
+}
+
+/** A variable slot: scalar, array, untyped-passed-in, or uninitialised. */
+type Slot = V | AwkArray | PendingArray | undefined;
+
+interface LValue { get(): V; set(v: V): void }
+
+/** The main input as a record stream, shared by the rule loop and getline. */
+class MainInput {
+  private idx = 0;
+  private lines: string[] | null = null;
+  private pos = 0;
+  constructor(private inputs: { name: string; text: string }[], private rt: Runtime) {}
+  next(): string | null {
+    for (;;) {
+      if (!this.lines) {
+        if (this.idx >= this.inputs.length) return null;
+        const inp = this.inputs[this.idx++];
+        this.rt.vars.set('FILENAME', inp.name);
+        this.rt.vars.set('FNR', 0);
+        this.lines = inp.text === '' ? [] : inp.text.replace(/\n$/, '').split('\n');
+        this.pos = 0;
+      }
+      if (this.pos < this.lines.length) {
+        this.rt.vars.set('NR', toNum(this.rt.getVar('NR')) + 1);
+        this.rt.vars.set('FNR', toNum(this.rt.getVar('FNR')) + 1);
+        return this.lines[this.pos++];
+      }
+      this.lines = null;
+    }
+  }
+}
+
+/** Split on a global regex, ignoring capture groups and empty matches. */
+function reSplit(s: string, re: RegExp): string[] {
+  const out: string[] = [];
+  let last = 0;
+  re.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(s))) {
+    if (m[0] === '') { re.lastIndex++; continue; }
+    out.push(s.slice(last, m.index));
+    last = m.index + m[0].length;
+  }
+  out.push(s.slice(last));
+  return out;
+}
+
+function splitLines(text: string): string[] {
+  return text === '' ? [] : text.replace(/\n$/, '').split('\n');
+}
 
 class Runtime {
-  vars = new Map<string, V>();
+  /** Globals. */
+  vars = new Map<string, Slot>();
+  /** Locals of the running user function, if any. */
+  private frame: Map<string, Slot> | null = null;
+  funcs = new Map<string, Func>();
+  mainInput: MainInput | null = null;
   record = '';
   fields: string[] = [];
   private regexCache = new Map<string, RegExp>();
   private opened = new Set<string>();
+  private readers = new Map<string, { lines: string[]; pos: number }>();
 
   constructor(
     private write: (s: string) => void,
     private writeFile: (path: string, s: string, append: boolean) => void,
+    private readFile: (path: string) => string | null,
   ) {}
 
   regex(src: string, flags = ''): RegExp {
@@ -695,23 +919,69 @@ class Runtime {
     return re;
   }
 
-  setRecord(line: string) {
-    this.record = line;
-    this.split();
+  /** Number → string with CONVFMT (integers stay integers). */
+  str(v: V): string {
+    if (typeof v !== 'number') return v;
+    if (Number.isInteger(v) && Math.abs(v) < 1e16) return String(v);
+    const conv = this.vars.get('CONVFMT');
+    return conv === undefined || conv === '%.6g' || typeof conv !== 'string' ? fmtNum(v) : format(conv, [v]);
   }
 
-  private split() {
-    const fs = toStr(this.vars.get('FS') ?? ' ');
-    const r = this.record;
-    if (fs === ' ') this.fields = r.split(/[ \t\n]+/).filter((f) => f !== '');
-    else if (r === '') this.fields = [];
-    else if (fs.length === 1 && fs !== '\\') this.fields = r.split(fs);
-    else this.fields = r.split(this.regex(fs));
+  setRecord(line: string) {
+    this.record = line;
+    this.fields = this.splitWith(line, (this.vars.get('FS') ?? ' ') as V);
+  }
+
+  /** awk field splitting: " " = runs of blanks (trimmed), one char = literal, else a regex. */
+  private splitWith(r: string, sep: V | RegExp): string[] {
+    if (sep instanceof RegExp) return r === '' ? [] : reSplit(r, sep);
+    const fs = this.str(sep);
+    if (fs === ' ') return r.split(/[ \t\n]+/).filter((f) => f !== '');
+    if (r === '') return [];
+    if (fs === '') return [...r];
+    if (fs.length === 1 && fs !== '\\') return r.split(fs);
+    return reSplit(r, this.regex(fs, 'g'));
+  }
+
+  private scopeOf(name: string): Map<string, Slot> {
+    const f = this.frame;
+    return f && f.has(name) ? f : this.vars;
   }
 
   getVar(name: string): V {
     if (name === 'NF') return this.fields.length;
-    return this.vars.get(name) ?? '';
+    const s = this.scopeOf(name).get(name);
+    if (s instanceof Map) throw new AwkError(`attempt to use array ${name} in a scalar context`);
+    if (s === undefined || s instanceof PendingArray) return '';
+    return s;
+  }
+
+  private setVar(name: string, v: V) {
+    if (name === 'NF') {
+      const n = Math.trunc(toNum(v));
+      this.fields.length = Math.max(0, n);
+      for (let k = 0; k < this.fields.length; k++) this.fields[k] ??= '';
+      this.record = this.fields.join(this.str(this.getVar('OFS')));
+      return;
+    }
+    const scope = this.scopeOf(name);
+    if (scope.get(name) instanceof Map) throw new AwkError(`attempt to use array ${name} in a scalar context`);
+    scope.set(name, v);
+  }
+
+  getArray(name: string): AwkArray {
+    const scope = this.scopeOf(name);
+    const s = scope.get(name);
+    if (s instanceof Map) return s;
+    if (s instanceof PendingArray) { const a = s.materialize(); scope.set(name, a); return a; }
+    if (s === undefined && name !== 'NF') { const a: AwkArray = new Map(); scope.set(name, a); return a; }
+    throw new AwkError(`can't use scalar ${name} as an array`);
+  }
+
+  private key(subs: Node[]): string {
+    if (subs.length === 1) return this.str(this.eval(subs[0]));
+    const sep = this.str(this.getVar('SUBSEP'));
+    return subs.map((n) => this.str(this.eval(n))).join(sep);
   }
 
   getField(i: number): string {
@@ -721,37 +991,51 @@ class Runtime {
   }
 
   setField(i: number, v: string) {
+    if (i < 0) throw new AwkError(`attempt to access field ${i}`);
     if (i === 0) { this.setRecord(v); return; }
     while (this.fields.length < i) this.fields.push('');
     this.fields[i - 1] = v;
-    this.record = this.fields.join(toStr(this.getVar('OFS')));
+    this.record = this.fields.join(this.str(this.getVar('OFS')));
   }
 
-  private assignTo(target: Node, v: V) {
-    if (target.k === 'var') {
-      if (target.name === 'NF') {
-        const n = Math.trunc(toNum(v));
-        this.fields.length = Math.max(0, n);
-        for (let k = 0; k < this.fields.length; k++) this.fields[k] ??= '';
-        this.record = this.fields.join(toStr(this.getVar('OFS')));
-      } else this.vars.set(target.name, v);
-    } else if (target.k === 'field') {
-      this.setField(Math.trunc(toNum(this.eval(target.e))), toStr(v));
-    } else if (target.k === 'group') {
-      this.assignTo(target.e, v);
+  /** Resolve an assignable expression once (subscripts / field numbers evaluated a single time). */
+  private lvalue(n: Node): LValue {
+    switch (n.k) {
+      case 'var': return { get: () => this.getVar(n.name), set: (v) => this.setVar(n.name, v) };
+      case 'field': {
+        const i = Math.trunc(toNum(this.eval(n.e)));
+        return { get: () => this.getField(i), set: (v) => this.setField(i, this.str(v)) };
+      }
+      case 'index': {
+        const arr = this.getArray(n.name);
+        const key = this.key(n.subs);
+        return {
+          get: () => { const v = arr.get(key); if (v === undefined) arr.set(key, undefined); return v ?? ''; },
+          set: (v) => { arr.set(key, v); },
+        };
+      }
+      case 'group': return this.lvalue(n.e);
     }
+    throw new AwkError('syntax error: assignment to a non-variable');
   }
 
-  private isUninit(n: Node): boolean {
-    return n.k === 'var' && n.name !== 'NF' && !this.vars.has(n.name);
-  }
-
-  /** Does this operand compare numerically (number, or numeric-looking input)? */
-  private numericOperand(n: Node, v: V): boolean {
-    if (typeof v === 'number') return true;
-    if (this.isUninit(n)) return true;
-    if (n.k === 'str' || n.k === 'concat' || n.k === 'call') return false;
-    return NUMERIC_RE.test(v);
+  /** Evaluate a comparison operand: its value and whether it compares numerically. */
+  private operand(n: Node): [V, boolean] {
+    if (n.k === 'index') {
+      const arr = this.getArray(n.name);
+      const key = this.key(n.subs);
+      const v = arr.get(key);
+      if (v === undefined) { arr.set(key, undefined); return ['', true]; }
+      return [v, typeof v === 'number' || NUMERIC_RE.test(v)];
+    }
+    const v = this.eval(n);
+    if (typeof v === 'number') return [v, true];
+    if (n.k === 'var' && n.name !== 'NF') {
+      const s = this.scopeOf(n.name).get(n.name);
+      if (s === undefined || s instanceof PendingArray) return [v, true];
+    }
+    if (n.k === 'str' || n.k === 'concat' || n.k === 'call') return [v, false];
+    return [v, NUMERIC_RE.test(v)];
   }
 
   truthy(n: Node, v: V): boolean {
@@ -783,18 +1067,24 @@ class Runtime {
       case 'str': return n.v;
       case 'regex': return this.regex(n.v).test(this.record) ? 1 : 0;
       case 'var': return this.getVar(n.name);
+      case 'index': return this.lvalue(n).get();
+      case 'in': {
+        const arr = this.getArray(n.name);
+        return arr.has(this.key(n.subs)) ? 1 : 0;
+      }
       case 'field': return this.getField(Math.trunc(toNum(this.eval(n.e))));
       case 'group': return this.eval(n.e);
       case 'list': throw new AwkError('syntax error: unexpected list');
       case 'assign': {
+        const lv = this.lvalue(n.target);
         let v: V;
         if (n.op === '=') {
           v = this.eval(n.e);
         } else {
-          const cur = toNum(this.eval(n.target));
+          const cur = toNum(lv.get());
           v = this.arith(n.op[0], cur, toNum(this.eval(n.e)));
         }
-        this.assignTo(n.target, v);
+        lv.set(v);
         return v;
       }
       case 'cond': return this.test(n.c) ? this.eval(n.a) : this.eval(n.b);
@@ -804,16 +1094,16 @@ class Runtime {
       case 'neg': return -toNum(this.eval(n.e));
       case 'pos': return toNum(this.eval(n.e));
       case 'bin': return this.arith(n.op, toNum(this.eval(n.l)), toNum(this.eval(n.r)));
-      case 'concat': return toStr(this.eval(n.l)) + toStr(this.eval(n.r));
+      case 'concat': return this.str(this.eval(n.l)) + this.str(this.eval(n.r));
       case 'cmp': {
-        const l = this.eval(n.l);
-        const r = this.eval(n.r);
+        const [l, ln] = this.operand(n.l);
+        const [r, rn] = this.operand(n.r);
         let c: number;
-        if (this.numericOperand(n.l, l) && this.numericOperand(n.r, r)) {
+        if (ln && rn) {
           const a = toNum(l), b = toNum(r);
           c = a < b ? -1 : a > b ? 1 : 0;
         } else {
-          const a = toStr(l), b = toStr(r);
+          const a = this.str(l), b = this.str(r);
           c = a < b ? -1 : a > b ? 1 : 0;
         }
         switch (n.op) {
@@ -826,25 +1116,109 @@ class Runtime {
         }
       }
       case 'match': {
-        const s = toStr(this.eval(n.l));
-        const re = n.r.k === 'regex' ? this.regex(n.r.v) : this.regex(toStr(this.eval(n.r)));
+        const s = this.str(this.eval(n.l));
+        const re = n.r.k === 'regex' ? this.regex(n.r.v) : this.regex(this.str(this.eval(n.r)));
         return re.test(s) !== n.neg ? 1 : 0;
       }
       case 'incdec': {
-        const old = toNum(this.eval(n.target));
+        const lv = this.lvalue(n.target);
+        const old = toNum(lv.get());
         const nv = n.op === '++' ? old + 1 : old - 1;
-        this.assignTo(n.target, nv);
+        lv.set(nv);
         return n.pre ? nv : old;
       }
       case 'call': return this.call(n.name, n.args);
+      case 'ucall': return this.callUser(n.name, n.args);
+      case 'getline': return this.getline(n.target, n.file);
     }
   }
 
+  private getline(target: Node | undefined, file: Node | undefined): V {
+    let line: string | null;
+    if (file) {
+      const path = this.str(this.eval(file));
+      let r = this.readers.get(path);
+      if (!r) {
+        const text = this.readFile(path);
+        if (text === null) return -1;
+        r = { lines: splitLines(text), pos: 0 };
+        this.readers.set(path, r);
+      }
+      line = r.pos < r.lines.length ? r.lines[r.pos++] : null;
+    } else {
+      line = this.mainInput ? this.mainInput.next() : null;
+    }
+    if (line === null) return 0;
+    if (target) this.lvalue(target).set(line);
+    else this.setRecord(line);
+    return 1;
+  }
+
+  private callUser(name: string, argNodes: Node[]): V {
+    const fn = this.funcs.get(name);
+    if (!fn) throw new AwkError(`function ${name} is not defined`);
+    if (argNodes.length > fn.params.length) {
+      throw new AwkError(`function ${name} called with ${argNodes.length} arguments, accepts only ${fn.params.length}`);
+    }
+    // Arguments are evaluated in the caller's scope before the new frame exists.
+    const frame = new Map<string, Slot>();
+    fn.params.forEach((p, i) => {
+      const a = argNodes[i];
+      if (!a) { frame.set(p, undefined); return; }
+      if (a.k === 'var' && a.name !== 'NF') {
+        const scope = this.scopeOf(a.name);
+        const s = scope.get(a.name);
+        if (s instanceof Map || s instanceof PendingArray) { frame.set(p, s); return; }
+        if (s === undefined) { frame.set(p, new PendingArray(scope, a.name)); return; }
+      }
+      frame.set(p, this.eval(a));
+    });
+    const saved = this.frame;
+    this.frame = frame;
+    try {
+      this.exec(fn.body);
+    } catch (e) {
+      if (e instanceof ReturnSignal) return e.value;
+      throw e;
+    } finally {
+      this.frame = saved;
+    }
+    return '';
+  }
+
+  /** The slot a bare-name argument refers to, without forcing a type. */
+  private slotOf(n: Node): Slot {
+    return n.k === 'var' ? this.scopeOf(n.name).get(n.name) : undefined;
+  }
+
   private call(name: string, args: Node[]): V {
-    const s = (k: number) => toStr(this.eval(args[k]));
+    const s = (k: number) => this.str(this.eval(args[k]));
     const num = (k: number) => toNum(this.eval(args[k]));
     switch (name) {
-      case 'length': return args.length === 0 ? [...this.record].length : [...s(0)].length;
+      case 'length': {
+        if (args.length === 0) return [...this.record].length;
+        const slot = this.slotOf(args[0]);
+        if (slot instanceof Map) return slot.size;
+        if (slot instanceof PendingArray) return 0;
+        return [...s(0)].length;
+      }
+      case 'split': {
+        const str = s(0);
+        const arr = this.getArray((args[1] as { name: string }).name);
+        const sep: V | RegExp = args.length < 3
+          ? ((this.vars.get('FS') ?? ' ') as V)
+          : args[2].k === 'regex' ? this.regex(args[2].v, 'g') : this.eval(args[2]);
+        const parts = this.splitWith(str, sep);
+        arr.clear();
+        parts.forEach((p, i) => arr.set(String(i + 1), p));
+        return parts.length;
+      }
+      case 'close': {
+        const path = s(0);
+        const hadReader = this.readers.delete(path);
+        const hadWriter = this.opened.delete(path);
+        return hadReader || hadWriter ? 0 : -1;
+      }
       case 'substr': {
         const str = s(0);
         const len = str.length;
@@ -880,8 +1254,8 @@ class Runtime {
       case 'gsub': {
         const re = args[0].k === 'regex' ? this.regex(args[0].v, 'g') : this.regex(s(0), 'g');
         const repl = s(1);
-        const target: Node = args[2] ?? { k: 'field', e: { k: 'num', v: 0 } };
-        const str = toStr(this.eval(target));
+        const lv = this.lvalue(args[2] ?? { k: 'field', e: { k: 'num', v: 0 } });
+        const str = this.str(lv.get());
         let count = 0;
         const out = str.replace(re, (m) => {
           if (name === 'sub' && count > 0) return m;
@@ -893,7 +1267,7 @@ class Runtime {
           }
           return r;
         });
-        if (count > 0) this.assignTo(target, out);
+        if (count > 0) lv.set(out);
         return count;
       }
     }
@@ -906,7 +1280,7 @@ class Runtime {
 
   private emit(text: string, redir?: Redirect) {
     if (!redir) { this.write(text); return; }
-    const path = toStr(this.eval(redir.target));
+    const path = this.str(this.eval(redir.target));
     const append = redir.mode === '>>' || this.opened.has(path);
     this.opened.add(path);
     this.writeFile(path, text, append);
@@ -915,15 +1289,15 @@ class Runtime {
   private execOne(st: Stmt) {
     switch (st.k) {
       case 'print': {
-        const ofs = toStr(this.getVar('OFS'));
-        const ors = toStr(this.getVar('ORS'));
+        const ofs = this.str(this.getVar('OFS'));
+        const ors = this.str(this.getVar('ORS'));
         const text = st.args.length === 0 ? this.record : st.args.map((a) => this.outStr(this.eval(a))).join(ofs);
         this.emit(text + ors, st.redir);
         return;
       }
       case 'printf': {
         const vals = st.args.map((a) => this.eval(a));
-        this.emit(format(toStr(vals[0]), vals.slice(1)), st.redir);
+        this.emit(format(this.str(vals[0]), vals.slice(1)), st.redir);
         return;
       }
       case 'expr': this.eval(st.e); return;
@@ -940,6 +1314,14 @@ class Runtime {
           }
         }
         return;
+      case 'do':
+        do {
+          try { this.execOne(st.body); } catch (e) {
+            if (e instanceof BreakSignal) break;
+            if (!(e instanceof ContinueSignal)) throw e;
+          }
+        } while (this.test(st.c));
+        return;
       case 'for':
         if (st.init) this.eval(st.init);
         while (!st.c || this.test(st.c)) {
@@ -950,6 +1332,26 @@ class Runtime {
           if (st.step) this.eval(st.step);
         }
         return;
+      case 'forin': {
+        const arr = this.getArray(st.arr);
+        // Snapshot the keys (insertion order); skip ones deleted mid-loop.
+        for (const k of [...arr.keys()]) {
+          if (!arr.has(k)) continue;
+          this.setVar(st.v, k);
+          try { this.execOne(st.body); } catch (e) {
+            if (e instanceof BreakSignal) break;
+            if (!(e instanceof ContinueSignal)) throw e;
+          }
+        }
+        return;
+      }
+      case 'delete': {
+        const arr = this.getArray(st.name);
+        if (st.subs) arr.delete(this.key(st.subs));
+        else arr.clear();
+        return;
+      }
+      case 'return': throw new ReturnSignal(st.e ? this.eval(st.e) : '');
       case 'block': this.exec(st.body); return;
       case 'next': throw new NextSignal();
       case 'break': throw new BreakSignal();
@@ -961,7 +1363,7 @@ class Runtime {
   private outStr(v: V): string {
     if (typeof v === 'number') {
       if (Number.isInteger(v) && Math.abs(v) < 1e16) return String(v);
-      const ofmt = toStr(this.getVar('OFMT'));
+      const ofmt = this.str(this.getVar('OFMT'));
       return ofmt === '%.6g' ? fmtNum(v) : format(ofmt, [v]);
     }
     return v;
@@ -1008,13 +1410,14 @@ const command: Command = async (ctx) => {
     return 1;
   }
 
-  let rules: Rule[];
+  let prog: Program;
   try {
-    rules = new Parser(tokenize(program)).parseProgram();
+    prog = new Parser(tokenize(program)).parseProgram();
   } catch (e) {
     if (e instanceof AwkError) { ctx.stderr.write(`awk: ${e.message}\n`); return 2; }
     throw e;
   }
+  const { rules } = prog;
 
   const rt = new Runtime(
     (s) => ctx.stdout.write(s),
@@ -1023,7 +1426,11 @@ const command: Command = async (ctx) => {
       const prev = append && ctx.vfs.exists(path) ? ctx.vfs.readFileString(path) : '';
       ctx.vfs.writeFile(path, prev + s);
     },
+    (p) => {
+      try { return ctx.vfs.readFileString(resolve(ctx.cwd, p)); } catch { return null; }
+    },
   );
+  rt.funcs = prog.funcs;
   rt.vars.set('FS', fs === undefined ? ' ' : fs === 't' ? '\t' : cliValue(fs));
   rt.vars.set('OFS', ' ');
   rt.vars.set('ORS', '\n');
@@ -1036,6 +1443,34 @@ const command: Command = async (ctx) => {
   rt.vars.set('RLENGTH', -1);
   for (const [k, v] of assigns) rt.vars.set(k, v);
 
+  /** Read the input files (or stdin); returns an exit code on failure. */
+  const loadInputs = async (): Promise<{ name: string; text: string }[] | number> => {
+    const inputs: { name: string; text: string }[] = [];
+    if (files.length === 0) {
+      if (!ctx.stdin) { ctx.stderr.write('awk: missing file operand\n'); return 1; }
+      inputs.push({ name: '', text: await ctx.stdin.readAll() });
+      return inputs;
+    }
+    for (const file of files) {
+      const path = resolve(ctx.cwd, file);
+      try {
+        ctx.vfs.stat(path);
+        if (isBinaryMime(getMimeType(path))) {
+          ctx.stderr.write(`awk: ${file}: binary file, skipping\n`);
+          continue;
+        }
+        inputs.push({ name: file, text: ctx.vfs.readFileString(path) });
+      } catch (e) {
+        if (e instanceof VFSError) {
+          ctx.stderr.write(`awk: ${file}: ${e.message}\n`);
+          return 2;
+        }
+        throw e;
+      }
+    }
+    return inputs;
+  };
+
   let exitCode = 0;
   let exiting = false;
 
@@ -1046,7 +1481,17 @@ const command: Command = async (ctx) => {
     }
   };
 
+  const hasMain = rules.some((r) => r.pattern.k !== 'BEGIN' && r.pattern.k !== 'END');
+  const hasEnd = rules.some((r) => r.pattern.k === 'END');
+
   try {
+    // getline in BEGIN reads the main input, so it has to be ready first.
+    if (prog.mainGetline) {
+      const inputs = await loadInputs();
+      if (typeof inputs === 'number') return inputs;
+      rt.mainInput = new MainInput(inputs, rt);
+    }
+
     try {
       runRules('BEGIN');
     } catch (e) {
@@ -1054,71 +1499,39 @@ const command: Command = async (ctx) => {
       else if (!(e instanceof NextSignal)) throw e;
     }
 
-    const hasMain = rules.some((r) => r.pattern.k !== 'BEGIN' && r.pattern.k !== 'END');
-    const hasEnd = rules.some((r) => r.pattern.k === 'END');
-
     if (!exiting && (hasMain || hasEnd)) {
-      const inputs: { name: string; text: string }[] = [];
-      if (files.length === 0) {
-        if (!ctx.stdin) { ctx.stderr.write('awk: missing file operand\n'); return 1; }
-        inputs.push({ name: '', text: await ctx.stdin.readAll() });
-      } else {
-        for (const file of files) {
-          const path = resolve(ctx.cwd, file);
-          try {
-            ctx.vfs.stat(path);
-            if (isBinaryMime(getMimeType(path))) {
-              ctx.stderr.write(`awk: ${file}: binary file, skipping\n`);
-              continue;
-            }
-            inputs.push({ name: file, text: ctx.vfs.readFileString(path) });
-          } catch (e) {
-            if (e instanceof VFSError) {
-              ctx.stderr.write(`awk: ${file}: ${e.message}\n`);
-              return 2;
-            }
-            throw e;
-          }
-        }
+      if (!rt.mainInput) {
+        const inputs = await loadInputs();
+        if (typeof inputs === 'number') return inputs;
+        rt.mainInput = new MainInput(inputs, rt);
       }
-
-      let nr = 0;
-      outer: for (const input of inputs) {
-        rt.vars.set('FILENAME', input.name);
-        if (input.text === '') continue;
-        const lines = input.text.replace(/\n$/, '').split('\n');
-        let fnr = 0;
-        for (const line of lines) {
-          nr++;
-          fnr++;
-          rt.vars.set('NR', nr);
-          rt.vars.set('FNR', fnr);
-          rt.setRecord(line);
-          try {
-            for (const rule of rules) {
-              const p = rule.pattern;
-              let hit: boolean;
-              if (p.k === 'BEGIN' || p.k === 'END') continue;
-              if (p.k === 'all') hit = true;
-              else if (p.k === 'expr') hit = rt.test(p.e);
-              else {
-                if (p.active) {
-                  hit = true;
-                  if (rt.test(p.to)) p.active = false;
-                } else if (rt.test(p.from)) {
-                  hit = true;
-                  p.active = !rt.test(p.to);
-                } else hit = false;
-              }
-              if (!hit) continue;
-              if (rule.action) rt.exec(rule.action);
-              else ctx.stdout.write(rt.record + toStr(rt.getVar('ORS')));
+      const input = rt.mainInput;
+      for (let line = input.next(); line !== null; line = input.next()) {
+        rt.setRecord(line);
+        try {
+          for (const rule of rules) {
+            const p = rule.pattern;
+            let hit: boolean;
+            if (p.k === 'BEGIN' || p.k === 'END') continue;
+            if (p.k === 'all') hit = true;
+            else if (p.k === 'expr') hit = rt.test(p.e);
+            else {
+              if (p.active) {
+                hit = true;
+                if (rt.test(p.to)) p.active = false;
+              } else if (rt.test(p.from)) {
+                hit = true;
+                p.active = !rt.test(p.to);
+              } else hit = false;
             }
-          } catch (e) {
-            if (e instanceof NextSignal) continue;
-            if (e instanceof ExitSignal) { exitCode = e.code; break outer; }
-            throw e;
+            if (!hit) continue;
+            if (rule.action) rt.exec(rule.action);
+            else ctx.stdout.write(rt.record + toStr(rt.getVar('ORS')));
           }
+        } catch (e) {
+          if (e instanceof NextSignal) continue;
+          if (e instanceof ExitSignal) { exitCode = e.code; break; }
+          throw e;
         }
       }
     }
@@ -1132,6 +1545,8 @@ const command: Command = async (ctx) => {
   } catch (e) {
     if (e instanceof AwkError) { ctx.stderr.write(`awk: ${e.message}\n`); return 2; }
     if (e instanceof BreakSignal || e instanceof ContinueSignal) { ctx.stderr.write('awk: break/continue outside a loop\n'); return 2; }
+    if (e instanceof NextSignal) { ctx.stderr.write('awk: next used in BEGIN or END\n'); return 2; }
+    if (e instanceof RangeError) { ctx.stderr.write('awk: function call nesting too deep\n'); return 2; }
     throw e;
   }
 
