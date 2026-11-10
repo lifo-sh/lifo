@@ -1,3 +1,12 @@
+## 0.10.30
+
+### Patch Changes
+
+- browser-metro 1.5.17 → 1.5.20 for the editor's artboards and web preview (the phone already runs it through rnrun 0.4.28):
+  - 1.5.18: a wrapped package's real code (`<name>__original`) is never fetched from the package server on a rebuild. That fetch failed every rebuild of an app using expo-sensors ("Failed to fetch package 'expo-sensors__original@^58.0.0'"). Also Expo DOM components (`'use dom'`).
+  - 1.5.19: modules that export one value under several names.
+  - 1.5.20: the console exists before the console polyfill runs.
+
 ## 0.10.29
 
 ### Patch Changes
