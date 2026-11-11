@@ -196,8 +196,8 @@ importers:
         specifier: ^8.17.0
         version: 8.17.0
       browser-metro:
-        specifier: 1.5.20
-        version: 1.5.20
+        specifier: 1.5.21
+        version: 1.5.21
       ws:
         specifier: ^8.19.0
         version: 8.19.0
@@ -2573,8 +2573,8 @@ packages:
     resolution: {integrity: sha512-yQbXgO/OSZVD2IsiLlro+7Hf6Q18EJrKSEsdoMzKePKXct3gvD8oLcOQdIzGupr5Fj+EDe8gO/lxc1BzfMpxvA==}
     engines: {node: '>=8'}
 
-  browser-metro@1.5.20:
-    resolution: {integrity: sha512-aiIX9EAL++P50RNK3gsLYrX9HjH6YY6K6mJx8W2uMqH8JqHPWhBjeE/KKjsSgwV36/ijh24VSYPnwwDm51iDVw==}
+  browser-metro@1.5.21:
+    resolution: {integrity: sha512-uE8kHWi0sP+qBhVTbG8dEzNWsVbB2nAinZGPQFKmxdcnxAbCmhSzCxm3WtPh4pnrZoROIcVJExKvDDqiZyMZZg==}
 
   browserslist@4.28.4:
     resolution: {integrity: sha512-MTc8i/x9jBQd1iMw2CFGS+rwMa07eYjLR0CCTLDACl9xhxy+nIs3KeML/biicXtk9JrZ6dnnTatmc7ErPXIxqw==}
@@ -6724,7 +6724,7 @@ snapshots:
     dependencies:
       fill-range: 7.1.1
 
-  browser-metro@1.5.20:
+  browser-metro@1.5.21:
     dependencies:
       '@sveltejs/acorn-typescript': 1.0.11(acorn@8.17.0)
       acorn: 8.17.0
