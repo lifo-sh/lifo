@@ -1,3 +1,9 @@
+## 0.10.31
+
+### Patch Changes
+
+- browser-metro 1.5.20 → 1.5.21: the preview's `process` gets a silent `process.emitWarning` when it has none. three 0.187's CommonJS build calls it as it loads, so every app using `three` / `@react-three/*` showed a blank preview ("process.emitWarning is not a function").
+
 ## 0.10.30
 
 ### Patch Changes
