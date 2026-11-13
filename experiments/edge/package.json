@@ -1,0 +1,13 @@
+{
+  "name": "lifo-edge-experiments",
+  "private": true,
+  "type": "module",
+  "description": "Can @lifo-sh/core run on edge runtimes? See ../../../cloud/docs/edge-runtimes.md",
+  "dependencies": {
+    "@jitl/quickjs-wasmfile-release-sync": "^0.31.0",
+    "edge-runtime": "^4.0.1",
+    "esbuild": "^0.25.10",
+    "fflate": "^0.8.2",
+    "quickjs-emscripten": "^0.31.0"
+  }
+}

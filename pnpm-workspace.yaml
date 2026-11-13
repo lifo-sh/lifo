@@ -7,6 +7,7 @@ packages:
 # config" warning on every command, and esbuild never actually being approved).
 allowBuilds:
   # esbuild's install script fetches its platform binary; without it esbuild cannot run.
+  bufferutil: set this to true or false
   esbuild: true
   # msw's script only installs the browser service-worker stub, which nothing here uses.
   msw: false

@@ -1,127 +1,83 @@
 # Lifo
 
-A tiny Linux-like operating system, written in TypeScript, that runs anywhere JavaScript does -- a browser tab, a Node.js process, a serverless function. Not a VM, not an emulator -- a clean-room reimplementation of Unix in TypeScript, where the JS runtime is the kernel and its APIs are the system calls.
+Lifo is a small Linux-like operating system written in TypeScript. It boots in a few
+milliseconds inside a browser tab or a Node.js process: a filesystem, a bash-like shell,
+processes, ports and a Node.js runtime, with no VM or emulator underneath. `npm install`,
+Vite, Express and Expo run in it, and so does `python3` (CPython on WebAssembly).
 
-```
-┌──────────────────────────────────────────────────┐
-│                  Terminal UI                      │  xterm.js + Tokyo Night theme
-├──────────────────────────────────────────────────┤
-│                    Shell                          │  bash-like interpreter
-├──────────────────────────────────────────────────┤
-│            Command Registry / $PATH              │  ES module command map
-├───────────┬────────────┬─────────────────────────┤
-│ Coreutils │ Net Cmds   │ User Packages           │  each cmd = async function
-├───────────┴────────────┴─────────────────────────┤
-│          Node.js Compatibility Layer             │  thin wrappers over OS APIs
-├──────────────────────────────────────────────────┤
-│           Virtual Filesystem (VFS)               │  in-memory + IndexedDB persistence
-├──────────────────────────────────────────────────┤
-│              Kernel API Layer                    │  unified browser API wrappers
-├──────────────────────────────────────────────────┤
-│               Browser APIs                       │  fetch, streams, OPFS, etc.
-└──────────────────────────────────────────────────┘
+**Docs: [lifo.sh/docs](https://lifo.sh/docs)** (source in [docs/](docs/README.md)) ·
+**Try it: [lifo.sh/playground](https://lifo.sh/playground)**
+
+## In the browser
+
+```bash
+npm install @lifo-sh/core
+npm install @lifo-sh/ui @xterm/xterm   # only for a terminal on the page
 ```
 
-## Getting Started
+```js
+import { Sandbox } from '@lifo-sh/core';
+
+const box = await Sandbox.create();
+await box.fs.writeFile('/home/user/hello.js', 'console.log("hi from", process.platform)');
+const { stdout } = await box.commands.run('node hello.js');
+
+// Or give people a terminal: the same box, typed into.
+await box.attach('#terminal');
+```
+
+## In Node.js
+
+```js
+import { Sandbox } from '@lifo-sh/core';
+
+const box = await Sandbox.create({ mounts: [{ virtualPath: '/work', hostPath: process.cwd() }] });
+const r = await box.commands.run('cd /work && ls | wc -l');
+console.log(r.stdout, r.exitCode);
+```
+
+## In your terminal
+
+```bash
+npx lifo-sh                  # an interactive Lifo shell on your machine
+npx lifo-sh login            # log in to lifo.sh in the browser
+npx lifo-sh tunnel 3000      # a public URL for a port: https://<name>-tunnel.lifo.sh
+```
+
+Inside a box, the `lifo` command does the same: `lifo install git`, `lifo login`,
+`lifo tunnel 5173`.
+
+## Where to read next
+
+- [Where Lifo runs](docs/run/README.md): browser, Node.js, terminal, and which to pick
+- [Why Lifo](docs/understand/why.md), [Architecture](docs/understand/architecture.md),
+  [Security and isolation](docs/understand/security.md), [Limitations](docs/understand/limitations.md)
+- [Servers and previews](docs/build/previews.md), [Packages](docs/build/packages.md),
+  [Embedding](docs/build/embedding.md), [Recipes](docs/build/recipes.md)
+- Reference: [Sandbox API](docs/reference/sandbox.md), [Shell and commands](docs/reference/shell.md),
+  [the CLI](docs/reference/cli.md)
+- For coding agents: [the Lifo skill](skills/lifo/SKILL.md)
+
+## Working on Lifo
 
 ```bash
 pnpm install
-pnpm dev
+pnpm dev          # the playground at http://localhost:5173
+pnpm test         # all packages
+pnpm build
 ```
 
-Open http://localhost:5173 in a modern browser. You'll be greeted with a fully functional terminal.
-
-```bash
-pnpm build        # Production build
-pnpm test         # Run test suite
-pnpm typecheck    # Type check without emitting
-```
-
-## What's Inside
-
-### Kernel
-
-- **Virtual Filesystem (VFS)** -- synchronous in-memory INode tree with full POSIX-like semantics (read, write, stat, mkdir, symlinks, hard links, permissions)
-- **Virtual Providers** -- `/proc` exposes system info (uptime, meminfo, cpuinfo, version) and `/dev` provides device files (null, zero, random, urandom)
-- **Persistence** -- IndexedDB-backed filesystem persistence with serialization/deserialization of the entire INode tree
-
-### Shell
-
-A bash-like shell with:
-
-- Full **lexer/parser/interpreter** pipeline producing an AST
-- **Pipes** (`ls | grep foo | wc -l`), **redirects** (`>`, `>>`, `<`, `2>`, `&>`)
-- **Logical operators** (`&&`, `||`), **sequences** (`;`), **background** (`&`)
-- **Variable expansion** (`$VAR`, `${VAR:-default}`), **command substitution** (`$(...)`)
-- **Glob expansion** (`*.txt`, `**/*.js`), **tilde expansion** (`~`), **brace expansion** (`{a,b,c}`)
-- **Tab completion** for commands, files, and directories
-- **Command history** with reverse search
-- **Job control** (Ctrl+C, `fg`, `bg`, `jobs`)
-- **Builtins**: `cd`, `pwd`, `export`, `alias`, `source`, `read`, `test`, `echo`, and more
-
-### 60+ Commands
-
-| Category | Commands |
+| Path | What it is |
 |---|---|
-| **Filesystem** | `ls`, `cat`, `cp`, `mv`, `rm`, `mkdir`, `rmdir`, `touch`, `ln`, `stat`, `find`, `tree`, `du`, `df`, `chmod`, `file`, `basename`, `dirname`, `realpath`, `mktemp` |
-| **Text** | `grep`, `sed`, `awk`, `head`, `tail`, `sort`, `uniq`, `wc`, `cut`, `tr`, `diff`, `nl`, `rev` |
-| **I/O** | `printf`, `tee`, `xargs`, `yes` |
-| **Network** | `curl`, `wget`, `ping`, `dig` |
-| **System** | `ps`, `top`, `kill`, `env`, `uname`, `whoami`, `hostname`, `uptime`, `free`, `date`, `cal`, `bc`, `sleep`, `watch`, `which`, `man`, `help` |
-| **Archive** | `tar`, `gzip`, `gunzip`, `zip`, `unzip` |
-| **Runtime** | `node` (run JS with Node.js compat layer), `pkg` (package manager) |
+| `packages/core` | `@lifo-sh/core`: kernel, filesystem, shell, commands, Node.js layer, `Sandbox` |
+| `packages/ui` | `@lifo-sh/ui`: terminal, file explorer, preview browser |
+| `packages/cli` | `lifo-sh`: the terminal CLI |
+| `packages/lifo-pkg-*` | installable commands (git, vi, nano, less, ffmpeg, ...) |
+| `apps/playground` | the examples at lifo.sh/playground |
+| `apps/desktop` | the desktop demo |
+| `docs/`, `skills/` | these docs and the agent skill |
 
-### Node.js Compatibility Layer
-
-Run JavaScript files with `node script.js` or `node -e "code"`. The compatibility layer maps 15 Node.js standard library modules to browser APIs:
-
-`fs`, `path`, `events`, `buffer`, `util`, `os`, `process`, `http`, `child_process`, `stream`, `url`, `timers`, `crypto`, `console`
-
-### Package Manager
-
-```bash
-pkg install <url>    # Install a package from URL
-pkg remove <name>    # Uninstall a package
-pkg list             # List installed packages
-pkg info <name>      # Show package details
-```
-
-## Filesystem Hierarchy
-
-```
-/
-├── home/user/          # User home directory ($HOME)
-├── tmp/                # Temporary files (in-memory)
-├── etc/                # System configuration
-├── var/log/            # System logs
-├── usr/bin/            # Installed package binaries
-├── proc/               # Virtual: system info (cpuinfo, meminfo, uptime)
-├── dev/                # Virtual: devices (null, zero, random, urandom)
-└── bin/                # Core commands
-```
-
-## Tech Stack
-
-- **TypeScript** (strict mode, ESM throughout)
-- **Vite** for builds
-- **xterm.js** + WebGL addon for terminal rendering
-- **Vitest** for testing
-- **Target**: Chrome 110+, Firefox 110+, Safari 16.4+
-
-## Project Structure
-
-```
-src/
-├── main.ts              # Boot sequence
-├── kernel/              # VFS, persistence, virtual providers
-├── shell/               # Lexer, parser, interpreter, expander, completer
-├── commands/            # All 60+ commands organized by category
-├── node-compat/         # Node.js standard library shims
-├── pkg/                 # Package manager
-├── terminal/            # xterm.js wrapper
-└── utils/               # Path, args, glob, colors, encoding, archive
-tests/                   # Mirrors src/ structure with full coverage
-```
+Releases: [RELEASING.md](RELEASING.md).
 
 ## Related projects
 
