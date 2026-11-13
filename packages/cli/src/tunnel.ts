@@ -1,306 +1,144 @@
 /**
- * tunnel.ts — tunnel command for the lifo CLI
+ * tunnel.ts — `lifo-sh tunnel <port> [--name <name>]` on the host.
  *
- * Connects to the tunnel server at wss://tunnel.lifo.sh/_tunnel via WebSocket
- * and proxies incoming HTTP requests to a local port on the host machine.
+ * Shares a port on this machine through the lifo tunnel server, using the same
+ * client as `lifo tunnel` inside a box (@lifo-sh/core runTunnel). Only the far
+ * end differs: requests go to http://localhost:<port> with node:http, and
+ * WebSocket upgrades are piped as raw bytes over a TCP socket, so the local
+ * server does its own handshake (Vite and Metro HMR work unchanged).
  *
- * Used in two ways:
- *   1. Host CLI:    `lifo tunnel 5173`   (handleTunnel)
- *   2. Inside shell: `tunnel 5173`       (createTunnelCommand → registered in shell)
+ * Inside the box this CLI boots, `tunnel` / `lifo tunnel` share the box's own
+ * ports instead (core's lifo-cloud.ts); see index.ts.
  */
 
 import * as http from 'node:http';
-import type { Command } from '@lifo-sh/core';
+import * as net from 'node:net';
+import WebSocket from 'ws';
+import { fetchCliConfig, runTunnel, type TunnelForwarder } from '@lifo-sh/core';
+import { resolveHostAuth, takeBaseUrlFlag } from './auth.js';
 
-const TUNNEL_SERVER = 'wss://tunnel.lifo.sh/_tunnel';
+type Headers = Record<string, string | string[] | undefined>;
 
-interface TunnelMessage {
-	type: string;
-	id?: string;
-	wsId?: string;
-	method?: string;
-	path?: string;
-	headers?: Record<string, string>;
-	body?: string;
-	data?: string;
-	url?: string;
-	subdomain?: string;
-	message?: string;
+const HOP_BY_HOP = ['connection', 'keep-alive', 'transfer-encoding', 'upgrade', 'proxy-connection', 'te', 'trailer'];
+
+/** The visitor's request as the local server should see it: from a browser on this machine. */
+function toLocal(headers: Headers, port: number, opts: { upgrade?: boolean } = {}): http.OutgoingHttpHeaders {
+	const out: http.OutgoingHttpHeaders = {};
+	for (const [k, v] of Object.entries(headers)) {
+		const key = k.toLowerCase();
+		if (v === undefined || (!opts.upgrade && HOP_BY_HOP.includes(key))) continue;
+		out[key] = v;
+	}
+	// Dev servers refuse unknown Host headers (Vite's allowedHosts), and Vite's HMR
+	// socket refuses a foreign Origin.
+	out.host = `localhost:${port}`;
+	if (opts.upgrade) delete out.origin;
+	return out;
 }
 
-async function loadWebSocket() {
-	const wsModule = await import('ws');
-	return wsModule.default;
-}
-
-function startTunnel(
-	localPort: number,
-	WS: typeof import('ws').default,
-	write: (s: string) => void,
-	writeErr: (s: string) => void,
-	signal?: AbortSignal,
-	token?: string,
-): Promise<number> {
-	const wsHeaders: Record<string, string> = {
-		'x-local-port': String(localPort),
-	};
-	if (token) {
-		wsHeaders.authorization = `Bearer ${token}`;
-	}
-	const ws = new WS(TUNNEL_SERVER, { headers: wsHeaders });
-
-	// Local WebSocket connections for WS proxy: wsId -> WebSocket (to local server)
-	const localWsConnections = new Map<string, InstanceType<typeof WS>>();
-
-	function handleWsOpen(msg: TunnelMessage): void {
-		const { wsId, path: wsPath, headers } = msg;
-		if (!wsId || !wsPath) return;
-
-		const localUrl = `ws://localhost:${localPort}${wsPath}`;
-		write(`WS proxy: opening ${wsPath} (${wsId.slice(0, 8)})\n`);
-
-		// Forward subprotocol (e.g. "vite-hmr") so the local server accepts the connection
-		const protocols: string[] = [];
-		if (headers?.['sec-websocket-protocol']) {
-			protocols.push(...headers['sec-websocket-protocol'].split(',').map((s: string) => s.trim()));
-		}
-
-		const localWs = new WS(localUrl, protocols);
-		localWsConnections.set(wsId, localWs);
-
-		localWs.on('open', () => {
-			if (ws.readyState === WS.OPEN) {
-				ws.send(JSON.stringify({ type: 'ws-opened', wsId }));
-			}
-		});
-
-		localWs.on('message', (data: Buffer) => {
-			const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
-			if (ws.readyState === WS.OPEN) {
-				ws.send(JSON.stringify({
-					type: 'ws-data',
-					wsId,
-					data: buf.toString('base64'),
-				}));
-			}
-		});
-
-		localWs.on('close', () => {
-			localWsConnections.delete(wsId);
-			if (ws.readyState === WS.OPEN) {
-				ws.send(JSON.stringify({ type: 'ws-close', wsId }));
-			}
-		});
-
-		localWs.on('error', (err: Error) => {
-			writeErr(`WS proxy error (${wsId.slice(0, 8)}): ${err.message}\n`);
-			localWsConnections.delete(wsId);
-			if (ws.readyState === WS.OPEN) {
-				ws.send(JSON.stringify({
-					type: 'ws-error',
-					wsId,
-					message: err.message,
-				}));
-			}
-		});
-	}
-
-	function handleWsData(msg: TunnelMessage): void {
-		if (!msg.wsId || !msg.data) return;
-		const localWs = localWsConnections.get(msg.wsId);
-		if (localWs && localWs.readyState === WS.OPEN) {
-			localWs.send(Buffer.from(msg.data, 'base64'));
-		}
-	}
-
-	function handleWsClose(msg: TunnelMessage): void {
-		if (!msg.wsId) return;
-		const localWs = localWsConnections.get(msg.wsId);
-		if (localWs) {
-			localWsConnections.delete(msg.wsId);
-			localWs.close();
-		}
-	}
-
-	function forwardRequest(msg: TunnelMessage): void {
-		const { id, method, path: reqPath, headers, body } = msg;
-
-		const localHeaders: Record<string, string | number> = { ...headers };
-		localHeaders.host = `localhost:${localPort}`;
-		delete localHeaders['transfer-encoding'];
-
-		const bodyBuf = body ? Buffer.from(body, 'base64') : null;
-		if (bodyBuf && bodyBuf.length > 0) {
-			localHeaders['content-length'] = bodyBuf.length;
-		}
-
-		write(`${method} ${reqPath}\n`);
-
-		const proxyReq = http.request(
-			{
-				hostname: 'localhost',
-				port: localPort,
-				path: reqPath,
-				method,
-				headers: localHeaders as http.OutgoingHttpHeaders,
-			},
-			(proxyRes) => {
-				const chunks: Buffer[] = [];
-				proxyRes.on('data', (chunk: Buffer) => chunks.push(chunk));
-				proxyRes.on('end', () => {
-					const responseHeaders: Record<string, string | string[] | undefined> = { ...proxyRes.headers };
-					delete responseHeaders['transfer-encoding'];
-
-					const response = JSON.stringify({
-						type: 'response',
-						id,
-						status: proxyRes.statusCode,
-						headers: responseHeaders,
-						body: Buffer.concat(chunks).toString('base64'),
-					});
-
-					if (ws.readyState === WS.OPEN) {
-						ws.send(response);
-					}
+export function createHostForwarder(port: number): TunnelForwarder {
+	return {
+		http(req) {
+			return new Promise((resolve, reject) => {
+				const headers = toLocal(req.headers, port);
+				if (req.body.length) headers['content-length'] = req.body.length;
+				else delete headers['content-length'];
+				const out = http.request({ host: '127.0.0.1', port, method: req.method, path: req.path, headers }, (res) => {
+					const chunks: Buffer[] = [];
+					res.on('data', (c: Buffer) => chunks.push(c));
+					res.on('end', () => resolve({ status: res.statusCode || 502, headers: res.headers as Headers, body: Buffer.concat(chunks) }));
+					res.on('error', reject);
 				});
-			},
-		);
-
-		proxyReq.on('error', (err: Error) => {
-			writeErr(`Local server error: ${err.message}\n`);
-			const response = JSON.stringify({
-				type: 'response',
-				id,
-				status: 502,
-				headers: { 'content-type': 'text/plain' },
-				body: Buffer.from(`Bad Gateway: ${err.message}`).toString('base64'),
+				out.on('error', (e: NodeJS.ErrnoException) => {
+					if (e.code === 'ECONNREFUSED') {
+						const text = `Nothing is listening on localhost:${port} on the machine running this tunnel.\n`;
+						resolve({ status: 502, headers: { 'content-type': 'text/plain; charset=utf-8' }, body: Buffer.from(text) });
+					} else reject(e);
+				});
+				out.end(req.body.length ? Buffer.from(req.body) : undefined);
 			});
-			if (ws.readyState === WS.OPEN) {
-				ws.send(response);
+		},
+
+		upgrade(req, io) {
+			const sock = net.connect({ host: '127.0.0.1', port });
+			const head = [`GET ${req.path} HTTP/1.1`];
+			for (const [k, v] of Object.entries(toLocal(req.headers, port, { upgrade: true }))) {
+				for (const value of Array.isArray(v) ? v : [v]) head.push(`${k}: ${value}`);
 			}
-		});
-
-		if (bodyBuf && bodyBuf.length > 0) {
-			proxyReq.write(bodyBuf);
-		}
-		proxyReq.end();
-	}
-
-	let pingTimer: NodeJS.Timeout | null = null;
-	return new Promise<number>((resolve) => {
-
-		ws.on('open', () => {
-			// Send a ping every 25s to keep the connection alive
-			pingTimer = setInterval(() => {
-				if (ws.readyState === WebSocket.OPEN) {
-					ws.ping();
-				}
-			}, 25000);
-			write('Connected to tunnel server\n');
-		});
-
-		ws.on('message', (data: Buffer) => {
-			let msg: TunnelMessage;
-			try { msg = JSON.parse(data.toString()); } catch { return; }
-
-			if (msg.type === 'connected') {
-				write(`\nPublic URL: ${msg.url}\n`);
-				write(`Subdomain: ${msg.subdomain}\n`);
-				write(`Forwarding to: http://localhost:${localPort}\n\n`);
-			} else if (msg.type === 'request') {
-				forwardRequest(msg);
-			} else if (msg.type === 'ws-open') {
-				handleWsOpen(msg);
-			} else if (msg.type === 'ws-data') {
-				handleWsData(msg);
-			} else if (msg.type === 'ws-close') {
-				handleWsClose(msg);
-			} else if (msg.type === 'error') {
-				writeErr(`Server error: ${msg.message}\n`);
-			}
-		});
-
-		ws.on('close', () => {
-			clearInterval(pingTimer);
-			// Close all local WS connections
-			for (const [, localWs] of localWsConnections) {
-				localWs.close();
-			}
-			localWsConnections.clear();
-			write('Disconnected from tunnel server\n');
-			resolve(0);
-		});
-
-		ws.on('error', (err: Error) => {
-			writeErr(`WebSocket error: ${err.message}\n`);
-			resolve(1);
-		});
-
-		if (signal) {
-			signal.addEventListener('abort', () => {
-				write('\nShutting down tunnel...\n');
-				ws.close();
-			}, { once: true });
-		}
-	});
+			sock.write(head.join('\r\n') + '\r\n\r\n');
+			sock.on('data', (chunk: Buffer) => io.send(chunk));
+			sock.on('close', () => io.close());
+			sock.on('error', () => sock.destroy());
+			return {
+				write: (bytes) => sock.write(bytes),
+				close: () => sock.destroy(),
+			};
+		},
+	};
 }
 
-// ─── Host CLI: `lifo tunnel 5173` ────────────────────────────────────────────
+const USAGE = `Usage: lifo-sh tunnel <port> [--name <name>] [--base-url <url> | --local]
 
-export async function handleTunnel(port: number, token?: string): Promise<void> {
-	let WS: typeof import('ws').default;
-	try {
-		WS = await loadWebSocket();
-	} catch {
-		console.error('Error: "ws" package is required. Run: pnpm add ws');
+Put a server running on this machine on a public URL.
+
+  lifo-sh tunnel 5173                https://<random>-tunnel.lifo.sh -> localhost:5173
+  lifo-sh tunnel 3000 --name demo    https://demo-tunnel.lifo.sh     -> localhost:3000
+
+Needs \`lifo-sh login\`. Ctrl+C stops it.`;
+
+export async function handleTunnel(args: string[]): Promise<void> {
+	const { flag, rest } = takeBaseUrlFlag(args);
+	let name: string | undefined;
+	const positional: string[] = [];
+	for (let i = 0; i < rest.length; i++) {
+		const a = rest[i]!;
+		if (a === '-h' || a === '--help') {
+			console.log(USAGE);
+			process.exit(0);
+		}
+		if ((a === '--name' || a === '-n') && rest[i + 1]) name = rest[++i];
+		else if (a.startsWith('--name=')) name = a.slice('--name='.length);
+		else positional.push(a);
+	}
+	const port = Number(positional[0]);
+	if (!Number.isInteger(port) || port < 1 || port > 65535) {
+		console.error(USAGE);
 		process.exit(1);
+	}
+
+	const auth = await resolveHostAuth(flag);
+	if (!auth.token) {
+		console.error(`Not logged in to ${auth.baseUrl}. Run \`lifo-sh login${flag ? ` --base-url ${auth.baseUrl}` : ''}\` first.`);
+		process.exit(1);
+	}
+
+	let tunnelUrl = process.env.LIFO_TUNNEL_URL;
+	if (!tunnelUrl) {
+		try {
+			tunnelUrl = (await fetchCliConfig(auth.baseUrl)).tunnelUrl;
+		} catch (e) {
+			console.error(`Could not get the tunnel server from ${auth.baseUrl}: ${(e as Error).message}`);
+			process.exit(1);
+		}
 	}
 
 	const ac = new AbortController();
 	process.on('SIGINT', () => ac.abort());
 	process.on('SIGTERM', () => ac.abort());
 
-	const code = await startTunnel(
+	console.log(`Connecting to ${tunnelUrl}...`);
+	const code = await runTunnel({
+		url: tunnelUrl,
+		token: auth.token,
 		port,
-		WS,
-		(s) => process.stdout.write(s),
-		(s) => process.stderr.write(s),
-		ac.signal,
-		token,
-	);
+		name,
+		client: 'lifo-sh (host)',
+		forwarder: createHostForwarder(port),
+		signal: ac.signal,
+		WebSocketImpl: WebSocket as unknown as typeof globalThis.WebSocket,
+		onReady: ({ url }) => console.log(`\n  \x1b[32m●\x1b[0m ${url}  ->  localhost:${port}\n\n  Ctrl+C to stop.\n`),
+		onRequest: (line) => process.stdout.write(`  ${line}`),
+		onStatus: (line) => process.stderr.write(line),
+	});
 	process.exit(code);
-}
-
-// ─── Shell command: `tunnel 5173` (inside lifo shell) ────────────────────────
-
-export function createHostTunnelCommand(): Command {
-	return async (ctx) => {
-		const portArg = ctx.args[0];
-		const port = portArg ? parseInt(portArg, 10) : NaN;
-
-		if (!portArg || isNaN(port) || port < 1 || port > 65535) {
-			ctx.stderr.write('Usage: tunnel <port>\n');
-			ctx.stderr.write('Example: tunnel 5173\n');
-			return 1;
-		}
-
-		let WS: typeof import('ws').default;
-		try {
-			WS = await loadWebSocket();
-		} catch {
-			ctx.stderr.write('tunnel: WebSocket library not available\n');
-			return 1;
-		}
-
-		const token = ctx.env?.LIFO_AUTH_TOKEN || undefined;
-
-		return startTunnel(
-			port,
-			WS,
-			(s) => ctx.stdout.write(s),
-			(s) => ctx.stderr.write(s),
-			ctx.signal,
-			token,
-		);
-	};
 }

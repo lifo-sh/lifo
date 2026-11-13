@@ -66,6 +66,7 @@ import { createOxideScanner } from '../../node-compat/tailwind-oxide.js';
 import { createSwcCore } from '../../node-compat/swc.js';
 import { createEsbuild } from '../../node-compat/esbuild.js';
 import * as nodeTimers from '../../node-compat/timers.js';
+import { createActivityTracker, pendingWasm, trackWebAssembly } from '../../node-compat/activity.js';
 
 /**
  * Native-backed stand-in for the `fetch-nodeshim` package. minifetch ships its
@@ -1067,6 +1068,24 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 				})
 			: proxying) as typeof fetch;
 
+		// Pending work this run's program is waiting on (activity.ts): its timers and outgoing
+		// HTTP requests report here, so the run can end as soon as the program is done instead
+		// of waiting out a quiet period. One tracker per run: a dev server's intervals in
+		// another run don't hold this one open.
+		const activity = createActivityTracker();
+		const runTimers = nodeTimers.createTimers(activity);
+		nodeCtx.activity = activity;
+		nodeCtx.timers = runTimers;
+		trackWebAssembly();
+		const timerGlobals = {
+			setTimeout: runTimers.setTimeout,
+			setInterval: runTimers.setInterval,
+			setImmediate: runTimers.setImmediate,
+			clearTimeout: runTimers.clearTimeout,
+			clearInterval: runTimers.clearInterval,
+			clearImmediate: runTimers.clearImmediate,
+		};
+
 		// Serve require('fetch-nodeshim') from the native fetch stack — see
 		// makeFetchNodeshim. Built per-run so it uses this run's proxying fetch.
 		const fetchNodeshim = typeof nodeFetch === 'function' ? makeFetchNodeshim(nodeFetch) : undefined;
@@ -1790,7 +1809,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 				err.message = `[${modFilename}] ${err.message}`;
 				throw err;
 			}
-			const global = makeNodeGlobal({ process: modProcess, Buffer, console: modConsole });
+			const global = makeNodeGlobal({ process: modProcess, Buffer, console: modConsole, ...timerGlobals });
 			// Many npm bundles access globalThis.process directly (not the wrapper param).
 			// Only override in browser-like envs; skip in real Node.js (test runner).
 			const ga = globalThis as Record<string, unknown>;
@@ -1817,8 +1836,8 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 					// returns a Timeout object with unref/ref — packages test
 					// `'unref' in timer` (dnssd-advertise) or call `.unref()` directly,
 					// which throws on a number. The shim's Timer coerces back to the id.
-					nodeTimers.setTimeout as unknown as typeof setTimeout, nodeTimers.setInterval as unknown as typeof setInterval,
-					nodeTimers.clearTimeout as unknown as typeof clearTimeout, nodeTimers.clearInterval as unknown as typeof clearInterval,
+					runTimers.setTimeout as unknown as typeof setTimeout, runTimers.setInterval as unknown as typeof setInterval,
+					runTimers.clearTimeout as unknown as typeof clearTimeout, runTimers.clearInterval as unknown as typeof clearInterval,
 					global,
 					importMetaUrl, importMeta, importMetaResolve,
 					// window/document/self undefined: node-executed code must see a Node
@@ -1866,7 +1885,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 
 		const module = { exports: {} as Record<string, unknown> };
 		const exports = module.exports;
-		const global = makeNodeGlobal({ process, Buffer, console: nodeConsole });
+		const global = makeNodeGlobal({ process, Buffer, console: nodeConsole, ...timerGlobals });
 
 		let cleanMainSource = stripShebang(source);
 		const isEsm = shouldTreatAsEsm(cleanMainSource, filename, ctx.vfs);
@@ -1876,7 +1895,9 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 
 		// Use async IIFE for ESM (supports top-level await)
 		const wrapped = isEsm
-			? `(async function(exports, require, module, __filename, __dirname, console, process, Buffer, setTimeout, setInterval, clearTimeout, clearInterval, global, __importMetaUrl, __importMeta, __importMetaResolve, window, document, self) {\n${cleanMainSource}\n})`
+			// The same parameters as CommonJS (fetch included, so an ES module's loopback
+			// fetch reaches servers in this box, not the host's localhost).
+			? `(async function(${buildWrapperParams(cleanMainSource)}) {\n${cleanMainSource}\n})`
 			: `(function(${buildWrapperParams(cleanMainSource)}) {\n${cleanMainSource}\n})`;
 
 		// Many npm bundles access globalThis.process directly (not the wrapper param).
@@ -1944,8 +1965,8 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 				exports, nodeRequire, module, filename, dir,
 				nodeConsole, process, Buffer,
 				// Node-like timers (Timeout objects with unref/ref) — see executeModule.
-				nodeTimers.setTimeout as unknown as typeof setTimeout, nodeTimers.setInterval as unknown as typeof setInterval,
-				nodeTimers.clearTimeout as unknown as typeof clearTimeout, nodeTimers.clearInterval as unknown as typeof clearInterval,
+				runTimers.setTimeout as unknown as typeof setTimeout, runTimers.setInterval as unknown as typeof setInterval,
+				runTimers.clearTimeout as unknown as typeof clearTimeout, runTimers.clearInterval as unknown as typeof clearInterval,
 				global,
 				mainImportMetaUrl, mainImportMeta, mainImportMetaResolve,
 				undefined, undefined, undefined, NODE_NAVIGATOR,
@@ -1980,57 +2001,49 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			};
 			let activeServers = getActiveServers();
 
-			// Keep the run alive while there's pending async work. Both CJS and ESM
-			// CLIs run mostly async AFTER their synchronous entry — e.g.
-			// create-expo-app: fetch SDK versions → interactive prompts → scaffold →
-			// install. Returning right after the sync body would hand stdin back to
-			// the shell mid-prompt. "Working" = an in-flight fetch, an active
-			// interactive prompt reading stdin, or modules still loading. Ends when a
-			// server starts (→ server race below), process.exit() fires, the run
-			// aborts, or things stay quiescent for ~300ms (the script finished).
+			// Keep the run alive while the program still has work pending, like Node's event
+			// loop: ref'd timers, outgoing HTTP requests and fetches, child processes, modules
+			// still loading, WebAssembly compiling (activity.ts). With none of that pending the
+			// script is done, and the run ends after a short grace for promise chains on work we
+			// can't see. Ends early when a server starts (-> server race below), process.exit()
+			// fires, or the run aborts.
+			//
+			// Interactive input is the exception. A prompt waiting for a keypress looks idle, and
+			// a finished CLI can leave a stray keypress listener behind (create-expo-app), so
+			// "is something reading stdin" can't decide it. While stdin has a consumer, fall back
+			// to waiting for a quiet period (input counts as activity), as before.
 			if (!activeServers || activeServers.length === 0) {
+				const QUICK_GRACE_MS = 60;
 				let prevCacheSize = moduleCache.size;
-				let prevPending = pendingAsync;
 				let lastInputSeq = (nodeStdin as unknown as { inputSeq?: number }).inputSeq ?? 0;
-				// Track the last moment real work happened. We stop hanging once nothing
-				// meaningful has moved for a grace window. This is deliberately wall-clock
-				// based (not tick counters): a finished CLI that leaves stdin in raw mode
-				// with a stray keypress listener (e.g. create-expo-app) makes isActive()
-				// and rawMode *flicker*, which would defeat any consecutive-tick counter.
-				let lastWorkMs = 0; // ms elapsed since loop start when work last happened
+				let lastWorkMs = 0; // ms since the loop started when work last happened
 				let elapsed = 0;
-				const hardDeadline = Date.now() + 600000; // 10 min cap (long installs)
+				const startedAt = Date.now();
+				const hardDeadline = startedAt + 600000; // 10 min cap (long installs)
 				while (Date.now() < hardDeadline) {
+					const stdinInUse = nodeStdin.isActive();
+					const tickMs = stdinInUse ? 50 : 15;
 					const tick = await Promise.race([
-						new Promise<'tick'>((r) => setTimeout(() => r('tick'), 50)),
+						new Promise<'tick'>((r) => setTimeout(() => r('tick'), tickMs)),
 						exitPromise.then(() => 'exit' as const),
 					]);
 					if (tick === 'exit' || ctx.signal.aborted || pendingRejection || asyncExitCode !== null) break;
-					elapsed += 50;
+					elapsed = Date.now() - startedAt;
 					activeServers = getActiveServers();
 					if (activeServers && activeServers.length > 0) break;
 					const seq = (nodeStdin as unknown as { inputSeq?: number }).inputSeq ?? 0;
-					// "Meaningful work": an async op in flight, a child process running, a
-					// new module loading, a new async op started, or fresh stdin input (the
-					// user answering a prompt). A merely *attached* stdin consumer sitting
-					// idle is NOT work — that's the leftover-listener case we time out.
-					if (
-						pendingAsync > 0 ||
-						pendingChild > 0 ||
-						moduleCache.size > prevCacheSize ||
-						pendingAsync > prevPending ||
-						seq !== lastInputSeq
-					) {
+					const pending = pendingAsync + pendingChild + activity.pending() + pendingWasm();
+					if (pending > 0 || moduleCache.size > prevCacheSize || seq !== lastInputSeq) {
 						lastWorkMs = elapsed;
 						prevCacheSize = moduleCache.size;
-						prevPending = pendingAsync;
 						lastInputSeq = seq;
 					}
-					// Grace after the last meaningful work: short once the ESM main has
-					// resolved, longer otherwise (CJS has no such signal, so lean toward not
-					// cutting a slow-to-answer interactive prompt short).
+					if (pending > 0) continue;
 					const idleMs = elapsed - lastWorkMs;
-					if (idleMs >= (mainResolved ? 500 : 2500)) break;
+					// A reader on stdin: the old quiet-period rule (longer for CJS, which has no
+					// "main finished" signal, so a slow-to-answer prompt isn't cut short).
+					const grace = stdinInUse ? (mainResolved ? 500 : 2500) : QUICK_GRACE_MS;
+					if (idleMs >= grace) break;
 				}
 			}
 

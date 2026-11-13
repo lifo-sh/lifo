@@ -9,11 +9,16 @@ const external = [
   /^node:/,
 ];
 
+// LIFO_WATCH=1: `vite build --watch` from the website's linked dev mode (website/scripts/dev.mjs).
+const watching = process.env.LIFO_WATCH === '1';
+
 export default defineConfig({
   plugins: [
     dts({ tsconfigPath: './tsconfig.build.json' }),
   ],
   build: {
+    // Keep dist/ in place between watch rebuilds, so a consumer never sees it half-empty.
+    emptyOutDir: !watching,
     lib: {
       entry: 'src/index.ts',
       formats: ['es'],

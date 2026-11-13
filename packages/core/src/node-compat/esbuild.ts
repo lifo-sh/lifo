@@ -35,6 +35,19 @@ const ESBUILD_WASM_VERSION = '0.28.1';
 const ESBUILD_WASM_URL = `https://unpkg.com/esbuild-wasm@${ESBUILD_WASM_VERSION}/esbuild.wasm`;
 const ESBUILD_ESM_URL = `https://unpkg.com/esbuild-wasm@${ESBUILD_WASM_VERSION}/esm/browser.min.js`;
 
+const ESBUILD_CJS_URL = `https://unpkg.com/esbuild-wasm@${ESBUILD_WASM_VERSION}/lib/browser.min.js`;
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function loadEsbuildFromSource(): Promise<any> {
+  const res = await fetch(ESBUILD_CJS_URL);
+  if (!res.ok) throw new Error(`esbuild-wasm: ${ESBUILD_CJS_URL} answered ${res.status}`);
+  const source = await res.text();
+  const module = { exports: {} as Record<string, unknown> };
+  // eslint-disable-next-line @typescript-eslint/no-implied-eval
+  new Function('module', 'exports', source)(module, module.exports);
+  return module.exports;
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let esbuildModule: any = null;
 let initPromise: Promise<void> | null = null;
@@ -66,12 +79,25 @@ async function ensureInitialized(): Promise<any> {
         }
       }
 
-      // Use dynamic import from CDN
-      // This works in browsers natively
-      const mod = await import(/* @vite-ignore */ /* webpackIgnore: true */ ESBUILD_ESM_URL);
-      await mod.initialize({
-        wasmURL: ESBUILD_WASM_URL,
-      });
+      // Browsers import it straight from the CDN.
+      let mod;
+      try {
+        mod = await import(/* @vite-ignore */ /* webpackIgnore: true */ ESBUILD_ESM_URL);
+        await mod.initialize({ wasmURL: ESBUILD_WASM_URL });
+      } catch (err) {
+        // Hosts that can't import a module from a URL (workerd, where Lifo Cloud boxes run;
+        // Node without the esbuild package) and have no Web Workers: fetch esbuild-wasm's
+        // CommonJS build, evaluate it, and run it on this thread.
+        if (mod) throw err;
+        mod = await loadEsbuildFromSource();
+        // A compiled module rather than wasmURL: resolving the URL reads `location`.
+        const wasm = await fetch(ESBUILD_WASM_URL);
+        if (!wasm.ok) throw new Error(`esbuild-wasm: ${ESBUILD_WASM_URL} answered ${wasm.status}`);
+        // Synchronous compile: in workerd an async WebAssembly.compile resolves outside the
+        // request, where timers and I/O are refused.
+        const wasmModule = new WebAssembly.Module(await wasm.arrayBuffer());
+        await mod.initialize({ wasmModule, worker: false });
+      }
       esbuildModule = mod;
     })();
   }

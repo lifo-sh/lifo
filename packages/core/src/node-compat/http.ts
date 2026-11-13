@@ -1,7 +1,9 @@
 import { EventEmitter } from './events.js';
+import { upgradeInBox, upgradeViaHost, type UpgradeRequest } from './ws-client.js';
 import { Buffer } from './buffer.js';
 import type { VirtualRequestHandler, VirtualResponse } from '../kernel/index.js';
 import { makeProxyingFetch } from './proxy-fetch.js';
+import type { ActivityTracker } from './activity.js';
 import { dispatchRequest, LIFO_HEADER } from '../kernel/network/dispatch.js';
 
 /**
@@ -131,17 +133,24 @@ class ClientRequest extends EventEmitter {
   private portRegistry?: Map<number, VirtualRequestHandler>;
   private protocol: 'http:' | 'https:';
   private fetchImpl?: typeof fetch;
+  private activity?: ActivityTracker;
 
-  constructor(options: RequestOptions, cb?: (res: IncomingMessage) => void, portRegistry?: Map<number, VirtualRequestHandler>, protocol: 'http:' | 'https:' = 'http:', fetchImpl?: typeof fetch) {
+  constructor(options: RequestOptions, cb?: (res: IncomingMessage) => void, portRegistry?: Map<number, VirtualRequestHandler>, protocol: 'http:' | 'https:' = 'http:', fetchImpl?: typeof fetch, activity?: ActivityTracker) {
     super();
+    this.activity = activity;
     this.options = options;
     this.portRegistry = portRegistry;
     this.protocol = protocol;
     this.fetchImpl = fetchImpl;
     if (cb) this.on('response', cb as (...args: unknown[]) => void);
 
+    // In flight until the response has been handed over, so the node run that made the
+    // request doesn't end before the program reads it (activity.ts).
+    const done = activity?.begin();
     // Defer the actual fetch
-    queueMicrotask(() => this.execute());
+    queueMicrotask(() => {
+      this.execute().finally(() => done?.());
+    });
   }
 
   write(data: string | Uint8Array): boolean {
@@ -223,6 +232,36 @@ class ClientRequest extends EventEmitter {
     const host = this.options.hostname || this.options.host || 'localhost';
     const port = this.options.port ? Number(this.options.port) : undefined;
     const path = this.options.path || '/';
+
+    // A WebSocket client (ws, playwright-core, puppeteer): see ws-client.ts.
+    const lower: Record<string, string> = {};
+    for (const [k, v] of Object.entries(this.options.headers || {})) {
+      if (v != null) lower[k.toLowerCase()] = Array.isArray(v) ? v.join(', ') : String(v);
+    }
+    if ((lower.upgrade || '').toLowerCase() === 'websocket') {
+      const wsProto = this.protocol === 'https:' ? 'wss' : 'ws';
+      const up: UpgradeRequest = {
+        url: `${wsProto}://${host.includes(':') && !host.startsWith('[') ? `[${host}]` : host}${port && port !== (wsProto === 'wss' ? 443 : 80) ? `:${port}` : ''}${path}`,
+        host,
+        port,
+        path,
+        headers: lower,
+        emit: (event, ...args) => this.emit(event, ...args),
+        makeResponse: (status, text, headers) => new IncomingMessage(status, text, headers),
+        // An open WebSocket keeps the node run that opened it going, like a TCP socket.
+        hold: () => this.activity?.begin() ?? (() => {}),
+      };
+      if (host === 'localhost' || host === '127.0.0.1') {
+        // localhost is this box: its own server, or nothing (never the host machine's loopback).
+        const handler = this.portRegistry && port ? getUpgradeHandlers(this.portRegistry).get(port) : undefined;
+        if (!handler || !upgradeInBox(up, handler)) {
+          setTimeout(() => this.emit('error', Object.assign(new Error(`connect ECONNREFUSED ${host}:${port ?? 80}`), { code: 'ECONNREFUSED' })), 0);
+        }
+        return;
+      }
+      upgradeViaHost(up);
+      return;
+    }
 
     // Check if target is a virtual server
     if (this.portRegistry && port && (host === 'localhost' || host === '127.0.0.1')) {
@@ -659,6 +698,7 @@ export function createHttp(
   portRegistry?: Map<number, VirtualRequestHandler>,
   protocol: 'http:' | 'https:' = 'http:',
   env?: Record<string, string>,
+  activity?: ActivityTracker,
 ) {
   // Track active servers created by this http module instance
   const activeServers: Server[] = [];
@@ -701,7 +741,7 @@ export function createHttp(
       callback = optionsOrCb as ((res: IncomingMessage) => void) | undefined;
     }
 
-    return new ClientRequest(options, callback, portRegistry, protocol, proxiedFetch);
+    return new ClientRequest(options, callback, portRegistry, protocol, proxiedFetch, activity);
   }
 
   function httpGet(

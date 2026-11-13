@@ -3,4 +3,8 @@ export { VFSError, ErrorCode } from './types.js';
 export type { INode, ChunkRef, Stat, Dirent, FileType, ErrorCodeType, VirtualProvider, MountProvider, VFSWatchEvent, VFSWatchListener, VFSEventType } from './types.js';
 export { NativeFsProvider } from './providers/NativeFsProvider.js';
 export type { NativeFsModule } from './providers/NativeFsProvider.js';
+export { SqliteMountProvider } from './providers/SqliteMountProvider.js';
+export type { SqliteMountOptions } from './providers/SqliteMountProvider.js';
+export { nodeSqlite, durableObjectSql } from './providers/sql.js';
+export type { SyncSql, SyncSqlCursor, SqlValue, SqlRow, NodeSqliteDatabase, NodeSqliteOptions, DurableObjectSqlStorage } from './providers/sql.js';
 export { getMimeType, getFileCategory, isBinaryMime } from '../../utils/mime.js';

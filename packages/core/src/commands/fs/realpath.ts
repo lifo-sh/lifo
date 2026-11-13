@@ -13,8 +13,7 @@ const command: Command = async (ctx) => {
   for (const arg of ctx.args) {
     const path = resolve(ctx.cwd, arg);
     try {
-      ctx.vfs.stat(path);
-      ctx.stdout.write(path + '\n');
+      ctx.stdout.write(ctx.vfs.realpath(path) + '\n');
     } catch (e) {
       if (e instanceof VFSError) {
         ctx.stderr.write(`realpath: ${arg}: ${e.message}\n`);

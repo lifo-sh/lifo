@@ -4,6 +4,8 @@ import type { SnapshotMetadata } from '../kernel/vfs/snapshot.js';
 import type { Shell } from '../shell/Shell.js';
 import type { ITerminal } from '../terminal/ITerminal.js';
 import type { NativeFsModule } from '../kernel/vfs/providers/NativeFsProvider.js';
+import type { BoxAuth } from '../cloud/box-auth.js';
+import type { BoxNet } from '../node-compat/net.js';
 
 // ─── Sandbox Options ───
 
@@ -22,6 +24,20 @@ export interface SandboxOptions {
    * @lifo-sh/ui (matches what Sandbox.create actually supports at runtime).
    */
   terminal?: ITerminal | HTMLElement | string;
+  /**
+   * Lend the box a login: `lifo whoami | tunnel | cloud` (and `lifo login`) in the box use the
+   * account of whoever created it. The box calls `getToken()` the first time a command needs a
+   * token and caches it until a minute before it expires; the token is never written to the
+   * box's env or files. On a website: `auth: pageAuth(location.origin)`.
+   */
+  auth?: BoxAuth;
+  /**
+   * Real outbound TCP for the box's `net` and `tls` modules, from a host that has it. A browser
+   * tab doesn't, so by default they are stubs; Lifo Cloud passes a connector built on workerd's
+   * `connect()`, and `pg`, `ioredis` and other socket clients then work in the box. The host's
+   * `connect` decides which addresses a box may reach.
+   */
+  net?: BoxNet;
   /**
    * Mount native filesystem directories into the virtual filesystem at boot time.
    * Only works in Node.js environments (or when a custom fsModule is provided).
@@ -72,6 +88,14 @@ export interface SandboxCommands {
 
 // ─── SandboxFs ───
 
+/** An interactive shell opened with Sandbox.openShell(). */
+export interface SandboxShell {
+  /** The shell itself (cwd, env, history). */
+  readonly shell: import('../shell/Shell.js').Shell;
+  /** End the shell from outside (a closed tab or socket). onExit is not called. */
+  dispose(): void;
+}
+
 export interface SnapshotOptions {
   /**
    * Path segments to skip in the snapshot, e.g. `['node_modules', '.git']`.
@@ -93,7 +117,7 @@ export interface SandboxFs {
   readFile(path: string): Promise<string>;
   readFile(path: string, encoding: null): Promise<Uint8Array>;
   writeFile(path: string, content: string | Uint8Array): Promise<void>;
-  readdir(path: string): Promise<Array<{ name: string; type: 'file' | 'directory' }>>;
+  readdir(path: string): Promise<Array<{ name: string; type: 'file' | 'directory' | 'symlink' }>>;
   stat(path: string): Promise<{ type: 'file' | 'directory'; size: number; mtime: number }>;
   mkdir(path: string, options?: { recursive?: boolean }): Promise<void>;
   rm(path: string, options?: { recursive?: boolean }): Promise<void>;
@@ -104,7 +128,7 @@ export interface SandboxFs {
   /** Export the VFS as a tar.gz snapshot (optionally excluding paths). */
   exportSnapshot(options?: SnapshotOptions): Promise<Uint8Array>;
   /** Restore VFS from a tar.gz snapshot */
-  importSnapshot(data: Uint8Array): Promise<SnapshotMetadata | null>;
+  importSnapshot(data: Uint8Array | ReadableStream<Uint8Array>): Promise<SnapshotMetadata | null>;
 }
 
 // ─── Internal types for Sandbox internals ───

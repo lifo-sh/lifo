@@ -1,10 +1,48 @@
 import { Buffer } from './buffer.js';
 import { EventEmitter } from './events.js';
 
-export function randomBytes(size: number): Buffer {
+// Web Crypto fills at most 65536 bytes per call; Node's random functions have no such limit.
+function fillRandom(bytes: Uint8Array): void {
+  for (let i = 0; i < bytes.length; i += 65536) crypto.getRandomValues(bytes.subarray(i, Math.min(i + 65536, bytes.length)));
+}
+
+export function randomBytes(size: number, callback?: (err: Error | null, buf: Buffer) => void): Buffer {
   const buf = Buffer.alloc(size);
-  crypto.getRandomValues(buf);
+  fillRandom(buf);
+  if (callback) queueMicrotask(() => callback(null, buf));
   return buf;
+}
+
+/**
+ * Fill a Buffer, typed array, DataView or ArrayBuffer (or the [offset, offset + size) part of it)
+ * with random bytes. Emscripten programs running "under Node" get their entropy here (PGlite's
+ * Postgres panics without it).
+ */
+export function randomFillSync<T extends ArrayBufferView | ArrayBuffer>(buffer: T, offset = 0, size?: number): T {
+  const whole = ArrayBuffer.isView(buffer)
+    ? new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength)
+    : new Uint8Array(buffer as ArrayBuffer);
+  // offset and size count elements for typed arrays, as in Node.
+  const unit = ArrayBuffer.isView(buffer) && !(buffer instanceof DataView) ? ((buffer as unknown as { BYTES_PER_ELEMENT?: number }).BYTES_PER_ELEMENT ?? 1) : 1;
+  const start = offset * unit;
+  const end = size === undefined ? whole.length : start + size * unit;
+  if (start < 0 || end > whole.length || start > end) throw new RangeError('The value of "offset" or "size" is out of range.');
+  fillRandom(whole.subarray(start, end));
+  return buffer;
+}
+
+export function randomFill<T extends ArrayBufferView | ArrayBuffer>(
+  buffer: T,
+  ...rest: [cb: (err: Error | null, buf: T) => void] | [offset: number, cb: (err: Error | null, buf: T) => void] | [offset: number, size: number, cb: (err: Error | null, buf: T) => void]
+): void {
+  const cb = rest[rest.length - 1] as (err: Error | null, buf: T) => void;
+  const nums = rest.slice(0, -1) as number[];
+  try {
+    randomFillSync(buffer, nums[0] ?? 0, nums[1]);
+    queueMicrotask(() => cb(null, buffer));
+  } catch (err) {
+    queueMicrotask(() => cb(err as Error, buffer));
+  }
 }
 
 export function randomUUID(): string {
@@ -345,4 +383,135 @@ function md5sync(data: Uint8Array): Uint8Array {
   return out;
 }
 
-export default { randomBytes, randomUUID, createHash, randomInt, getRandomValues, subtle, hash, getHashes };
+// ── HMAC and PBKDF2 (sync, on the hashes above) ──
+// Postgres clients log in with SCRAM-SHA-256, which needs both synchronously (pg, postgres.js,
+// tinbase's wire client: `pbkdf2Sync(password, salt, 4096, 32, 'sha256')`).
+
+const BLOCK: Record<string, number> = { md5: 64, sha1: 64, sha256: 64, sha512: 128 };
+const toBytes = (data: string | ArrayBufferView | ArrayBuffer): Uint8Array =>
+  typeof data === 'string'
+    ? new TextEncoder().encode(data)
+    : data instanceof ArrayBuffer
+      ? new Uint8Array(data)
+      : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+const hashAlgo = (algorithm: string): string => {
+  const algo = algorithm.toLowerCase().replace('-', '');
+  if (!(algo in BLOCK)) throw new Error(`Digest method not supported: ${algorithm} (only md5, sha1, sha256 and sha512 are supported)`);
+  return algo;
+};
+const digestBytes = (algo: string, data: Uint8Array): Uint8Array =>
+  algo === 'md5' ? md5sync(data) : algo === 'sha1' ? sha1sync(data) : algo === 'sha512' ? sha512sync(data) : sha256sync(data);
+
+/** The padded inner and outer keys of an HMAC, so many MACs with one key (PBKDF2) skip the setup. */
+function hmacPads(algo: string, key: Uint8Array): { ipad: Uint8Array; opad: Uint8Array } {
+  const block = BLOCK[algo];
+  const k = key.length > block ? digestBytes(algo, key) : key;
+  const ipad = new Uint8Array(block).fill(0x36);
+  const opad = new Uint8Array(block).fill(0x5c);
+  for (let i = 0; i < k.length; i++) {
+    ipad[i] ^= k[i];
+    opad[i] ^= k[i];
+  }
+  return { ipad, opad };
+}
+
+function hmacWith(algo: string, pads: { ipad: Uint8Array; opad: Uint8Array }, data: Uint8Array): Uint8Array {
+  const inner = new Uint8Array(pads.ipad.length + data.length);
+  inner.set(pads.ipad);
+  inner.set(data, pads.ipad.length);
+  const ih = digestBytes(algo, inner);
+  const outer = new Uint8Array(pads.opad.length + ih.length);
+  outer.set(pads.opad);
+  outer.set(ih, pads.opad.length);
+  return digestBytes(algo, outer);
+}
+
+class Hmac extends EventEmitter {
+  private chunks: Uint8Array[] = [];
+  private pads: { ipad: Uint8Array; opad: Uint8Array };
+  constructor(private algo: string, key: string | ArrayBufferView | ArrayBuffer) {
+    super();
+    this.pads = hmacPads(algo, toBytes(key));
+  }
+  update(data: string | ArrayBufferView | ArrayBuffer, _encoding?: string): this {
+    this.chunks.push(toBytes(data));
+    return this;
+  }
+  digest(encoding?: string): string | Buffer {
+    let total = 0;
+    for (const c of this.chunks) total += c.length;
+    const merged = new Uint8Array(total);
+    let o = 0;
+    for (const c of this.chunks) {
+      merged.set(c, o);
+      o += c.length;
+    }
+    const out = Buffer.from(hmacWith(this.algo, this.pads, merged));
+    if (encoding === 'hex') return toHex(out);
+    if (encoding === 'base64') return out.toString('base64');
+    if (encoding === 'base64url') return out.toString('base64').replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
+    return out;
+  }
+}
+
+export function createHmac(algorithm: string, key: string | ArrayBufferView | ArrayBuffer): Hmac {
+  return new Hmac(hashAlgo(algorithm), key);
+}
+
+export function pbkdf2Sync(
+  password: string | ArrayBufferView | ArrayBuffer,
+  salt: string | ArrayBufferView | ArrayBuffer,
+  iterations: number,
+  keylen: number,
+  digest: string,
+): Buffer {
+  const algo = hashAlgo(digest);
+  const pads = hmacPads(algo, toBytes(password));
+  const s = toBytes(salt);
+  const out = new Uint8Array(keylen);
+  const block = new Uint8Array(s.length + 4);
+  block.set(s);
+  for (let i = 1, written = 0; written < keylen; i++) {
+    block[s.length] = i >>> 24;
+    block[s.length + 1] = (i >>> 16) & 0xff;
+    block[s.length + 2] = (i >>> 8) & 0xff;
+    block[s.length + 3] = i & 0xff;
+    let u = hmacWith(algo, pads, block);
+    const t = u.slice();
+    for (let n = 1; n < iterations; n++) {
+      u = hmacWith(algo, pads, u);
+      for (let j = 0; j < t.length; j++) t[j] ^= u[j];
+    }
+    const take = Math.min(t.length, keylen - written);
+    out.set(t.subarray(0, take), written);
+    written += take;
+  }
+  return Buffer.from(out);
+}
+
+export function pbkdf2(
+  password: string | ArrayBufferView | ArrayBuffer,
+  salt: string | ArrayBufferView | ArrayBuffer,
+  iterations: number,
+  keylen: number,
+  digest: string,
+  callback: (err: Error | null, key?: Buffer) => void,
+): void {
+  try {
+    const key = pbkdf2Sync(password, salt, iterations, keylen, digest);
+    queueMicrotask(() => callback(null, key));
+  } catch (err) {
+    queueMicrotask(() => callback(err as Error));
+  }
+}
+
+export function timingSafeEqual(a: ArrayBufferView, b: ArrayBufferView): boolean {
+  const x = toBytes(a);
+  const y = toBytes(b);
+  if (x.length !== y.length) throw new RangeError('Input buffers must have the same byte length');
+  let diff = 0;
+  for (let i = 0; i < x.length; i++) diff |= x[i] ^ y[i];
+  return diff === 0;
+}
+
+export default { randomBytes, randomFillSync, randomFill, randomUUID, createHash, createHmac, pbkdf2Sync, pbkdf2, timingSafeEqual, randomInt, getRandomValues, subtle, hash, getHashes };

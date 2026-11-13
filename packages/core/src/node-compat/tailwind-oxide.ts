@@ -17,7 +17,7 @@
 
 interface OxideVfs {
   exists(path: string): boolean;
-  stat(path: string): { type: 'file' | 'directory' };
+  stat(path: string): { type: 'file' | 'directory' | 'symlink' };
   readdir(path: string): Array<{ name: string }>;
   readFileString(path: string): string;
 }
@@ -82,7 +82,7 @@ export function createOxideScanner(vfs: OxideVfs) {
         const name = e.name;
         if (!name || name.startsWith('.')) continue; // skip dotfiles/dirs
         const full = join(dir, name);
-        let type: 'file' | 'directory';
+        let type: 'file' | 'directory' | 'symlink';
         try {
           type = vfs.stat(full).type;
         } catch {

@@ -19,7 +19,8 @@
   ],
   "type": "module",
   "bin": {
-    "lifo-sh": "./dist/index.js"
+    "lifo-sh": "./dist/index.js",
+    "lifo": "./dist/index.js"
   },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -41,7 +42,13 @@
   },
   "dependencies": {
     "@lifo-sh/core": "workspace:*",
-    "ws": "^8.19.0"
+    "ws": "^8.19.0",
+    "lifo-pkg-git": "workspace:*",
+    "lifo-pkg-vi": "workspace:*",
+    "lifo-pkg-nano": "workspace:*",
+    "lifo-pkg-less": "workspace:*",
+    "lifo-pkg-python": "workspace:*",
+    "lifo-pkg-agent": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

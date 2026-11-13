@@ -12,6 +12,8 @@ import { createNodeCommand } from '../commands/system/node.js';
 import { createCurlCommand } from '../commands/net/curl.js';
 import { createTunnelCommandV2 } from '../commands/net/tunnel-v2.js';
 import { createBrowserMetroCommand } from '../commands/system/browser-metro.js';
+import { createExpoCommand } from '../commands/system/expo.js';
+import { createRemoteToolCommand, REMOTE_TOOLS } from '../commands/system/remote-tool.js';
 import { createIfconfigCommand } from '../commands/net/ifconfig.js';
 import { createRouteCommand } from '../commands/net/route.js';
 import { createNetstatCommand } from '../commands/net/netstat.js';
@@ -19,12 +21,14 @@ import { createHostCommand } from '../commands/net/host.js';
 import { createIPCommand } from '../commands/net/ip.js';
 import { createNpmCommand, createNpxCommand } from '../commands/system/npm.js';
 import { createLifoPkgCommand, bootLifoPackages } from '../commands/system/lifo.js';
+import { setBoxAuth } from '../cloud/box-auth.js';
+import { setBoxNet } from '../node-compat/net.js';
 import { createSystemctlCommand } from '../commands/system/systemctl.js';
 import type { VFS } from '../kernel/vfs/index.js';
 import { NativeFsProvider } from '../kernel/vfs/providers/NativeFsProvider.js';
 import type { NativeFsModule } from '../kernel/vfs/providers/NativeFsProvider.js';
 import type { ITerminal } from '../terminal/ITerminal.js';
-import type { SandboxOptions, SandboxCommands, SandboxFs, SnapshotOptions } from './types.js';
+import type { SandboxOptions, SandboxCommands, SandboxFs, SnapshotOptions, SandboxShell } from './types.js';
 import { SandboxFsImpl } from './SandboxFs.js';
 import { SandboxCommandsImpl } from './SandboxCommands.js';
 import { HeadlessTerminal } from './HeadlessTerminal.js';
@@ -126,6 +130,10 @@ export class Sandbox {
 		// 2. Create command registry
 		const registry = createDefaultRegistry();
 		bootLifoPackages(kernel.vfs, registry);
+		// The creator's login, lent to the in-box `lifo` commands (never put in env or files).
+		setBoxAuth(kernel.vfs, options?.auth);
+		// Real outbound TCP for `net`/`tls`, when the host has it (Lifo Cloud); a stub otherwise.
+		setBoxNet(kernel.vfs, options?.net);
 
 		// 3. Pre-populate files if provided
 		if (options?.files) {
@@ -200,7 +208,18 @@ export class Sandbox {
 		};
 		registry.register('npm', createNpmCommand(registry, npmShellExecute, kernel));
 		registry.register('npx', createNpxCommand(registry, npmShellExecute));
-		registry.register('lifo', createLifoPkgCommand(registry, npmShellExecute));
+		registry.register('lifo', createLifoPkgCommand(registry, npmShellExecute, kernel));
+		// Tools too heavy for a box run on Lifo services, after asking (commands/system/remote-tool.ts)
+		for (const tool of REMOTE_TOOLS) registry.register(tool, createRemoteToolCommand(tool));
+		// expo start → browser-metro, expo install → npm install (commands/system/expo.ts)
+		registry.register('expo', createExpoCommand(async (name, args, cmdCtx) => {
+			const cmd = await registry.resolve(name);
+			if (!cmd) {
+				cmdCtx.stderr.write(`expo: ${name} is not available\n`);
+				return 127;
+			}
+			return cmd({ ...cmdCtx, args });
+		}));
 		// 7b. Service manager & systemctl
 		kernel.initServiceManager(registry, env);
 		registry.register('systemctl', createSystemctlCommand(kernel));
@@ -208,6 +227,8 @@ export class Sandbox {
 		// 8. Source config files
 		await shell.sourceFile('/etc/profile');
 		await shell.sourceFile(env.HOME + '/.bashrc');
+		// The caller's env wins over the profile's defaults (e.g. /etc/profile exports EDITOR).
+		Object.assign(shell.getEnv(), options?.env ?? {});
 
 		// 9. Set initial cwd if provided
 		if (options?.cwd) {
@@ -218,7 +239,7 @@ export class Sandbox {
 
 		// 10. Start shell (for visual mode, enables interactive input)
 		if (isVisual) {
-			shell.start();
+			shell.start({ sourceRc: false });
 			shellTerminal.focus();
 		}
 
@@ -227,7 +248,9 @@ export class Sandbox {
 		const sandboxFs = new SandboxFsImpl(kernel.vfs, getCwd);
 		const sandboxCommands = new SandboxCommandsImpl(shell, registry);
 
-		const sandbox = new Sandbox(kernel, shell, sandboxCommands, sandboxFs, env);
+		// box.env is the shell's own environment (Shell copies what it's given), so setting a
+		// variable on it, or restoring a snapshot's, reaches the commands that run next.
+		const sandbox = new Sandbox(kernel, shell, sandboxCommands, sandboxFs, shell.getEnv());
 
 		// 12. Mount native filesystems if specified in options
 		if (options?.mounts) {
@@ -264,11 +287,13 @@ export class Sandbox {
 			// We use a dynamic require pattern that works at runtime but avoids
 			// static analysis by bundlers.
 			try {
-				// eslint-disable-next-line @typescript-eslint/no-require-imports
 				const mod = 'node:fs';
-				fsModule = (globalThis as unknown as Record<string, Function>).require?.(mod) as NativeFsModule | undefined;
+				// ES modules have no `require`; Node 20.16+ hands out built-ins directly.
+				const proc = (globalThis as { process?: { getBuiltinModule?: (id: string) => unknown } }).process;
+				fsModule = (proc?.getBuiltinModule?.(mod) ??
+					(globalThis as unknown as Record<string, Function>).require?.(mod)) as NativeFsModule | undefined;
 			} catch {
-				// globalThis.require may not exist
+				// neither is available (a browser)
 			}
 
 			if (!fsModule) {
@@ -283,6 +308,10 @@ export class Sandbox {
 		const provider = new NativeFsProvider(hostPath, fsModule, {
 			readOnly: options?.readOnly ?? false,
 		});
+		// The mount point and its parents have to exist as real directories: listings come from
+		// the tree, so otherwise `ls /mnt` doesn't show the mount and anything that walks the tree
+		// (exportSnapshot) hits ENOENT.
+		if (!this.kernel.vfs.exists(virtualPath)) this.kernel.vfs.mkdir(virtualPath, { recursive: true });
 		this.kernel.vfs.mount(virtualPath, provider);
 	}
 
@@ -296,24 +325,88 @@ export class Sandbox {
 		this.kernel.vfs.unmount(virtualPath);
 	}
 
-	/**
-	 * Attach a headless sandbox to a DOM element, enabling visual mode.
-	 */
-	async attach(container: HTMLElement): Promise<void> {
-		if (this._destroyed) throw new Error('Sandbox is destroyed');
-		const { Terminal } = await import('@lifo-sh/ui');
-		const xtermTerminal = new Terminal(container);
+	/** The terminal attach() created, so detach() can remove it. */
+	private attachedTerminal: { dispose?: () => void } | null = null;
 
-		const motd = this.kernel.vfs.readFileString('/etc/motd');
-		xtermTerminal.write(motd.replace(/\r\n/g, '\n').replace(/\n/g, '\r\n'));
-		xtermTerminal.focus();
+	/**
+	 * Show this box's shell in a terminal: a headless box becomes interactive, sharing its
+	 * files, variables, working directory and processes with commands.run(). Pass a DOM element
+	 * (or a selector) for an xterm.js terminal from @lifo-sh/ui, or your own ITerminal.
+	 * Attaching again moves the shell to the new terminal.
+	 */
+	async attach(target: HTMLElement | string | ITerminal, options?: { fontSize?: number }): Promise<void> {
+		if (this._destroyed) throw new Error('Sandbox is destroyed');
+		let terminal: ITerminal;
+		let created: { dispose?: () => void } | null = null;
+		if (typeof target === 'string' || (typeof HTMLElement !== 'undefined' && target instanceof HTMLElement)) {
+			const { Terminal } = await import('@lifo-sh/ui');
+			const xterm = new Terminal(resolveContainer(target), { fontSize: options?.fontSize });
+			const motd = this.kernel.vfs.readFileString('/etc/motd');
+			xterm.write(motd.replace(/\r\n/g, '\n').replace(/\n/g, '\r\n'));
+			terminal = xterm;
+			created = xterm as { dispose?: () => void };
+		} else {
+			terminal = target as ITerminal;
+		}
+		this.detachTerminal();
+		this.attachedTerminal = created;
+		this.shell.setTerminal(terminal);
+		this.shell.start({ sourceRc: false });
+		terminal.focus();
 	}
 
 	/**
-	 * Detach from visual mode.
+	 * Disconnect the terminal attach() connected (removing the one it created). The box keeps
+	 * running headless; commands.run() is unaffected, and attach() can be called again.
 	 */
 	detach(): void {
-		// v1: no-op placeholder
+		this.detachTerminal();
+		this.shell.setTerminal(new HeadlessTerminal());
+	}
+
+	private detachTerminal(): void {
+		this.attachedTerminal?.dispose?.();
+		this.attachedTerminal = null;
+	}
+
+	/**
+	 * Open another interactive shell on this box, drawn in `terminal`: its own prompt, history
+	 * position and working directory, sharing the box's files, commands, environment defaults and
+	 * processes (so `ps` shows a server started by commands.run()). For extra terminal tabs, or a
+	 * remote terminal (Lifo Cloud's `lifo cloud shell`). `exit` or Ctrl+D at an empty prompt ends
+	 * it and calls `onExit`; `dispose()` ends it from outside.
+	 */
+	async openShell(
+		terminal: ITerminal,
+		options?: { cwd?: string; env?: Record<string, string>; onExit?: (code: number) => void },
+	): Promise<SandboxShell> {
+		if (this._destroyed) throw new Error('Sandbox is destroyed');
+		const env = { ...this.env, ...options?.env };
+		const shell = new Shell(terminal, this.kernel.vfs, this.shell.getRegistry(), env, this.kernel.processRegistry);
+		await shell.sourceFile('/etc/profile');
+		await shell.sourceFile(`${env.HOME || '/home/user'}/.bashrc`);
+		// The box's own env wins over the profile's defaults, as in create().
+		Object.assign(shell.getEnv(), env);
+		const cwd = options?.cwd ?? this.cwd;
+		if (this.kernel.vfs.exists(cwd)) shell.setCwd(cwd);
+		const processes = this.kernel.processRegistry;
+		const before = new Set(processes.getAllPIDs());
+		let disposed = false;
+		const end = () => {
+			if (disposed) return;
+			disposed = true;
+			if (pid !== undefined) {
+				processes.kill(pid);
+				processes.reap(pid);
+			}
+		};
+		shell.onExit((code) => {
+			end();
+			options?.onExit?.(code);
+		});
+		shell.start({ sourceRc: false });
+		const pid = processes.getAllPIDs().find((p) => !before.has(p));
+		return { shell, dispose: end };
 	}
 
 	/**
@@ -421,7 +514,7 @@ export class Sandbox {
 	 * carries a manifest — a files-only archive (anything written before manifests
 	 * existed) restores exactly as it used to. Returns the manifest, or `null`.
 	 */
-	async importSnapshot(data: Uint8Array): Promise<SnapshotMetadata | null> {
+	async importSnapshot(data: Uint8Array | ReadableStream<Uint8Array>): Promise<SnapshotMetadata | null> {
 		if (this._destroyed) throw new Error('Sandbox is destroyed');
 		const metadata = await this.fs.importSnapshot(data);
 		if (metadata?.env) {

@@ -209,8 +209,19 @@ export class Writable extends EventEmitter {
   /** Node-internal-shaped state some libraries poke directly (e.g. ws). */
   _writableState = { finished: false, errorEmitted: false, ended: false };
 
-  constructor(_opts?: { objectMode?: boolean; highWaterMark?: number; autoDestroy?: boolean }) {
+  declare _final?: (callback: (err?: Error | null) => void) => void;
+
+  constructor(opts?: {
+    objectMode?: boolean;
+    highWaterMark?: number;
+    autoDestroy?: boolean;
+    /** Node's simplified construction: `new Writable({ write(chunk, enc, cb) {...} })`. */
+    write?: (chunk: unknown, encoding: string, callback: (err?: Error | null) => void) => void;
+    final?: (callback: (err?: Error | null) => void) => void;
+  }) {
     super();
+    if (opts?.write) this._write = opts.write;
+    if (opts?.final) this._final = opts.final;
   }
 
   /**
@@ -238,14 +249,23 @@ export class Writable extends EventEmitter {
     return true;
   }
 
-  end(chunk?: unknown): void {
-    if (chunk !== undefined && chunk !== null) this.write(chunk);
+  end(chunk?: unknown, encodingOrCb?: unknown, cb?: () => void): void {
+    const done = typeof chunk === 'function' ? chunk : typeof encodingOrCb === 'function' ? encodingOrCb : cb;
+    if (chunk !== undefined && chunk !== null && typeof chunk !== 'function') this.write(chunk);
     this._ended = true;
     this.writable = false;
     this._writableState.ended = true;
-    this._writableState.finished = true;
-    this.emit('finish');
-    this.emit('close');
+    const finish = () => {
+      this._writableState.finished = true;
+      this.emit('finish');
+      this.emit('close');
+      if (typeof done === 'function') (done as () => void)();
+    };
+    if (!this._final) return finish();
+    this._final((err) => {
+      if (err) { this._writableState.errorEmitted = true; this.emit('error', err); return; }
+      finish();
+    });
   }
 
   destroy(err?: unknown): this {

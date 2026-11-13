@@ -1,8 +1,28 @@
 import { TokenKind, type Token, type WordPart } from './types.js';
 
+/** A here-document whose body is read from the lines after the current one. */
+interface PendingHereDoc {
+  token: Token;      // the Word token that receives the body
+  delimiter: string;
+  stripTabs: boolean; // <<-
+  quoted: boolean;    // <<'EOF' / <<"EOF" / <<\EOF: no expansion in the body
+}
+
+export interface LexResult {
+  tokens: Token[];
+  /** True when the input ends inside a quote or a here-document, or with a `\` line continuation. */
+  incomplete: boolean;
+}
+
 export function lex(input: string): Token[] {
+  return lexDetailed(input).tokens;
+}
+
+export function lexDetailed(input: string): LexResult {
   const tokens: Token[] = [];
   let i = 0;
+  let pending: PendingHereDoc[] = [];
+  let incomplete = false;
 
   while (i < input.length) {
     // Skip whitespace (but NOT newlines -- they become Newline tokens)
@@ -11,10 +31,49 @@ export function lex(input: string): Token[] {
       continue;
     }
 
-    // Newline
+    // Line continuation
+    if (input[i] === '\\' && input[i + 1] === '\n') {
+      i += 2;
+      continue;
+    }
+
+    // Newline (then the bodies of any here-documents started on this line)
     if (input[i] === '\n') {
       tokens.push({ kind: TokenKind.Newline, value: '\n', pos: i });
       i++;
+      for (const doc of pending) {
+        const read = readHereDocBody(input, i, doc);
+        i = read.end;
+        if (!read.terminated) incomplete = true;
+      }
+      pending = [];
+      continue;
+    }
+
+    // Here-string (<<<) and here-document (<< / <<-)
+    if (input[i] === '<' && input[i + 1] === '<') {
+      if (input[i + 2] === '<') {
+        tokens.push({ kind: TokenKind.HereString, value: '<<<', pos: i });
+        i += 3;
+        continue;
+      }
+      const stripTabs = input[i + 2] === '-';
+      tokens.push({ kind: TokenKind.HereDoc, value: stripTabs ? '<<-' : '<<', pos: i });
+      i += stripTabs ? 3 : 2;
+      while (input[i] === ' ' || input[i] === '\t') i++;
+      const delim = readWord(input, i);
+      const body: Token = { kind: TokenKind.Word, value: '', pos: i, parts: [{ text: '', quoted: 'single' }] };
+      tokens.push(body);
+      if (delim) {
+        const parts = delim.token.parts ?? [];
+        pending.push({
+          token: body,
+          delimiter: parts.map((p) => p.text).join(''),
+          stripTabs,
+          quoted: parts.some((p) => p.quoted !== 'none') || /[\\'"]/.test(input.slice(i, delim.end)),
+        });
+        i = delim.end;
+      }
       continue;
     }
 
@@ -46,8 +105,81 @@ export function lex(input: string): Token[] {
     i++;
   }
 
+  // Here-documents started on the last line, with no newline after it.
+  if (pending.length > 0) incomplete = true;
+  if (endsInsideQuote(input) || /(^|[^\\])(\\\\)*\\$/.test(input)) incomplete = true;
+
   tokens.push({ kind: TokenKind.EOF, value: '', pos: i });
-  return tokens;
+  return { tokens, incomplete };
+}
+
+/** Reads a here-document body starting at `pos` (the start of the line after `<<WORD`). */
+function readHereDocBody(input: string, pos: number, doc: PendingHereDoc): { end: number; terminated: boolean } {
+  const lines: string[] = [];
+  let i = pos;
+  let terminated = false;
+  while (i < input.length) {
+    let nl = input.indexOf('\n', i);
+    if (nl === -1) nl = input.length;
+    let line = input.slice(i, nl);
+    i = Math.min(nl + 1, input.length);
+    if (doc.stripTabs) line = line.replace(/^\t+/, '');
+    if (line === doc.delimiter) {
+      terminated = true;
+      break;
+    }
+    lines.push(line);
+  }
+  const body = lines.length > 0 ? lines.join('\n') + '\n' : '';
+  doc.token.value = body;
+  doc.token.parts = doc.quoted ? [{ text: body, quoted: 'single' }] : hereDocParts(body);
+  return { end: i, terminated };
+}
+
+/** An unquoted here-document body expands $VAR, ${…}, $(…) and $((…)); `\$`, `\\` and `\`` are literal. */
+function hereDocParts(body: string): WordPart[] {
+  const parts: WordPart[] = [];
+  let text = '';
+  for (let i = 0; i < body.length; i++) {
+    if (body[i] === '\\' && (body[i + 1] === '$' || body[i + 1] === '\\' || body[i + 1] === '`')) {
+      if (text) parts.push({ text, quoted: 'double' });
+      text = '';
+      parts.push({ text: body[i + 1], quoted: 'single' });
+      i++;
+      continue;
+    }
+    if (body[i] === '\\' && body[i + 1] === '\n') {
+      i++;
+      continue;
+    }
+    text += body[i];
+  }
+  if (text || parts.length === 0) parts.push({ text, quoted: 'double' });
+  return parts;
+}
+
+/** True if the input ends inside an unclosed single or double quote (ignoring comments). */
+function endsInsideQuote(input: string): boolean {
+  let quote: string | null = null;
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+    if (quote === "'") {
+      if (ch === "'") quote = null;
+    } else if (quote === '"') {
+      if (ch === '\\') i++;
+      else if (ch === '"') quote = null;
+    } else if (ch === '\\') {
+      i++;
+    } else if (ch === "'" || ch === '"') {
+      quote = ch;
+    } else if (ch === '#' && (i === 0 || /[\s;&|()]/.test(input[i - 1]))) {
+      while (i < input.length && input[i] !== '\n') i++;
+    } else if (ch === '<' && input[i + 1] === '<' && input[i + 2] !== '<') {
+      // Skip here-doc bodies: their quotes don't count.
+      return false;
+    }
+  }
+  return quote !== null;
 }
 
 function tryOperator(input: string, pos: number): { token: Token; end: number } | null {
@@ -175,9 +307,18 @@ function readWord(input: string, pos: number): { token: Token; end: number } | n
   while (i < input.length) {
     const ch = input[i];
 
-    // Backslash escape (outside quotes)
+    // Backslash escape (outside quotes): the next character is literal, so it is kept as a
+    // quoted part (no variable, brace, glob or tilde expansion). Backslash-newline joins lines.
     if (ch === '\\' && i + 1 < input.length) {
-      currentText += input[i + 1];
+      if (input[i + 1] === '\n') {
+        i += 2;
+        continue;
+      }
+      if (currentText) {
+        parts.push({ text: currentText, quoted: 'none' });
+        currentText = '';
+      }
+      parts.push({ text: input[i + 1], quoted: 'single' });
       i += 2;
       hasContent = true;
       continue;
@@ -266,7 +407,7 @@ function readWord(input: string, pos: number): { token: Token; end: number } | n
     // $# $@ $N $? -- special variables that start with $
     if (ch === '$' && i + 1 < input.length) {
       const nc = input[i + 1];
-      if (nc === '#' || nc === '@' || nc === '?' || /[0-9]/.test(nc)) {
+      if (nc === '#' || nc === '@' || nc === '?' || nc === '$' || nc === '!' || /[0-9]/.test(nc)) {
         currentText += '$' + nc;
         i += 2;
         hasContent = true;

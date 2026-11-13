@@ -14,6 +14,8 @@ interface Entry {
   runAs?: string[];
   /** package name to substitute for `npx <pkg>` (undefined = no npx redirect). */
   pkg?: string;
+  /** for `npx <pkg>`: run this registered command instead of installing anything. */
+  command?: string;
   /** one-line note (shown without the 💡 prefix here; format() adds it). */
   msg: string;
 }
@@ -23,6 +25,10 @@ const MAP: Record<string, Entry> = {
     runAs: ['npx', 'tinbase'],
     pkg: 'tinbase',
     msg: 'Lifo has no Supabase CLI (it needs Docker) — running tinbase instead (Supabase-compatible, in the VM). See the "Supabase (tinbase)" example.',
+  },
+  expo: {
+    command: 'expo',
+    msg: '', // the expo command prints its own note
   },
   docker: {
     msg: "Lifo doesn't run Docker (no native containers) — real stacks run directly in the VM. See the examples.",
@@ -46,7 +52,7 @@ export interface CommandRedirect {
 /** Redirect/note for a bare command the user ran (e.g. `supabase`). */
 export function commandRedirect(name: string): CommandRedirect | null {
   const e = MAP[name.toLowerCase()];
-  return e ? { runAs: e.runAs, message: format(e.msg) } : null;
+  return e && e.msg ? { runAs: e.runAs, message: format(e.msg) } : null;
 }
 
 /** For `npx <pkg>`: the replacement package + note, or null (e.g. supabase→tinbase). */
@@ -55,11 +61,16 @@ export function npxRedirect(pkg: string): { to: string; message: string } | null
   return e?.pkg ? { to: e.pkg, message: format(e.msg) } : null;
 }
 
+/** For `npx <pkg>` where Lifo has a built-in command instead (`npx expo start` → `expo start`). */
+export function npxCommand(pkg: string): string | null {
+  return MAP[pkg.toLowerCase()]?.command ?? null;
+}
+
 /** For `npm install <pkg>`: a note (install isn't redirected), or null.
  *  Strips a version tag and guards scoped names (@supabase/supabase-js is fine). */
 export function suggestForPackage(spec: string): string | null {
   const at = spec.lastIndexOf('@');
   const base = at > 0 ? spec.slice(0, at) : spec;
   const e = MAP[base.toLowerCase()] ?? MAP[spec.toLowerCase()];
-  return e ? format(e.msg) : null;
+  return e && e.msg ? format(e.msg) : null;
 }

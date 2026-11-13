@@ -1,5 +1,6 @@
 // Sandbox (high-level API)
-export { Sandbox } from './sandbox/index.js';
+export { Sandbox, WorkerSandbox, serveSandbox, lockDownCredentials, RpcChannel, openBoxFrame, serveBoxFrame, serveSandboxWhenConnected } from './sandbox/index.js';
+export type { WorkerSandboxOptions, ServeSandboxOptions, RpcEndpoint, BoxFrame, BoxFrameOptions, ServeBoxFrameOptions } from './sandbox/index.js';
 export type {
 	SandboxOptions,
 	RunOptions,
@@ -7,6 +8,7 @@ export type {
 	SandboxCommands,
 	SandboxFs,
 	SnapshotOptions,
+	SandboxShell,
 } from './sandbox/index.js';
 
 export type { SandboxFetchInit } from './sandbox/Sandbox.js';
@@ -64,6 +66,17 @@ export { Bridge } from './kernel/network/Bridge.js';
 export { VFS, VFSError, ErrorCode } from './kernel/vfs/index.js';
 export { getMimeType, getFileCategory, isBinaryMime } from './kernel/vfs/index.js';
 export { NativeFsProvider } from './kernel/vfs/index.js';
+export { SqliteMountProvider, nodeSqlite, durableObjectSql } from './kernel/vfs/index.js';
+export type {
+  SqliteMountOptions,
+  SyncSql,
+  SyncSqlCursor,
+  SqlValue,
+  SqlRow,
+  NodeSqliteDatabase,
+  NodeSqliteOptions,
+  DurableObjectSqlStorage,
+} from './kernel/vfs/index.js';
 export type {
 	INode,
 	Stat,
@@ -202,3 +215,55 @@ export {
 	bold,
 	dim,
 } from './utils/colors.js';
+
+// lifo.sh account and tunnels, shared by the `lifo` command in a box and the host CLI
+export {
+	DEFAULT_BASE_URL,
+	normalizeBaseUrl,
+	loadAuth,
+	resolveBaseUrl,
+	saveSession,
+	removeSession,
+	createPkce,
+	loginUrl,
+	exchangeCode,
+	fetchMe,
+	revokeToken,
+	fetchCliConfig,
+} from './cloud/auth.js';
+export type { AuthFile, AuthStore, Session, Pkce, CliConfig } from './cloud/auth.js';
+export { runTunnel, bytesToBase64, base64ToBytes } from './cloud/tunnel-client.js';
+export type {
+	TunnelForwarder,
+	TunnelOptions,
+	TunnelPipe,
+	TunnelHttpRequest,
+	TunnelHttpResponse,
+} from './cloud/tunnel-client.js';
+export { createVmForwarder, localHeaders } from './cloud/vm-forwarder.js';
+export { LifoCloud, cloudSafeEnv, CLOUD_ALWAYS_EXCLUDE } from './cloud/cloud-client.js';
+export { LifoServices, ServiceError } from './cloud/services-client.js';
+export type { ServiceTool, ServiceJob, ServiceResult, ServiceFile, ServiceUsage, ServicesUsage, BrowserSession } from './cloud/services-client.js';
+export { setLocalTool, createRemoteToolCommand, connectServices } from './commands/system/remote-tool.js';
+export type { LocalTool } from './commands/system/remote-tool.js';
+export { createShellEscape } from './cloud/shell-escape.js';
+export { pageAuth, setBoxAuth } from './cloud/box-auth.js';
+export type { BoxAuth } from './cloud/box-auth.js';
+export { setBoxNet } from './node-compat/net.js';
+export type { BoxNet, BoxSocket, BoxNetConnectOptions } from './node-compat/net.js';
+export type {
+	CloudBoxInfo,
+	CloudRuntime,
+	CloudPushOptions,
+	CloudExecResult,
+	SnapshotSource,
+	CloudShell,
+	WebSocketLike,
+	WebSocketConstructor,
+	CloudMetrics,
+	CloudMetricsPoint,
+	CloudMetricsRange,
+	CloudEvent,
+	CloudUsage,
+	CloudUsageTotals,
+} from './cloud/cloud-client.js';

@@ -138,9 +138,25 @@ describe('uptime', () => {
 });
 
 describe('which', () => {
+  // Answers from the real command table: built-ins, and commands registered later.
+  const makeWhich = async () => {
+    const { createDefaultRegistry } = await import('../../src/commands/registry.js');
+    const { createWhichCommand } = await import('../../src/commands/system/which.js');
+    const registry = createDefaultRegistry();
+    registry.register('git', async () => 0);
+    return createWhichCommand(registry);
+  };
+
+  it('finds a command registered after boot (a package)', async () => {
+    const which = await makeWhich();
+    const ctx = createContext(new VFS(), ['git']);
+    expect(await which(ctx)).toBe(0);
+    expect(ctx.stdout.text).toContain('git');
+  });
+
   it('finds a known command', async () => {
     const vfs = new VFS();
-    const { default: which } = await import('../../src/commands/system/which.js');
+    const which = await makeWhich();
     const ctx = createContext(vfs, ['cat']);
     const code = await which(ctx);
     expect(code).toBe(0);
@@ -149,7 +165,7 @@ describe('which', () => {
 
   it('finds a builtin', async () => {
     const vfs = new VFS();
-    const { default: which } = await import('../../src/commands/system/which.js');
+    const which = await makeWhich();
     const ctx = createContext(vfs, ['cd']);
     const code = await which(ctx);
     expect(code).toBe(0);
@@ -158,7 +174,7 @@ describe('which', () => {
 
   it('returns 1 for unknown command', async () => {
     const vfs = new VFS();
-    const { default: which } = await import('../../src/commands/system/which.js');
+    const which = await makeWhich();
     const ctx = createContext(vfs, ['nonexistent']);
     const code = await which(ctx);
     expect(code).toBe(1);

@@ -34,15 +34,15 @@ export class SandboxFsImpl implements ISandboxFs {
     this.vfs.writeFile(abs, content);
   }
 
-  async readdir(path: string): Promise<Array<{ name: string; type: 'file' | 'directory' }>> {
+  async readdir(path: string): Promise<Array<{ name: string; type: 'file' | 'directory' | 'symlink' }>> {
     const abs = this.resolvePath(path);
     return this.vfs.readdir(abs);
   }
 
   async stat(path: string): Promise<{ type: 'file' | 'directory'; size: number; mtime: number }> {
     const abs = this.resolvePath(path);
-    const s = this.vfs.stat(abs);
-    return { type: s.type, size: s.size, mtime: s.mtime };
+    const s = this.vfs.stat(abs); // follows symlinks, so never 'symlink'
+    return { type: s.type === 'directory' ? 'directory' : 'file', size: s.size, mtime: s.mtime };
   }
 
   async mkdir(path: string, options?: { recursive?: boolean }): Promise<void> {
@@ -98,7 +98,7 @@ export class SandboxFsImpl implements ISandboxFs {
     });
   }
 
-  async importSnapshot(data: Uint8Array): Promise<SnapshotMetadata | null> {
+  async importSnapshot(data: Uint8Array | ReadableStream<Uint8Array>): Promise<SnapshotMetadata | null> {
     return importVfsSnapshot(this.vfs, data);
   }
 }

@@ -27,10 +27,13 @@
     ".": {
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
-    }
+    },
+    "./sw.js": "./sw.js",
+    "./package.json": "./package.json"
   },
   "files": [
-    "dist"
+    "dist",
+    "sw.js"
   ],
   "publishConfig": {
     "access": "public"

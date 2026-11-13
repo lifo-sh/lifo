@@ -2,6 +2,8 @@ import type { VFS } from '../kernel/vfs/index.js';
 
 export interface CommandOutputStream {
   write(text: string): void;
+  /** True when this stream is the interactive terminal (not a pipe, file or capture). */
+  isTTY?: boolean;
 }
 
 export interface CommandInputStream {

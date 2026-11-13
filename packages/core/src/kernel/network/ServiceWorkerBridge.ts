@@ -1,7 +1,7 @@
 /**
  * ServiceWorkerBridge — page-side half of the service-worker transport.
  *
- * The service worker (apps/playground/public/sw.js) intercepts requests from
+ * The service worker (packages/core/sw.js, shipped as @lifo-sh/core/sw.js) intercepts requests from
  * app clients and forwards them over a MessageChannel using the same message
  * shapes as the tunnel relay ({type:'request'} → {type:'response'}). This
  * class answers them from the kernel's portRegistry, exactly like
@@ -77,6 +77,20 @@ function makeBoxId(): string {
 	return 'box_' + rnd.replace(/[^a-z0-9]/gi, '').slice(0, 10);
 }
 
+/** Resolves once `reg` has an active worker (it may still be installing or waiting). */
+function waitForActive(reg: ServiceWorkerRegistration): Promise<ServiceWorker> {
+	if (reg.active) return Promise.resolve(reg.active);
+	return new Promise((resolve) => {
+		const check = () => {
+			if (reg.active) resolve(reg.active);
+		};
+		const track = (w: ServiceWorker | null) => w?.addEventListener('statechange', check);
+		track(reg.installing);
+		track(reg.waiting);
+		reg.addEventListener('updatefound', () => track(reg.installing));
+	});
+}
+
 export class ServiceWorkerBridge {
 	/** Stable id for this box; the SW routes /_sw/<boxId>/<port>/ here. */
 	readonly boxId: string = makeBoxId();
@@ -109,7 +123,10 @@ export class ServiceWorkerBridge {
 		if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return false;
 		try {
 			this.registration = await navigator.serviceWorker.register(swUrl, { scope });
-			await navigator.serviceWorker.ready;
+			// Wait for THIS registration's worker, not navigator.serviceWorker.ready: `ready` only
+			// resolves for a worker that controls the current page, and a narrow scope such as
+			// '/_sw/' (previews only) never controls the page that hosts the box.
+			await waitForActive(this.registration);
 			activeBridges.set(this.boxId, this);
 
 			if (!swListenerInstalled) {
@@ -131,7 +148,8 @@ export class ServiceWorkerBridge {
 
 	/** (Re)establish the MessageChannel to the (possibly restarted) service worker. */
 	async reconnect(): Promise<boolean> {
-		const controller = navigator.serviceWorker.controller ?? this.registration?.active ?? null;
+		// Prefer our own registration: the page may be controlled by a different worker, or by none.
+		const controller = this.registration?.active ?? navigator.serviceWorker.controller ?? null;
 		if (!controller) return false;
 		const channel = new MessageChannel();
 		this.attach(channel.port1);

@@ -1,4 +1,5 @@
 import { Buffer } from './buffer.js';
+import { Transform } from './stream.js';
 
 type ZlibCallback = (err: Error | null, result?: Buffer) => void;
 
@@ -111,13 +112,46 @@ export const InflateRaw = makeZlibClass('InflateRaw');
 export const DeflateRaw = makeZlibClass('DeflateRaw');
 export const BrotliCompress = makeZlibClass('BrotliCompress');
 export const BrotliDecompress = makeZlibClass('BrotliDecompress');
-export const createInflate = (opts?: unknown) => new (Inflate as unknown as new (o?: unknown) => unknown)(opts);
-export const createDeflate = (opts?: unknown) => new (Deflate as unknown as new (o?: unknown) => unknown)(opts);
-export const createGzip = (opts?: unknown) => new (Gzip as unknown as new (o?: unknown) => unknown)(opts);
-export const createGunzip = (opts?: unknown) => new (Gunzip as unknown as new (o?: unknown) => unknown)(opts);
-export const createUnzip = (opts?: unknown) => new (Unzip as unknown as new (o?: unknown) => unknown)(opts);
-export const createInflateRaw = (opts?: unknown) => new (InflateRaw as unknown as new (o?: unknown) => unknown)(opts);
-export const createDeflateRaw = (opts?: unknown) => new (DeflateRaw as unknown as new (o?: unknown) => unknown)(opts);
+/**
+ * A streaming zlib transform (what createGunzip() and friends return), backed by the
+ * platform's CompressionStream/DecompressionStream. `fs.createReadStream(f).pipe(createGunzip())`
+ * and `pipeline(...)` work; PGlite loads its extension bundles this way.
+ */
+function zlibTransform(format: CompressionFormat, type: 'compress' | 'decompress'): Transform {
+  const t = new Transform();
+  const cs = type === 'compress' ? new CompressionStream(format) : new DecompressionStream(format);
+  const writer = cs.writable.getWriter();
+  const reader = cs.readable.getReader();
+  let error: Error | null = null;
+  const pump = (async () => {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      t.push(Buffer.from(value));
+    }
+  })().catch((err) => {
+    error = err instanceof Error ? err : new Error(String(err));
+    t.emit('error', error);
+  });
+  t._transform = (chunk, _enc, cb) => {
+    const bytes = typeof chunk === 'string' ? new TextEncoder().encode(chunk) : new Uint8Array(chunk as Uint8Array);
+    writer.write(bytes).catch(() => {});
+    cb();
+  };
+  t._flush = (cb) => {
+    writer.close().catch(() => {});
+    pump.then(() => (error ? undefined : cb()));
+  };
+  return t;
+}
+
+export const createInflate = (_opts?: unknown) => zlibTransform('deflate', 'decompress');
+export const createDeflate = (_opts?: unknown) => zlibTransform('deflate', 'compress');
+export const createGzip = (_opts?: unknown) => zlibTransform('gzip', 'compress');
+export const createGunzip = (_opts?: unknown) => zlibTransform('gzip', 'decompress');
+export const createUnzip = (_opts?: unknown) => zlibTransform('gzip', 'decompress');
+export const createInflateRaw = (_opts?: unknown) => zlibTransform('deflate-raw', 'decompress');
+export const createDeflateRaw = (_opts?: unknown) => zlibTransform('deflate-raw', 'compress');
 
 export const constants = {
   Z_MIN_CHUNK: 64,
