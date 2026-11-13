@@ -15,6 +15,7 @@
     "@xterm/xterm": "^5.5.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "lifo-pkg-agent": "workspace:*",
     "lifo-pkg-bc": "workspace:*",
     "lifo-pkg-cal": "workspace:*",
     "lifo-pkg-fastfetch": "workspace:*",
@@ -23,10 +24,11 @@
     "lifo-pkg-less": "workspace:*",
     "lifo-pkg-man": "workspace:*",
     "lifo-pkg-nano": "workspace:*",
-    "orchd": "workspace:*",
+    "lifo-pkg-python": "workspace:*",
     "lifo-pkg-vi": "workspace:*",
     "lucide-react": "^0.575.0",
     "monaco-editor": "^0.55.1",
+    "orchd": "workspace:*",
     "radix-ui": "^1.6.1",
     "react": "19.2.3",
     "react-dom": "19.2.3",
@@ -36,6 +38,7 @@
     "tw-animate-css": "^1.4.0"
   },
   "devDependencies": {
+    "@mercuryworkshop/wisp-js": "0.4.1",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^4.7.0",

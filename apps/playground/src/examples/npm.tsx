@@ -2,7 +2,7 @@ import { useRef, useState } from 'react';
 import { Sandbox } from '@lifo-sh/core';
 import type { Terminal } from '@lifo-sh/ui';
 import { ShellExample } from '@/components/shell-example';
-import { bootShell, browserCorsEnv } from '@/lib/shell';
+import { bootShell, browserCorsEnv, playgroundAuth } from '@/lib/shell';
 import type { InspectableBox } from '@/lib/process-inspector';
 
 export default function NpmExample() {
@@ -14,7 +14,7 @@ export default function NpmExample() {
       void bootShell(term, sandboxRef.current.kernel, { network: true, pkgs: ['git'] });
       return;
     }
-    const sb = await Sandbox.create({ terminal: term, env: browserCorsEnv() });
+    const sb = await Sandbox.create({ terminal: term, env: browserCorsEnv(), auth: await playgroundAuth() });
     sandboxRef.current = sb;
     setBox({ kernel: sb.kernel, env: sb.env });
   };

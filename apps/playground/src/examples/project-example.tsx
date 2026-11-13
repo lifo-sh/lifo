@@ -8,7 +8,7 @@ import type { Terminal } from '@lifo-sh/ui';
 import { ExamplePanel } from '@/components/example-panel';
 import { PreviewTabs, type PreviewTab } from '@/components/preview-tabs';
 import { TerminalArea } from '@/components/terminal-area';
-import { bootShell, browserCorsEnv } from '@/lib/shell';
+import { bootShell, browserCorsEnv, playgroundAuth } from '@/lib/shell';
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable';
 
 export interface ProjectExampleProps {
@@ -73,6 +73,7 @@ export function ProjectExample({ title, subtitle, files, cwd, previewPort, previ
       files,
       cwd,
       env: { ...browserCorsEnv(), ...env },
+      auth: await playgroundAuth(),
     });
     // Register the same packages the EXTRA terminals get (see bootExtraTerminal).
     // Terminal 0 builds its registry through Sandbox.create rather than
@@ -93,7 +94,7 @@ export function ProjectExample({ title, subtitle, files, cwd, previewPort, previ
     const swBridge = new ServiceWorkerBridge(sb.kernel.portRegistry);
     bridgeRef.current = swBridge;
     setBoxId(swBridge.boxId);
-    const ready = await swBridge.connect(`${import.meta.env.BASE_URL}sw.js`, '/');
+    const ready = await swBridge.connect(`${import.meta.env.BASE_URL}sw.js`, '/_sw/');
     setSwReady(ready);
   };
 

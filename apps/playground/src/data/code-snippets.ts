@@ -185,6 +185,28 @@ registry.<span class="code-fn">register</span>(<span class="code-string">'git'</
 <span class="code-string">git add . && git commit -m "Add feature"</span>
 <span class="code-string">git log --oneline</span>`;
 
+const CODE_PYTHON = `\
+<span class="code-comment">// ── Option 1: Install in host app ──</span>
+<span class="code-keyword">import</span> python, { pip } <span class="code-keyword">from</span> <span class="code-string">'lifo-pkg-python'</span>
+
+<span class="code-keyword">const</span> box = <span class="code-keyword">await</span> Sandbox.<span class="code-fn">create</span>()
+box.commands.<span class="code-fn">register</span>(<span class="code-string">'python3'</span>, python)
+box.commands.<span class="code-fn">register</span>(<span class="code-string">'pip'</span>, pip)
+
+<span class="code-keyword">await</span> box.fs.<span class="code-fn">writeFile</span>(<span class="code-string">'/home/user/hi.py'</span>, <span class="code-string">'print(sum(range(10)))'</span>)
+<span class="code-keyword">const</span> { stdout } = <span class="code-keyword">await</span> box.commands.<span class="code-fn">run</span>(<span class="code-string">'python3 hi.py'</span>)
+
+<span class="code-comment">// ── Option 2: Install inside sandbox ──</span>
+<span class="code-string">lifo install python</span>
+
+<span class="code-comment">// CPython 3 on WebAssembly (Pyodide). Scripts read and</span>
+<span class="code-comment">// write the box's files. Try:</span>
+<span class="code-string">python3 report.py && cat summary.json</span>
+<span class="code-string">python3 stats.py</span>            <span class="code-comment">// loads numpy on import</span>
+<span class="code-string">pip install rich</span>             <span class="code-comment">// pure-Python wheels from PyPI</span>
+<span class="code-string">echo '[1,2,3]' | python3 -c "import json,sys; print(sum(json.load(sys.stdin)))"</span>
+<span class="code-string">python3</span>                      <span class="code-comment">// interactive prompt</span>`;
+
 const CODE_FFMPEG = `\
 <span class="code-comment">// ── Option 1: Install in host app ──</span>
 <span class="code-keyword">import</span> ffmpegCommand <span class="code-keyword">from</span> <span class="code-string">'lifo-pkg-ffmpeg'</span>
@@ -407,7 +429,7 @@ const CODE_TINBASE = `\
 <span class="code-comment"># Vite + React + TS app talks to it via supabase-js.</span>
 
 <span class="code-fn">npm</span> install
-<span class="code-fn">npx</span> tinbase --engine pgmem &   <span class="code-comment"># backend :54321 (like supabase start)</span>
+<span class="code-fn">supabase</span> start &        <span class="code-comment"># backend :54321 (runs tinbase, Supabase-compatible)</span>
 <span class="code-fn">npm</span> run dev &                  <span class="code-comment"># vite + react on :5173</span>
 
 <span class="code-comment"># real supabase/ layout — server.mjs reads it, like</span>
@@ -512,7 +534,7 @@ const CODE_EXPO_SUPABASE = `\
 <span class="code-comment"># to a tinbase backend (pure-JS Postgres via pg-mem).</span>
 
 <span class="code-fn">npm</span> install
-<span class="code-fn">npx</span> tinbase --engine pgmem &   <span class="code-comment"># backend :54321 — prints anon +</span>
+<span class="code-fn">supabase</span> start &        <span class="code-comment"># backend :54321 (tinbase) — prints anon +</span>
                               <span class="code-comment"># service_role keys (like supabase start)</span>
 <span class="code-fn">npm</span> start                     <span class="code-comment"># Metro dev server :8083</span>
 
@@ -583,14 +605,40 @@ const CODE_ORCHD = `\
 <span class="code-comment"># while in a box the lifo profile swaps real Metro for</span>
 <span class="code-comment"># browser-metro — which is why this needs no node_modules.</span>`;
 
+const CODE_AGENT = `\
+<span class="code-keyword">import</span> { createAgentCommand, createBrowserCommand, webllmEngine } <span class="code-keyword">from</span> <span class="code-string">'lifo-pkg-agent'</span>
+
+<span class="code-comment">// A text web browser; pages load through your</span>
+<span class="code-comment">// server (lifo-pkg-agent/proxy at /api/browse).</span>
+box.commands.<span class="code-fn">register</span>(<span class="code-string">'browser'</span>, <span class="code-fn">createBrowserCommand</span>())
+
+<span class="code-comment">// The agent: WebLLM on WebGPU, in a worker.</span>
+box.commands.<span class="code-fn">register</span>(<span class="code-string">'agent'</span>, <span class="code-fn">createAgentCommand</span>({
+  engine: <span class="code-fn">webllmEngine</span>({
+    worker: () =&gt; <span class="code-keyword">new</span> <span class="code-fn">Worker</span>(
+      <span class="code-keyword">new</span> <span class="code-fn">URL</span>(<span class="code-string">'./llm-worker.ts'</span>, <span class="code-keyword">import</span>.meta.url),
+      { type: <span class="code-string">'module'</span> }),
+  }),
+}))
+
+<span class="code-comment">// llm-worker.ts is one line:</span>
+<span class="code-comment">//   import 'lifo-pkg-agent/worker'</span>
+
+<span class="code-comment">// Try:</span>
+<span class="code-string">browser open news.ycombinator.com</span>
+<span class="code-string">browser text | head</span>
+<span class="code-string">agent "What is the top story on Hacker News?"</span>`;
+
 export const codeSnippets: Record<string, string> = {
 	interactive: CODE_INTERACTIVE,
 	headless: CODE_HEADLESS,
+	agent: CODE_AGENT,
 	multi: CODE_MULTI,
 	http: CODE_HTTP,
 	explorer: CODE_EXPLORER,
 	git: CODE_GIT,
 	ffmpeg: CODE_FFMPEG,
+	python: CODE_PYTHON,
 	npm: CODE_NPM,
 	cli: CODE_CLI,
 	'lifo-pkg': CODE_LIFO_PKG,

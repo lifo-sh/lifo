@@ -1,224 +1,174 @@
-import type { VFS } from '@lifo-sh/core';
-import type { AppRegistry } from './AppRegistry';
-import type { AppDefinition } from '../types';
+// Spotlight: search apps and files in the box, do quick math, or run a shell command in a new
+// Terminal. ⌥Space (or Ctrl+Space, or the menu bar's magnifier) opens it.
 
-interface SpotlightResult {
-  type: 'app' | 'file';
-  name: string;
+import { h, svg, escapeHtml } from './ui';
+import { GLYPHS, FOLDER_ICON, fileIcon } from '../icons';
+import type { AppRegistry } from './AppRegistry';
+import type { DesktopBox } from './box';
+import { HOME } from './box';
+
+interface Result {
+  kind: 'app' | 'file' | 'command' | 'math';
+  title: string;
+  subtitle: string;
   icon: string;
-  path?: string;
-  appId?: string;
+  run: () => void;
 }
 
 export class Spotlight {
-  private overlay: HTMLElement;
-  private box: HTMLElement;
+  private el: HTMLElement;
   private input: HTMLInputElement;
-  private resultsList: HTMLElement;
-  private results: SpotlightResult[] = [];
-  private selectedIndex = 0;
-  private visible = false;
-
-  private onLaunchApp: (appId: string) => void;
-  private onOpenFile: (path: string) => void;
+  private list: HTMLElement;
+  private results: Result[] = [];
+  private index = 0;
+  private fileIndex: string[] | null = null;
 
   constructor(
-    private container: HTMLElement,
-    private appRegistry: AppRegistry,
-    private vfs: VFS,
-    onLaunchApp: (appId: string) => void,
-    onOpenFile: (path: string) => void,
+    root: HTMLElement,
+    private registry: AppRegistry,
+    private box: DesktopBox,
+    private launch: (appId: string, arg?: string) => void,
+    private open: (path: string) => void,
   ) {
-    this.onLaunchApp = onLaunchApp;
-    this.onOpenFile = onOpenFile;
+    this.input = h('input', { class: 'lf-spotlight-input', placeholder: 'Spotlight Search', spellcheck: 'false', 'aria-label': 'Spotlight Search' }) as HTMLInputElement;
+    this.list = h('div', { class: 'lf-spotlight-results', role: 'listbox' });
+    const panel = h('div', { class: 'lf-spotlight' }, h('div', { class: 'lf-spotlight-bar' }, svg(GLYPHS.search, 'lf-spotlight-glyph'), this.input), this.list);
+    this.el = h('div', { class: 'lf-spotlight-layer' }, panel);
+    this.el.addEventListener('pointerdown', (e) => e.target === this.el && this.hide());
+    root.append(this.el);
 
-    // Build overlay
-    this.overlay = document.createElement('div');
-    this.overlay.className = 'lf-spotlight-overlay';
-
-    this.box = document.createElement('div');
-    this.box.className = 'lf-spotlight-box';
-
-    this.input = document.createElement('input');
-    this.input.className = 'lf-spotlight-input';
-    this.input.type = 'text';
-    this.input.placeholder = 'Spotlight Search';
-
-    this.resultsList = document.createElement('div');
-    this.resultsList.className = 'lf-spotlight-results';
-
-    this.box.append(this.input, this.resultsList);
-    this.overlay.appendChild(this.box);
-    this.container.appendChild(this.overlay);
-
-    // Prevent global shortcuts while typing
+    this.input.addEventListener('input', () => this.search());
     this.input.addEventListener('keydown', (e) => {
-      e.stopPropagation();
-
-      if (e.key === 'Escape') {
-        this.hide();
-        return;
-      }
-
-      if (e.key === 'ArrowDown') {
+      if (e.key === 'Escape') this.hide();
+      else if (e.key === 'ArrowDown') this.move(1, e);
+      else if (e.key === 'ArrowUp') this.move(-1, e);
+      else if (e.key === 'Enter') {
         e.preventDefault();
-        this.selectedIndex = Math.min(this.selectedIndex + 1, this.results.length - 1);
-        this.renderResults();
-        return;
-      }
-
-      if (e.key === 'ArrowUp') {
-        e.preventDefault();
-        this.selectedIndex = Math.max(this.selectedIndex - 1, 0);
-        this.renderResults();
-        return;
-      }
-
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        this.activateSelected();
-        return;
+        const r = this.results[this.index];
+        if (r) {
+          this.hide();
+          r.run();
+        }
       }
     });
+    box.vfs.watch(() => (this.fileIndex = null));
+  }
 
-    this.input.addEventListener('input', () => {
-      this.search(this.input.value.trim());
-    });
-
-    // Click backdrop to close
-    this.overlay.addEventListener('click', (e) => {
-      if (e.target === this.overlay) {
-        this.hide();
-      }
-    });
+  get visible(): boolean {
+    return this.el.classList.contains('visible');
   }
 
   toggle(): void {
-    if (this.visible) {
-      this.hide();
-    } else {
-      this.show();
-    }
+    if (this.visible) this.hide();
+    else this.show();
   }
 
   show(): void {
-    this.visible = true;
-    this.overlay.classList.add('visible');
+    this.el.classList.add('visible');
     this.input.value = '';
-    this.results = [];
-    this.selectedIndex = 0;
-    this.resultsList.innerHTML = '';
-    requestAnimationFrame(() => this.input.focus());
+    this.search();
+    setTimeout(() => this.input.focus());
   }
 
   hide(): void {
-    this.visible = false;
-    this.overlay.classList.remove('visible');
-    this.input.blur();
+    this.el.classList.remove('visible');
   }
 
-  private search(query: string): void {
-    this.results = [];
-    if (!query) {
-      this.renderResults();
-      return;
-    }
+  private move(d: number, e: Event): void {
+    e.preventDefault();
+    if (!this.results.length) return;
+    this.index = (this.index + d + this.results.length) % this.results.length;
+    this.paint();
+  }
 
-    const q = query.toLowerCase();
-
-    // Search apps
-    const apps = this.appRegistry.getAll();
-    for (const app of apps) {
-      if (app.name.toLowerCase().includes(q) || app.id.toLowerCase().includes(q)) {
-        this.results.push({
-          type: 'app',
-          name: app.name,
-          icon: app.icon,
-          appId: app.id,
-        });
-      }
-    }
-
-    // Search VFS files
-    const searchDirs = ['/home/user', '/home/user/Desktop', '/home/user/Documents'];
-    const seenPaths = new Set<string>();
-
-    for (const dir of searchDirs) {
+  private files(): string[] {
+    if (this.fileIndex) return this.fileIndex;
+    const out: string[] = [];
+    const walk = (dir: string, depth: number) => {
+      if (out.length > 4000 || depth > 8) return;
+      let entries;
       try {
-        const entries = this.vfs.readdir(dir);
-        for (const entry of entries) {
-          if (entry.name.startsWith('.')) continue;
-          const fullPath = dir === '/' ? `/${entry.name}` : `${dir}/${entry.name}`;
-          if (seenPaths.has(fullPath)) continue;
-          if (entry.name.toLowerCase().includes(q)) {
-            seenPaths.add(fullPath);
-            const icon = entry.type === 'directory' ? '\u{1F4C1}' : '\u{1F4C4}';
-            this.results.push({
-              type: 'file',
-              name: entry.name,
-              icon,
-              path: fullPath,
-            });
-          }
+        entries = this.box.vfs.readdir(dir);
+      } catch {
+        return;
+      }
+      for (const e of entries) {
+        if (e.name === 'node_modules' || e.name === '.git' || (e.name.startsWith('.') && e.name !== '.Trash')) continue;
+        const p = `${dir}/${e.name}`;
+        out.push(p);
+        if (e.type === 'directory' && e.name !== '.Trash') walk(p, depth + 1);
+      }
+    };
+    walk(HOME, 0);
+    return (this.fileIndex = out);
+  }
+
+  private search(): void {
+    const q = this.input.value.trim();
+    const ql = q.toLowerCase();
+    const results: Result[] = [];
+    if (q && /^[\d\s+\-*/().%^]+$/.test(q) && /\d/.test(q)) {
+      try {
+        const value = Function(`"use strict"; return (${q.replace(/\^/g, '**')})`)();
+        if (typeof value === 'number' && Number.isFinite(value)) {
+          const text = String(Math.round(value * 1e10) / 1e10);
+          results.push({ kind: 'math', title: `= ${text}`, subtitle: 'Copy to clipboard', icon: GLYPHS.code, run: () => void navigator.clipboard?.writeText(text) });
         }
       } catch {
-        // dir doesn't exist, skip
+        /* not an expression */
       }
     }
-
-    // Cap at 10
-    this.results = this.results.slice(0, 10);
-    this.selectedIndex = 0;
-    this.renderResults();
+    const apps = this.registry.getAll().filter((a) => !a.hidden && (!q || a.name.toLowerCase().includes(ql)));
+    for (const a of apps.slice(0, q ? 5 : 8)) results.push({ kind: 'app', title: a.name, subtitle: 'Application', icon: a.icon, run: () => this.launch(a.id) });
+    if (q) {
+      const matches = this.files()
+        .filter((p) => p.split('/').pop()!.toLowerCase().includes(ql))
+        .sort((a, b) => a.split('/').pop()!.length - b.split('/').pop()!.length)
+        .slice(0, 8);
+      for (const p of matches) {
+        let isDir = false;
+        try {
+          isDir = this.box.vfs.stat(p).type === 'directory';
+        } catch {
+          /* gone */
+        }
+        results.push({ kind: 'file', title: p.split('/').pop()!, subtitle: p.replace(HOME, '~'), icon: isDir ? FOLDER_ICON : fileIcon(p), run: () => this.open(p) });
+      }
+      results.push({ kind: 'command', title: `Run “${q}” in Terminal`, subtitle: 'Opens a new Terminal window', icon: GLYPHS.terminal, run: () => this.launch('terminal', `run:${q}`) });
+    }
+    this.results = results;
+    this.index = 0;
+    this.paint();
   }
 
-  private renderResults(): void {
-    this.resultsList.innerHTML = '';
-
-    for (let i = 0; i < this.results.length; i++) {
-      const r = this.results[i];
-      const row = document.createElement('div');
-      row.className = 'lf-spotlight-row';
-      if (i === this.selectedIndex) row.classList.add('selected');
-
-      const icon = document.createElement('span');
-      icon.className = 'lf-spotlight-icon';
-      icon.textContent = r.icon;
-
-      const name = document.createElement('span');
-      name.className = 'lf-spotlight-name';
-      name.textContent = r.name;
-
-      const badge = document.createElement('span');
-      badge.className = 'lf-spotlight-badge';
-      badge.textContent = r.type === 'app' ? 'Application' : 'File';
-
-      row.append(icon, name, badge);
-
+  private paint(): void {
+    this.list.replaceChildren();
+    let lastKind = '';
+    const labels: Record<string, string> = { app: 'Applications', file: 'Files', command: 'Shell', math: 'Calculator' };
+    this.results.forEach((r, i) => {
+      if (r.kind !== lastKind) {
+        this.list.append(h('div', { class: 'lf-spotlight-section' }, labels[r.kind]));
+        lastKind = r.kind;
+      }
+      const row = h(
+        'div',
+        { class: `lf-spotlight-row${i === this.index ? ' active' : ''}`, role: 'option', 'aria-selected': String(i === this.index) },
+        h('span', { class: `lf-spotlight-icon ${r.kind}`, html: r.icon }),
+        h('span', { class: 'lf-spotlight-text', html: `<b>${escapeHtml(r.title)}</b><small>${escapeHtml(r.subtitle)}</small>` }),
+      );
+      row.addEventListener('pointermove', () => {
+        if (this.index !== i) {
+          this.index = i;
+          this.paint();
+        }
+      });
       row.addEventListener('click', () => {
-        this.selectedIndex = i;
-        this.activateSelected();
+        this.hide();
+        r.run();
       });
-
-      row.addEventListener('mouseenter', () => {
-        this.selectedIndex = i;
-        this.renderResults();
-      });
-
-      this.resultsList.appendChild(row);
-    }
-  }
-
-  private activateSelected(): void {
-    const r = this.results[this.selectedIndex];
-    if (!r) return;
-
-    this.hide();
-
-    if (r.type === 'app' && r.appId) {
-      this.onLaunchApp(r.appId);
-    } else if (r.type === 'file' && r.path) {
-      this.onOpenFile(r.path);
-    }
+      this.list.append(row);
+    });
+    this.list.querySelector('.active')?.scrollIntoView({ block: 'nearest' });
+    this.list.classList.toggle('empty', !this.results.length);
   }
 }

@@ -57,7 +57,7 @@ export function SidebarNav({ activeId, onSelect, onCollapse }: SidebarNavProps) 
         'block w-full py-2 border-none text-[13px] text-left cursor-pointer transition-colors',
         indented ? 'pl-9 pr-4' : 'px-4',
         e.id === activeId
-          ? 'bg-tokyo-active text-tokyo-blue font-medium'
+          ? 'hz-nav-active bg-tokyo-active text-tokyo-fg-bright font-medium'
           : 'bg-transparent text-tokyo-muted hover:bg-tokyo-hover hover:text-tokyo-fg-bright',
       )}
     >
@@ -69,8 +69,10 @@ export function SidebarNav({ activeId, onSelect, onCollapse }: SidebarNavProps) 
     <nav className="h-full flex flex-col overflow-y-auto bg-tokyo-bg-dark">
       <div className="p-4 pb-3 border-b border-tokyo-border shrink-0">
         <div className="flex items-center gap-2">
-          <LifoLogo className="size-[22px] shrink-0" />
-          <h1 className="text-lg font-bold text-tokyo-fg-bright tracking-tight">Lifo</h1>
+          <a href="/" target="_top" className="flex items-center gap-2 no-underline" title="lifo.sh">
+            <LifoLogo className="size-[22px] shrink-0" />
+            <h1 className="text-[18px] font-semibold text-tokyo-fg-bright tracking-tight">lifo</h1>
+          </a>
           <div className="ml-auto flex items-center gap-0.5">
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -104,7 +106,7 @@ export function SidebarNav({ activeId, onSelect, onCollapse }: SidebarNavProps) 
             )}
           </div>
         </div>
-        <p className="text-[11px] text-tokyo-comment mt-1">Sandbox Examples</p>
+        <p className="text-[12px] text-tokyo-comment mt-1.5">Playground · every example runs in this tab</p>
       </div>
 
       {exampleGroups.map((group) => {
@@ -114,7 +116,7 @@ export function SidebarNav({ activeId, onSelect, onCollapse }: SidebarNavProps) 
           <div key={group} className="py-2 border-b border-tokyo-border last:border-b-0">
             <button
               onClick={() => toggleSection(group)}
-              className="flex items-center gap-1 w-full px-3 py-1 border-none bg-transparent cursor-pointer text-[10px] font-semibold uppercase tracking-widest text-tokyo-comment hover:text-tokyo-fg-bright"
+              className="flex items-center gap-1 w-full px-3 py-1 border-none bg-transparent cursor-pointer text-[11px] font-medium tracking-wide text-tokyo-comment hover:text-tokyo-fg-bright"
             >
               {groupOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
               <span>{group}</span>

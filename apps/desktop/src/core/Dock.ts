@@ -1,354 +1,210 @@
+// The Dock: pinned apps, then running apps that aren't pinned, then minimized windows and the
+// Trash. Icons magnify under the pointer, running apps get a dot, launching bounces, a right
+// click gives the app's menu, and files dragged from Finder onto the Trash are moved there.
+
+import { h, showContextMenu, type MenuEntry } from './ui';
+import { APP_ICONS, trashIcon } from '../icons';
 import type { EventBus } from './EventBus';
 import type { WindowManager } from './WindowManager';
 import type { AppRegistry } from './AppRegistry';
-import type { AppDefinition } from '../types';
+import { compactMode, reducedMotion, type Settings } from './settings';
+import type { AppContext } from '../types';
 
-interface DockItem {
-  appId: string;
-  el: HTMLElement;
-  definition: AppDefinition;
-  transient?: boolean; // true for non-pinned running apps
+export const DRAG_MIME = 'application/x-lifo-path';
+
+interface DockDeps {
+  bus: EventBus;
+  wm: WindowManager;
+  registry: AppRegistry;
+  settings: Settings;
+  ctx: () => AppContext;
+  pinned: string[];
+  trashCount: () => number;
+  moveToTrash: (paths: string[]) => void;
+  emptyTrash: () => void;
 }
 
 export class Dock {
   readonly el: HTMLElement;
-  private dockBar: HTMLElement;
-  private items: DockItem[] = [];
-  private pinnedApps: string[] = [];
-  private runningApps = new Set<string>(); // non-pinned apps shown in dock
-  private runningSeparator: HTMLElement | null = null;
-  private contextMenuEl: HTMLElement | null = null;
-  private onLaunch: (appId: string) => void;
+  private bar: HTMLElement;
+  private label: HTMLElement;
+  private icons: HTMLElement[] = [];
+  private launching = new Set<string>();
 
-  constructor(
-    container: HTMLElement,
-    private eventBus: EventBus,
-    private windowManager: WindowManager,
-    private appRegistry: AppRegistry,
-    onLaunch: (appId: string) => void,
-  ) {
-    this.onLaunch = onLaunch;
+  constructor(root: HTMLElement, private d: DockDeps) {
+    this.bar = h('div', { class: 'lf-dock-bar', role: 'toolbar', 'aria-label': 'Dock' });
+    this.label = h('div', { class: 'lf-dock-label' });
+    this.el = h('div', { class: 'lf-dock' }, this.bar, this.label);
+    root.append(this.el);
 
-    const wrapper = document.createElement('div');
-    wrapper.className = 'lf-dock-wrapper';
+    d.wm.dockTargetFn = (appId, windowId) => {
+      const el =
+        this.bar.querySelector<HTMLElement>(`[data-window="${windowId}"]`) ??
+        this.bar.querySelector<HTMLElement>(`[data-app="${appId}"]`) ??
+        this.bar.querySelector<HTMLElement>('[data-app="trash"]');
+      return el?.querySelector('.lf-dock-icon')?.getBoundingClientRect() ?? null;
+    };
 
-    this.dockBar = document.createElement('div');
-    this.dockBar.className = 'lf-dock';
+    for (const ev of ['window:open', 'window:close', 'window:minimize', 'window:restore', 'window:focus', 'trash:change'] as const) {
+      d.bus.on(ev, (data) => {
+        if (ev === 'window:open') this.launching.delete((data as { appId: string }).appId);
+        this.render();
+      });
+    }
+    d.bus.on('app:launch', ({ appId }) => this.bounce(appId));
+    d.settings.onChange(() => this.render());
+    window.addEventListener('resize', () => this.render());
 
-    wrapper.appendChild(this.dockBar);
-    container.appendChild(wrapper);
-    this.el = wrapper;
-
-    // Update running indicators
-    this.eventBus.on('window:open', () => this.updateRunning());
-    this.eventBus.on('window:close', () => this.updateRunning());
-
-    // Magnification
-    this.dockBar.addEventListener('mousemove', (e) => this.handleMagnify(e));
-    this.dockBar.addEventListener('mouseleave', () => this.clearMagnify());
-
-    // Dismiss context menu on click elsewhere
-    document.addEventListener('pointerdown', (e) => {
-      if (this.contextMenuEl && !this.contextMenuEl.contains(e.target as Node)) {
-        this.hideDockContextMenu();
-      }
+    this.bar.addEventListener('pointermove', (e) => this.magnify(e.clientX));
+    this.bar.addEventListener('pointerleave', () => {
+      this.magnify(null);
+      this.label.classList.remove('visible');
     });
+    this.render();
   }
 
-  addPinnedApp(definition: AppDefinition): void {
-    this.pinnedApps.push(definition.id);
-    this.addDockItem(definition);
+  private size(): number {
+    return compactMode() ? 40 : this.d.settings.get('dockSize');
   }
 
-  addSeparator(): void {
-    const sep = document.createElement('div');
-    sep.className = 'lf-dock-separator';
-    this.dockBar.appendChild(sep);
-  }
+  render(): void {
+    const { wm, registry, pinned } = this.d;
+    const running = wm.runningApps();
+    const size = this.size();
+    this.bar.replaceChildren();
+    this.icons = [];
+    this.bar.style.setProperty('--dock-size', `${size}px`);
+    this.d.wm.dockReserve = size + 34;
 
-  private addDockItem(definition: AppDefinition, transient = false): DockItem {
-    const el = document.createElement('div');
-    el.className = 'lf-dock-item';
-    el.dataset.appId = definition.id;
+    const appIds = [...pinned, ...running.filter((id) => !pinned.includes(id))];
+    for (const id of appIds) {
+      const def = registry.get(id);
+      if (!def) continue;
+      const item = this.item(def.icon, def.name, { 'data-app': id });
+      if (running.includes(id)) item.classList.add('running');
+      if (this.launching.has(id)) item.classList.add('bouncing');
+      item.addEventListener('click', () => this.activate(id));
+      item.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        showContextMenu(this.appMenu(id), e.clientX, e.clientY - 10);
+      });
+      this.bar.append(item);
+    }
 
-    el.innerHTML = `
-      <div class="lf-dock-tooltip">${definition.name}</div>
-      <div class="lf-dock-icon">${definition.icon}</div>
-      <div class="lf-dock-dot"></div>
-    `;
+    this.bar.append(h('div', { class: 'lf-dock-sep' }));
 
-    el.addEventListener('click', () => {
-      // If there are existing windows, focus the first one
-      const existing = this.windowManager.getWindowsByApp(definition.id);
-      const visible = existing.filter((w) => !w.state.minimized);
-      if (visible.length > 0) {
-        this.windowManager.focusWindow(visible[0].state.id);
-      } else if (existing.length > 0) {
-        // Restore minimized
-        this.windowManager.focusWindow(existing[0].state.id);
-      } else {
-        // Launch new
-        this.bounce(el);
-        this.onLaunch(definition.id);
-      }
-    });
+    for (const w of wm.getAllWindows().filter((w) => w.state.minimized)) {
+      const def = registry.get(w.state.appId);
+      const item = this.item(def?.icon ?? APP_ICONS.about, w.state.title, { 'data-window': w.state.id });
+      item.classList.add('minimized-window');
+      item.addEventListener('click', () => wm.focusWindow(w.state.id));
+      this.bar.append(item);
+    }
 
-    // Right-click context menu
-    el.addEventListener('contextmenu', (e) => {
+    const full = this.d.trashCount() > 0;
+    const trash = this.item(trashIcon(full), 'Trash', { 'data-app': 'trash' });
+    trash.addEventListener('click', () => this.d.ctx().launch('finder', '/home/user/.Trash'));
+    trash.addEventListener('contextmenu', (e) => {
       e.preventDefault();
-      e.stopPropagation();
-      this.showDockContextMenu(e.clientX, e.clientY, definition);
+      showContextMenu(
+        [
+          { label: 'Open', action: () => this.d.ctx().launch('finder', '/home/user/.Trash') },
+          { separator: true, label: '' },
+          { label: 'Empty Trash', disabled: !full, action: () => this.d.emptyTrash() },
+        ],
+        e.clientX,
+        e.clientY - 10,
+      );
     });
+    trash.addEventListener('dragover', (e) => {
+      if (e.dataTransfer?.types.includes(DRAG_MIME)) {
+        e.preventDefault();
+        trash.classList.add('drop');
+      }
+    });
+    trash.addEventListener('dragleave', () => trash.classList.remove('drop'));
+    trash.addEventListener('drop', (e) => {
+      e.preventDefault();
+      trash.classList.remove('drop');
+      const raw = e.dataTransfer?.getData(DRAG_MIME);
+      if (raw) this.d.moveToTrash(JSON.parse(raw));
+    });
+    this.bar.append(trash);
+  }
 
-    this.dockBar.appendChild(el);
-
-    const item: DockItem = { appId: definition.id, el, definition, transient };
-    this.items.push(item);
+  private item(icon: string, label: string, attrs: Record<string, string>): HTMLElement {
+    const iconEl = h('div', { class: 'lf-dock-icon', html: icon });
+    const item = h('div', { class: 'lf-dock-item', role: 'button', tabindex: 0, 'aria-label': label, ...attrs }, iconEl, h('div', { class: 'lf-dock-dot' }));
+    item.addEventListener('pointerenter', () => {
+      this.label.textContent = label;
+      this.label.classList.add('visible');
+      requestAnimationFrame(() => {
+        const r = iconEl.getBoundingClientRect();
+        const lr = this.label.getBoundingClientRect();
+        this.label.style.left = `${r.left + r.width / 2 - lr.width / 2 - this.el.getBoundingClientRect().left}px`;
+      });
+    });
+    item.addEventListener('keydown', (e) => (e.key === 'Enter' || e.key === ' ') && item.click());
+    this.icons.push(item);
     return item;
   }
 
-  private updateRunning(): void {
-    // Update running dots for all items
-    for (const item of this.items) {
-      const windows = this.windowManager.getWindowsByApp(item.appId);
-      item.el.classList.toggle('running', windows.length > 0);
+  private activate(appId: string): void {
+    const { wm } = this.d;
+    const wins = wm.getWindowsByApp(appId);
+    const focused = wm.getFocusedWindow();
+    if (!wins.length) {
+      this.d.ctx().launch(appId);
+      return;
     }
+    // Clicking the focused app with all its windows minimized brings one back; otherwise bring
+    // its windows forward.
+    if (focused?.state.appId === appId && wins.every((w) => !w.state.minimized) && wins.length === 1) return;
+    wm.activateApp(appId);
+  }
 
-    // Detect non-pinned running apps
-    const allWindows = this.windowManager.getAllWindows();
-    const runningAppIds = new Set(allWindows.map((w) => w.state.appId));
+  private appMenu(appId: string): MenuEntry[] {
+    const { wm, registry } = this.d;
+    const wins = wm.getWindowsByApp(appId);
+    const def = registry.get(appId);
+    const items: MenuEntry[] = wins.map((w) => ({
+      label: w.state.title,
+      checked: wm.getFocusedWindow()?.state.id === w.state.id,
+      action: () => wm.focusWindow(w.state.id),
+    }));
+    if (items.length) items.push({ separator: true, label: '' });
+    if (!def?.singleton || !wins.length) items.push({ label: 'New Window', action: () => this.d.ctx().launch(appId) });
+    if (wins.length) {
+      items.push({ label: 'Show All Windows', action: () => wm.toggleOverview() });
+      items.push({ separator: true, label: '' }, { label: 'Quit', action: () => void wm.quitApp(appId) });
+    }
+    return items;
+  }
 
-    // Find apps that are running but not pinned
-    const newTransient = new Set<string>();
-    for (const appId of runningAppIds) {
-      if (!this.pinnedApps.includes(appId)) {
-        newTransient.add(appId);
+  private bounce(appId: string): void {
+    if (this.d.wm.getWindowsByApp(appId).length || reducedMotion()) return;
+    this.launching.add(appId);
+    this.render();
+    setTimeout(() => {
+      this.launching.delete(appId);
+      this.render();
+    }, 1400);
+  }
+
+  /** macOS-style magnification: icons near the pointer grow along a cosine curve. */
+  private magnify(x: number | null): void {
+    const base = this.size();
+    const max = this.d.settings.get('magnification') && !compactMode() && !reducedMotion() ? Math.max(base, this.d.settings.get('magnifiedSize')) : base;
+    const range = base * 3;
+    for (const item of this.icons) {
+      const icon = item.querySelector<HTMLElement>('.lf-dock-icon')!;
+      let s = base;
+      if (x !== null && max > base) {
+        const r = item.getBoundingClientRect();
+        const d = Math.abs(x - (r.left + r.width / 2));
+        if (d < range) s = base + (max - base) * Math.cos((d / range) * (Math.PI / 2));
       }
+      icon.style.width = icon.style.height = `${s}px`;
     }
-
-    // Remove transient items for apps that are no longer running
-    const toRemove = [...this.runningApps].filter((id) => !newTransient.has(id));
-    for (const appId of toRemove) {
-      const idx = this.items.findIndex((i) => i.appId === appId && i.transient);
-      if (idx !== -1) {
-        this.items[idx].el.remove();
-        this.items.splice(idx, 1);
-      }
-      this.runningApps.delete(appId);
-    }
-
-    // Add new transient items
-    const toAdd = [...newTransient].filter((id) => !this.runningApps.has(id));
-    for (const appId of toAdd) {
-      const def = this.appRegistry.get(appId);
-      if (def) {
-        // Ensure separator exists
-        if (!this.runningSeparator && this.pinnedApps.length > 0) {
-          this.runningSeparator = document.createElement('div');
-          this.runningSeparator.className = 'lf-dock-separator';
-          this.runningSeparator.dataset.runningSep = 'true';
-          this.dockBar.appendChild(this.runningSeparator);
-        }
-        const item = this.addDockItem(def, true);
-        item.el.classList.add('running');
-        this.runningApps.add(appId);
-      }
-    }
-
-    // Clean up separator if no transient items
-    if (this.runningApps.size === 0 && this.runningSeparator) {
-      this.runningSeparator.remove();
-      this.runningSeparator = null;
-    }
-  }
-
-  private showDockContextMenu(x: number, y: number, definition: AppDefinition): void {
-    this.hideDockContextMenu();
-
-    const menu = document.createElement('div');
-    menu.className = 'lf-context-menu';
-
-    const isPinned = this.pinnedApps.includes(definition.id);
-    const windows = this.windowManager.getWindowsByApp(definition.id);
-    const isRunning = windows.length > 0;
-
-    if (isPinned && !isRunning) {
-      // Pinned + not running → "Remove from Dock"
-      this.appendMenuItem(menu, 'Remove from Dock', () => {
-        this.removePinnedApp(definition.id);
-      });
-    }
-
-    if (isRunning && !isPinned) {
-      // Running + not pinned → "Keep in Dock"
-      this.appendMenuItem(menu, 'Keep in Dock', () => {
-        this.pinRunningApp(definition.id);
-      });
-    }
-
-    if (isPinned && isRunning) {
-      // Pinned + running → show "Remove from Dock"
-      this.appendMenuItem(menu, 'Remove from Dock', () => {
-        this.removePinnedApp(definition.id);
-      });
-    }
-
-    if (isRunning) {
-      // Separator before Quit
-      const sep = document.createElement('div');
-      sep.className = 'lf-context-menu-separator';
-      menu.appendChild(sep);
-
-      this.appendMenuItem(menu, 'Quit', () => {
-        for (const w of windows) {
-          this.windowManager.closeWindow(w.state.id);
-        }
-      });
-    }
-
-    // Position above dock
-    menu.style.left = x + 'px';
-    menu.style.bottom = 'auto';
-    menu.style.top = '0px';
-    document.body.appendChild(menu);
-
-    // Measure and reposition above the dock
-    const menuRect = menu.getBoundingClientRect();
-    const dockRect = this.el.getBoundingClientRect();
-    const top = dockRect.top - menuRect.height - 8;
-    const left = Math.max(8, Math.min(x - menuRect.width / 2, window.innerWidth - menuRect.width - 8));
-    menu.style.top = top + 'px';
-    menu.style.left = left + 'px';
-
-    this.contextMenuEl = menu;
-  }
-
-  private appendMenuItem(menu: HTMLElement, label: string, action: () => void): void {
-    const item = document.createElement('div');
-    item.className = 'lf-context-menu-item';
-    item.textContent = label;
-    item.addEventListener('click', (e) => {
-      e.stopPropagation();
-      this.hideDockContextMenu();
-      action();
-    });
-    menu.appendChild(item);
-  }
-
-  private hideDockContextMenu(): void {
-    if (this.contextMenuEl) {
-      this.contextMenuEl.remove();
-      this.contextMenuEl = null;
-    }
-  }
-
-  private removePinnedApp(appId: string): void {
-    const idx = this.pinnedApps.indexOf(appId);
-    if (idx === -1) return;
-    this.pinnedApps.splice(idx, 1);
-
-    const itemIdx = this.items.findIndex((i) => i.appId === appId && !i.transient);
-    if (itemIdx !== -1) {
-      this.items[itemIdx].el.remove();
-      this.items.splice(itemIdx, 1);
-    }
-  }
-
-  private pinRunningApp(appId: string): void {
-    const def = this.appRegistry.get(appId);
-    if (!def) return;
-
-    // Remove from transient
-    this.runningApps.delete(appId);
-    const transientIdx = this.items.findIndex((i) => i.appId === appId && i.transient);
-    if (transientIdx !== -1) {
-      this.items[transientIdx].el.remove();
-      this.items.splice(transientIdx, 1);
-    }
-
-    // Add as pinned (insert before separator / transient area)
-    this.pinnedApps.push(appId);
-
-    const el = document.createElement('div');
-    el.className = 'lf-dock-item running';
-    el.dataset.appId = def.id;
-
-    el.innerHTML = `
-      <div class="lf-dock-tooltip">${def.name}</div>
-      <div class="lf-dock-icon">${def.icon}</div>
-      <div class="lf-dock-dot"></div>
-    `;
-
-    el.addEventListener('click', () => {
-      const existing = this.windowManager.getWindowsByApp(def.id);
-      const visible = existing.filter((w) => !w.state.minimized);
-      if (visible.length > 0) {
-        this.windowManager.focusWindow(visible[0].state.id);
-      } else if (existing.length > 0) {
-        this.windowManager.focusWindow(existing[0].state.id);
-      } else {
-        this.bounce(el);
-        this.onLaunch(def.id);
-      }
-    });
-
-    el.addEventListener('contextmenu', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      this.showDockContextMenu(e.clientX, e.clientY, def);
-    });
-
-    // Insert before the running separator if it exists
-    if (this.runningSeparator) {
-      this.dockBar.insertBefore(el, this.runningSeparator);
-    } else {
-      this.dockBar.appendChild(el);
-    }
-
-    const item: DockItem = { appId: def.id, el, definition: def };
-    // Insert before transient items in the array
-    const firstTransientIdx = this.items.findIndex((i) => i.transient);
-    if (firstTransientIdx !== -1) {
-      this.items.splice(firstTransientIdx, 0, item);
-    } else {
-      this.items.push(item);
-    }
-
-    // Clean up separator if no more transient items
-    if (this.runningApps.size === 0 && this.runningSeparator) {
-      this.runningSeparator.remove();
-      this.runningSeparator = null;
-    }
-  }
-
-  private bounce(el: HTMLElement): void {
-    el.classList.add('bouncing');
-    setTimeout(() => el.classList.remove('bouncing'), 600);
-  }
-
-  private handleMagnify(e: MouseEvent): void {
-    const items = this.dockBar.querySelectorAll('.lf-dock-item');
-    const mouseX = e.clientX;
-
-    items.forEach((item) => {
-      const rect = (item as HTMLElement).getBoundingClientRect();
-      const center = rect.left + rect.width / 2;
-      const distance = Math.abs(mouseX - center);
-
-      (item as HTMLElement).classList.remove('near');
-      (item as HTMLElement).style.transform = '';
-
-      if (distance < 100 && distance > 40) {
-        (item as HTMLElement).classList.add('near');
-      }
-    });
-  }
-
-  private clearMagnify(): void {
-    const items = this.dockBar.querySelectorAll('.lf-dock-item');
-    items.forEach((item) => {
-      (item as HTMLElement).classList.remove('near');
-      (item as HTMLElement).style.transform = '';
-    });
   }
 }

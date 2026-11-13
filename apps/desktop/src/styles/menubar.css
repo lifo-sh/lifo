@@ -1,113 +1,109 @@
+/* Menu bar */
+
 .lf-menubar {
-  position: fixed;
+  position: absolute;
   top: 0;
   left: 0;
   right: 0;
-  height: var(--dt-menubar-height);
-  background: var(--dt-menubar-bg);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  height: var(--menubar-h);
+  z-index: 90000;
   display: flex;
   align-items: center;
-  padding: 0 8px;
-  z-index: var(--z-menubar);
-  font-size: 13px;
-  gap: 0;
-}
-
-.lf-menubar-logo {
-  padding: 0 10px 0 4px;
-  font-weight: 700;
-  font-size: 14px;
-  cursor: default;
-  color: var(--dt-text-bright);
-}
-
-.lf-menubar-menus {
-  display: flex;
-  align-items: center;
-  flex: 1;
-}
-
-.lf-menubar-menu {
-  position: relative;
-  padding: 2px 10px;
-  border-radius: 4px;
-  cursor: default;
-  color: var(--dt-text);
-}
-
-.lf-menubar-menu:hover,
-.lf-menubar-menu.open {
-  background: rgba(255, 255, 255, 0.1);
-}
-
-.lf-menubar-menu-label {
-  font-weight: 600;
-}
-
-.lf-menubar-menu-label:first-child {
-  font-weight: 700;
-}
-
-/* ── Dropdown ── */
-
-.lf-menubar-dropdown {
-  position: absolute;
-  top: calc(var(--dt-menubar-height) - 2px);
-  left: 0;
-  min-width: 200px;
-  background: var(--dt-surface-solid);
-  border: 1px solid var(--dt-window-border);
-  border-radius: 6px;
-  padding: 4px 0;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
-  z-index: 1;
-}
-
-.lf-menubar-dropdown-item {
-  display: flex;
   justify-content: space-between;
-  padding: 5px 16px;
-  cursor: default;
+  padding: 0 8px;
+  background: var(--menubar);
+  backdrop-filter: blur(30px) saturate(1.8);
+  -webkit-backdrop-filter: blur(30px) saturate(1.8);
+  box-shadow: 0 0.5px 0 rgba(0, 0, 0, 0.25);
+  color: var(--text);
+  font-size: 13px;
 }
-
-.lf-menubar-dropdown-item:hover:not(.disabled) {
-  background: var(--dt-accent);
-  color: var(--dt-text-bright);
+:root[data-theme='dark'] .lf-menubar {
+  color: #f4f4f8;
 }
-
-.lf-menubar-dropdown-item.disabled {
-  color: var(--dt-text-dim);
-}
-
-.lf-menubar-dropdown-item .shortcut {
-  color: var(--dt-text-dim);
-  font-size: 12px;
-  margin-left: 24px;
-}
-
-.lf-menubar-dropdown-item:hover:not(.disabled) .shortcut {
-  color: rgba(255, 255, 255, 0.7);
-}
-
-.lf-menubar-dropdown-separator {
-  height: 1px;
-  background: var(--dt-window-border);
-  margin: 4px 0;
-}
-
-/* ── Right side (clock, etc.) ── */
-
+.lf-menubar-left,
 .lf-menubar-right {
   display: flex;
   align-items: center;
-  gap: 12px;
-  margin-left: auto;
-  color: var(--dt-text);
+  height: 100%;
+  min-width: 0;
+}
+.lf-menubar-left {
+  overflow: hidden;
+}
+.lf-mb-item {
+  height: 22px;
+  padding: 0 9px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  white-space: nowrap;
+  cursor: default;
+}
+.lf-mb-item:hover,
+.lf-mb-item.open {
+  background: rgba(127, 127, 140, 0.28);
+}
+.lf-mb-item.app-name {
+  font-weight: 700;
+}
+.lf-mb-item.logo {
+  display: grid;
+  place-items: center;
+  padding: 0 10px;
+}
+.lf-mb-logo {
+  width: 17px;
+  height: 17px;
+}
+.lf-mb-status {
+  position: relative;
+  height: 22px;
+  min-width: 28px;
+  display: grid;
+  place-items: center;
+  padding: 0 6px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+}
+.lf-mb-status:hover {
+  background: rgba(127, 127, 140, 0.28);
+}
+.lf-mb-status .lf-glyph {
+  width: 15px;
+  height: 15px;
+}
+.lf-mb-badge {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  min-width: 12px;
+  height: 12px;
+  padding: 0 3px;
+  box-sizing: border-box;
+  border-radius: 6px;
+  background: var(--green);
+  color: #111;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 12px;
+}
+.lf-mb-clock {
+  padding: 0 8px 0 10px;
+  white-space: pre;
+  font-variant-numeric: tabular-nums;
+}
+.lf-menu.lf-dropdown {
+  border-top-left-radius: 6px;
+  border-top-right-radius: 6px;
 }
 
-.lf-menubar-clock {
-  font-variant-numeric: tabular-nums;
+@media (max-width: 719px) {
+  .lf-mb-item:not(.logo):not(.app-name) {
+    display: none;
+  }
+  .lf-mb-clock {
+    font-size: 12px;
+  }
 }

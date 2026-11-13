@@ -6,15 +6,18 @@ import { codeSnippets } from '@/data/code-snippets';
 const GitExample = lazy(() => import('@/examples/git'));
 const InteractiveExample = lazy(() => import('@/examples/interactive'));
 const HeadlessExample = lazy(() => import('@/examples/headless'));
+const AgentExample = lazy(() => import('@/examples/agent'));
 const HttpExample = lazy(() => import('@/examples/http'));
 const ExpressExample = lazy(() => import('@/examples/express'));
 const NpmExample = lazy(() => import('@/examples/npm'));
 const ExplorerExample = lazy(() => import('@/examples/explorer'));
 const FfmpegExample = lazy(() => import('@/examples/ffmpeg'));
+const PythonExample = lazy(() => import('@/examples/python'));
 const ViteReactExample = lazy(() => import('@/examples/vite-react'));
 const ViteReactTsExample = lazy(() => import('@/examples/vite-react-ts'));
 const CreateViteExample = lazy(() => import('@/examples/create-vite'));
 const TinbaseExample = lazy(() => import('@/examples/tinbase'));
+const LifoNewsExample = lazy(() => import('@/examples/lifo-news'));
 const PgliteExample = lazy(() => import('@/examples/pglite'));
 const ExpoExample = lazy(() => import('@/examples/expo'));
 const ExpoRouterExample = lazy(() => import('@/examples/expo-router'));
@@ -43,6 +46,7 @@ export const examples: ExampleConfig[] = [
   // ── Examples ──
   { id: 'interactive', label: 'Interactive Shell', group: 'Examples', Component: InteractiveExample },
   { id: 'headless', label: 'Headless / AI Agent', group: 'Examples', Component: HeadlessExample },
+  { id: 'agent', label: 'Browser agent (WebLLM + Firefox)', group: 'Examples', Component: AgentExample },
   { id: 'http', label: 'HTTP Server', group: 'Examples', Component: HttpExample },
   { id: 'explorer', label: 'File Explorer', group: 'Examples', Component: ExplorerExample },
   { id: 'npm', label: 'npm', group: 'Examples', Component: NpmExample },
@@ -54,6 +58,7 @@ export const examples: ExampleConfig[] = [
   { id: 'express', label: 'Node.js + Express', group: 'Real-World Stacks', subgroup: 'Backend & Data', Component: ExpressExample },
   { id: 'pglite', label: 'Postgres (PGlite)', group: 'Real-World Stacks', subgroup: 'Backend & Data', Component: PgliteExample },
   { id: 'tinbase', label: 'Supabase (tinbase)', group: 'Real-World Stacks', subgroup: 'Fullstack Web', Component: TinbaseExample },
+  { id: 'news', label: 'Lifo News (link board)', group: 'Real-World Stacks', subgroup: 'Fullstack Web', Component: LifoNewsExample },
   { id: 'expo', label: 'Expo (React Native Web)', group: 'Real-World Stacks', subgroup: 'Mobile (Expo)', Component: ExpoExample },
   { id: 'expo-router', label: 'Expo Router', group: 'Real-World Stacks', subgroup: 'Mobile (Expo)', Component: ExpoRouterExample },
   { id: 'create-expo-app', label: 'create-expo-app (1:1)', group: 'Real-World Stacks', subgroup: 'Mobile (Expo)', Component: CreateExpoAppExample },
@@ -61,6 +66,7 @@ export const examples: ExampleConfig[] = [
   { id: 'expo-supabase', label: 'Expo Router + Supabase', group: 'Real-World Stacks', subgroup: 'Fullstack Mobile', Component: ExpoSupabaseExample },
   // ── Installable Packages ──
   { id: 'git', label: 'Git', group: 'Installable Packages', Component: GitExample },
+  { id: 'python', label: 'Python', group: 'Installable Packages', Component: PythonExample },
   { id: 'ffmpeg', label: 'FFmpeg', group: 'Installable Packages', Component: FfmpegExample },
   { id: 'orchd', label: 'ORCHD (orchd.json)', group: 'Installable Packages', Component: OrchdExample },
   // ── Develop ──

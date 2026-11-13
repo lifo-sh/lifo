@@ -49,7 +49,7 @@ export function ShellExample({ title, subtitle, box, bootTab, onRestart, default
     const bridge = new ServiceWorkerBridge(box.kernel.portRegistry);
     bridgeRef.current = bridge;
     setBoxId(bridge.boxId);
-    const ready = await bridge.connect(`${import.meta.env.BASE_URL}sw.js`, '/');
+    const ready = await bridge.connect(`${import.meta.env.BASE_URL}sw.js`, '/_sw/');
     setSwReady(ready);
   };
 

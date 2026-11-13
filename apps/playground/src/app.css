@@ -60,56 +60,63 @@
 }
 
 @theme {
-  --font-code: "Cascadia Code", "Fira Code", "JetBrains Mono", Menlo, monospace;
+  --font-code: "Geist Mono", ui-monospace, "JetBrains Mono", Menlo, monospace;
+  --font-sans: "Geist", system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
-/* ── Dark (default): Tokyo Night ── */
+/* ── Dark (default): Horizon — the lifo.sh design. Ink background, near-black
+   panels, hairline borders, and the accent ramp from the site's horizon rim:
+   blue #3b5bff → violet #8b5cf6 → coral #ff6a4a → peach #ffc79a. The --tk-* names
+   are kept so every bg-tokyo-* / text-tokyo-* utility follows the palette. ── */
 :root {
-  --radius: 0.625rem;
+  --radius: 0.75rem;
 
-  --tk-bg: #1a1b26;
-  --tk-bg-dark: #16161e;
-  --tk-bg-darker: #121218;
-  --tk-fg: #a9b1d6;
-  --tk-fg-bright: #c0caf5;
-  --tk-border: #262838;
-  --tk-comment: #565f89;
-  --tk-blue: #7aa2f7;
-  --tk-blue-bright: #89b4fa;
-  --tk-purple: #bb9af7;
-  --tk-green: #9ece6a;
-  --tk-orange: #ff9e64;
-  --tk-cyan: #89ddff;
-  --tk-hover: #1e2030;
-  --tk-active: #292e42;
-  --tk-muted: #9aa5ce;
+  --tk-bg: #05060f;
+  --tk-bg-dark: #0a0b16;
+  --tk-bg-darker: #070812;
+  --tk-fg: #c4c6d6;
+  --tk-fg-bright: #ffffff;
+  --tk-border: #1a1b2a;
+  --tk-comment: #6f7189;
+  --tk-blue: #a9b8ff;
+  --tk-blue-bright: #c3ccff;
+  --tk-purple: #b9a6ff;
+  --tk-green: #6ee7b7;
+  --tk-orange: #ff9a7a;
+  --tk-cyan: #ffc79a;
+  --tk-hover: #10111f;
+  --tk-active: #171829;
+  --tk-muted: #9a9cb3;
 
-  --background: #1a1b26;
-  --foreground: #a9b1d6;
-  --card: #1e1f2e;
-  --card-foreground: #a9b1d6;
-  --popover: #1e1f2e;
-  --popover-foreground: #a9b1d6;
-  --primary: #7aa2f7;
-  --primary-foreground: #1a1b26;
-  --secondary: #292e42;
-  --secondary-foreground: #a9b1d6;
-  --muted: #292e42;
-  --muted-foreground: #565f89;
-  --accent: #292e42;
-  --accent-foreground: #a9b1d6;
-  --destructive: #f7768e;
-  --border: #292e42;
-  --input: #292e42;
-  --ring: #7aa2f7;
-  --sidebar: #16161e;
-  --sidebar-foreground: #a9b1d6;
-  --sidebar-primary: #7aa2f7;
-  --sidebar-primary-foreground: #1a1b26;
-  --sidebar-accent: #292e42;
-  --sidebar-accent-foreground: #a9b1d6;
-  --sidebar-border: #292e42;
-  --sidebar-ring: #7aa2f7;
+  --background: #05060f;
+  --foreground: #e6e6ef;
+  --card: #0b0c18;
+  --card-foreground: #e6e6ef;
+  --popover: #0b0c18;
+  --popover-foreground: #e6e6ef;
+  --primary: #ffffff;
+  --primary-foreground: #05060f;
+  --secondary: #151626;
+  --secondary-foreground: #e6e6ef;
+  --muted: #151626;
+  --muted-foreground: #8d8fa6;
+  --accent: #171829;
+  --accent-foreground: #ffffff;
+  --destructive: #ff6a4a;
+  --border: #1a1b2a;
+  --input: #1f2033;
+  --ring: #8b5cf6;
+  --sidebar: #0a0b16;
+  --sidebar-foreground: #c4c6d6;
+  --sidebar-primary: #ffffff;
+  --sidebar-primary-foreground: #05060f;
+  --sidebar-accent: #171829;
+  --sidebar-accent-foreground: #ffffff;
+  --sidebar-border: #1a1b2a;
+  --sidebar-ring: #8b5cf6;
+
+  /* the active-tab / active-item accent line */
+  --hz-accent: linear-gradient(90deg, #3b5bff, #8b5cf6 55%, #ff6a4a);
   color-scheme: dark;
 }
 
@@ -158,6 +165,7 @@
   --sidebar-accent-foreground: #343b58;
   --sidebar-border: #b3b7cd;
   --sidebar-ring: #2e7de9;
+  --hz-accent: linear-gradient(90deg, #2e7de9, #2e7de9);
   color-scheme: light;
 }
 
@@ -180,7 +188,8 @@
     overflow: hidden;
     background: var(--color-tokyo-bg);
     color: var(--color-tokyo-fg);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-family: "Geist", system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
   }
   #root {
     width: 100%;
@@ -245,4 +254,36 @@
 }
 .xterm-viewport::-webkit-scrollbar-thumb:hover {
   background-color: var(--color-tokyo-comment);
+}
+
+/* ── Horizon accents ── */
+@layer components {
+  /* Active tab: a 2px gradient line along the top (terminal + preview strips). */
+  .hz-tab-active {
+    position: relative;
+  }
+  .hz-tab-active::before {
+    content: "";
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 2px;
+    background: var(--hz-accent);
+  }
+  /* Active sidebar item: a gradient bar on the left edge. */
+  .hz-nav-active {
+    position: relative;
+  }
+  .hz-nav-active::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 6px;
+    bottom: 6px;
+    width: 2px;
+    border-radius: 2px;
+    background: linear-gradient(180deg, #3b5bff, #8b5cf6, #ff6a4a);
+  }
+  .light .hz-nav-active::before {
+    background: var(--tk-blue);
+  }
 }

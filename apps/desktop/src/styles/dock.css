@@ -1,115 +1,133 @@
-.lf-dock-wrapper {
-  position: fixed;
-  bottom: 8px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: var(--z-dock);
-}
+/* Dock */
 
 .lf-dock {
+  position: absolute;
+  left: 50%;
+  bottom: 6px;
+  transform: translateX(-50%);
+  z-index: 80000;
+  max-width: calc(100vw - 16px);
+}
+.lf-dock-bar {
+  --dock-size: 50px;
   display: flex;
   align-items: flex-end;
-  gap: 2px;
-  padding: var(--dt-dock-padding);
-  background: var(--dt-dock-bg);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 16px;
-  height: auto;
+  gap: 4px;
+  padding: 5px 6px;
+  border-radius: 20px;
+  background: var(--dock);
+  backdrop-filter: blur(30px) saturate(1.8);
+  -webkit-backdrop-filter: blur(30px) saturate(1.8);
+  border: 0.5px solid rgba(255, 255, 255, 0.22);
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+  height: calc(var(--dock-size) + 10px);
+  box-sizing: border-box;
+  overflow: visible;
 }
-
 .lf-dock-item {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
-  cursor: pointer;
-  position: relative;
-  transition: transform 0.15s ease;
-  transform-origin: bottom center;
-  padding: 2px 4px 0;
+  outline: none;
 }
-
-.lf-dock-item:hover {
-  transform: scale(1.3) translateY(-6px);
-}
-
-/* Magnification for neighbors */
-.lf-dock-item.near {
-  transform: scale(1.15) translateY(-3px);
-}
-
 .lf-dock-icon {
-  width: var(--dt-dock-icon-size);
-  height: var(--dt-dock-icon-size);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 32px;
-  background: rgba(255, 255, 255, 0.08);
-  border-radius: 12px;
-  transition: transform 0.15s ease;
+  width: var(--dock-size);
+  height: var(--dock-size);
+  transition: width 90ms ease-out, height 90ms ease-out;
+  will-change: width, height;
+  filter: drop-shadow(0 3px 5px rgba(0, 0, 0, 0.3));
 }
-
-.lf-dock-item:hover .lf-dock-icon {
-  background: rgba(255, 255, 255, 0.14);
+.lf-dock-icon svg {
+  width: 100%;
+  height: 100%;
+  display: block;
 }
-
+.lf-dock-item:active .lf-dock-icon {
+  filter: drop-shadow(0 3px 5px rgba(0, 0, 0, 0.3)) brightness(0.7);
+}
+.lf-dock-item:focus-visible .lf-dock-icon {
+  outline: 2px solid var(--accent);
+  border-radius: 14px;
+}
 .lf-dock-dot {
+  position: absolute;
+  bottom: -5px;
   width: 4px;
   height: 4px;
   border-radius: 50%;
-  background: var(--dt-text-dim);
-  margin-top: 2px;
-  opacity: 0;
-  transition: opacity 0.2s ease;
+  background: transparent;
 }
-
 .lf-dock-item.running .lf-dock-dot {
-  opacity: 1;
-  background: var(--dt-text);
+  background: rgba(255, 255, 255, 0.85);
 }
-
-/* ── Tooltip ── */
-
-.lf-dock-tooltip {
-  position: absolute;
-  bottom: calc(100% + 8px);
-  background: var(--dt-surface-solid);
-  color: var(--dt-text);
-  padding: 4px 10px;
-  border-radius: 4px;
-  font-size: 12px;
-  white-space: nowrap;
-  pointer-events: none;
-  opacity: 0;
-  transition: opacity 0.15s ease;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+:root[data-theme='light'] .lf-dock-item.running .lf-dock-dot {
+  background: rgba(0, 0, 0, 0.7);
 }
-
-.lf-dock-item:hover .lf-dock-tooltip {
-  opacity: 1;
-}
-
-/* ── Separator ── */
-
-.lf-dock-separator {
-  width: 1px;
-  height: 32px;
-  background: rgba(255, 255, 255, 0.15);
-  margin: 0 4px;
-  align-self: center;
-}
-
-/* ── Bounce animation ── */
-
-@keyframes dock-bounce {
-  0%, 100% { transform: translateY(0); }
-  25% { transform: translateY(-16px); }
-  50% { transform: translateY(-4px); }
-  75% { transform: translateY(-10px); }
-}
-
 .lf-dock-item.bouncing .lf-dock-icon {
-  animation: dock-bounce 0.6s ease;
+  animation: lf-bounce 0.62s cubic-bezier(0.3, 0, 0.7, 1) infinite;
+}
+@keyframes lf-bounce {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  45% {
+    transform: translateY(-22px);
+  }
+  70% {
+    transform: translateY(0);
+  }
+  82% {
+    transform: translateY(-5px);
+  }
+}
+.lf-dock-item.minimized-window .lf-dock-icon {
+  opacity: 0.85;
+  transform: scale(0.82);
+}
+.lf-dock-item.drop .lf-dock-icon {
+  filter: drop-shadow(0 0 10px var(--accent)) brightness(1.15);
+}
+.lf-dock-sep {
+  align-self: stretch;
+  width: 0.5px;
+  margin: 4px 4px;
+  background: rgba(255, 255, 255, 0.3);
+}
+:root[data-theme='light'] .lf-dock-sep {
+  background: rgba(0, 0, 0, 0.2);
+}
+.lf-dock-label {
+  position: absolute;
+  bottom: calc(100% + 14px);
+  padding: 4px 10px;
+  border-radius: 7px;
+  background: var(--menu);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 0.5px solid var(--border-strong);
+  font-size: 13px;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 100ms ease;
+}
+.lf-dock-label.visible {
+  opacity: 1;
+}
+
+@media (max-width: 719px) {
+  .lf-dock {
+    bottom: 4px;
+  }
+  .lf-dock-bar {
+    gap: 2px;
+    padding: 4px;
+    overflow-x: auto;
+    border-radius: 16px;
+  }
+  .lf-dock-label {
+    display: none;
+  }
 }

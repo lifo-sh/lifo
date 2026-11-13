@@ -44,7 +44,7 @@ export function PreviewTabs({ boxId, tabs, engine = 'sw', kernel = null }: Previ
             className={cn(
               'px-3.5 flex items-center border-none border-r border-tokyo-border/60 text-xs cursor-pointer whitespace-nowrap transition-colors',
               i === active
-                ? 'text-tokyo-fg-bright bg-tokyo-bg shadow-[inset_0_1px_0_var(--color-tokyo-blue)]'
+                ? 'text-tokyo-fg-bright bg-tokyo-bg hz-tab-active'
                 : 'text-tokyo-comment bg-transparent hover:text-tokyo-muted hover:bg-tokyo-hover',
             )}
           >

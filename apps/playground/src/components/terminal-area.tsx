@@ -190,7 +190,7 @@ export function TerminalArea({ bootTab, box, initialLabels, canAdd = true, onRes
               className={cn(
                 'group relative flex items-center gap-2 pl-3.5 pr-2 border-r border-tokyo-border/60 text-xs cursor-pointer whitespace-nowrap select-none transition-colors',
                 i === active
-                  ? 'bg-tokyo-bg text-tokyo-fg-bright shadow-[inset_0_1px_0_var(--color-tokyo-blue)]'
+                  ? 'bg-tokyo-bg text-tokyo-fg-bright hz-tab-active'
                   : 'bg-transparent text-tokyo-comment hover:bg-tokyo-hover hover:text-tokyo-muted',
               )}
             >
@@ -237,7 +237,7 @@ export function TerminalArea({ bootTab, box, initialLabels, canAdd = true, onRes
             <MoreVertical size={16} />
           </button>
           {menuOpen && (
-            <div className="absolute right-0 top-full z-30 w-52 py-1 bg-tokyo-bg-dark border border-tokyo-border shadow-2xl">
+            <div className="absolute right-1 top-full z-30 mt-1 w-52 py-1 rounded-xl overflow-hidden bg-tokyo-bg-dark border border-tokyo-border shadow-2xl">
               {menuItems.map((it) => (
                 <button
                   key={it.label}
@@ -259,7 +259,7 @@ export function TerminalArea({ bootTab, box, initialLabels, canAdd = true, onRes
             <button
               onClick={addTerminal}
               disabled={!box}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded border border-tokyo-border text-tokyo-muted hover:text-tokyo-fg-bright hover:bg-tokyo-hover disabled:opacity-40"
+              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full border border-tokyo-border text-tokyo-muted hover:text-tokyo-fg-bright hover:bg-tokyo-hover disabled:opacity-40"
             >
               <Plus size={14} /> New terminal
             </button>

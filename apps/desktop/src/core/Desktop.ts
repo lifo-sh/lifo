@@ -1,150 +1,148 @@
-import type { VFS } from '@lifo-sh/core';
-import type { AppRegistry } from './AppRegistry';
+// The desktop surface: the wallpaper, icons for the box's disk and the files in ~/Desktop, and
+// its right-click menu. Clicking it unfocuses every window.
+
+import { h, showContextMenu, type MenuEntry } from './ui';
+import { DISK_ICON, FOLDER_ICON, fileIcon } from '../icons';
+import { wallpaperCss, type Settings } from './settings';
+import { HOME, joinPath } from './box';
+import type { DesktopBox } from './box';
+import type { FileOps } from './files';
+import { DRAG_MIME } from './Dock';
+
+const DESKTOP = `${HOME}/Desktop`;
+
+export interface DesktopDeps {
+  box: DesktopBox;
+  settings: Settings;
+  files: FileOps;
+  open: (path: string) => void;
+  launch: (appId: string, arg?: string) => void;
+  blur: () => void;
+}
 
 export class Desktop {
-  readonly root: HTMLElement;
+  readonly el: HTMLElement;
   readonly windowLayer: HTMLElement;
-  private iconsContainer: HTMLElement;
-  private contextMenu: HTMLElement | null = null;
+  private wallpaper: HTMLElement;
+  private iconsEl: HTMLElement;
+  private selected = new Set<string>();
 
-  private onOpenFile?: (path: string) => void;
+  constructor(root: HTMLElement, private d: DesktopDeps) {
+    this.wallpaper = h('div', { class: 'lf-wallpaper' });
+    this.iconsEl = h('div', { class: 'lf-desktop-icons' });
+    this.windowLayer = h('div', { class: 'lf-window-layer' });
+    this.el = h('div', { class: 'lf-desktop' }, this.wallpaper, this.iconsEl, this.windowLayer);
+    root.append(this.el);
 
-  constructor(
-    container: HTMLElement,
-    private vfs: VFS,
-    _appRegistry: AppRegistry,
-    onOpenFile?: (path: string) => void,
-  ) {
-    this.onOpenFile = onOpenFile;
-    this.root = document.createElement('div');
-    this.root.className = 'lf-desktop';
-
-    this.windowLayer = document.createElement('div');
-    this.windowLayer.className = 'lf-window-layer';
-
-    this.iconsContainer = document.createElement('div');
-    this.iconsContainer.className = 'lf-desktop-icons';
-
-    this.root.append(this.iconsContainer, this.windowLayer);
-    container.appendChild(this.root);
-
-    // Context menu on desktop background
-    this.root.addEventListener('contextmenu', (e) => {
-      if (e.target === this.root || (e.target as HTMLElement).closest('.lf-desktop-icons')) {
-        e.preventDefault();
-        this.showContextMenu(e.clientX, e.clientY);
-      }
+    const onSurface = (e: Event) => e.target === this.wallpaper || e.target === this.iconsEl || e.target === this.el;
+    this.el.addEventListener('pointerdown', (e) => {
+      if (!onSurface(e)) return;
+      this.select([]);
+      d.blur();
+    });
+    this.el.addEventListener('contextmenu', (e) => {
+      if (!onSurface(e)) return;
+      e.preventDefault();
+      showContextMenu(this.surfaceMenu(), e.clientX, e.clientY);
+    });
+    this.el.addEventListener('dragover', (e) => {
+      if (onSurface(e) && e.dataTransfer?.types.includes(DRAG_MIME)) e.preventDefault();
+    });
+    this.el.addEventListener('drop', (e) => {
+      if (!onSurface(e)) return;
+      const raw = e.dataTransfer?.getData(DRAG_MIME);
+      if (!raw) return;
+      e.preventDefault();
+      d.files.move(JSON.parse(raw), DESKTOP);
     });
 
-    // Dismiss context menu on click
-    document.addEventListener('pointerdown', () => this.hideContextMenu());
-
-    // Load desktop icons
-    this.loadDesktopIcons();
+    d.settings.onChange(() => this.applySettings());
+    d.box.vfs.watch(DESKTOP, () => this.renderIcons());
+    this.applySettings();
+    this.renderIcons();
   }
 
-  async loadDesktopIcons(): Promise<void> {
+  private applySettings(): void {
+    this.wallpaper.style.background = wallpaperCss(this.d.settings.get('wallpaper'));
+    this.iconsEl.style.display = this.d.settings.get('showDesktopIcons') ? '' : 'none';
+  }
+
+  private select(paths: string[]): void {
+    this.selected = new Set(paths);
+    for (const el of this.iconsEl.querySelectorAll<HTMLElement>('.lf-desktop-icon')) el.classList.toggle('selected', this.selected.has(el.dataset.path!));
+  }
+
+  renderIcons(): void {
+    const vfs = this.d.box.vfs;
+    const entries: { path: string; name: string; icon: string; disk?: boolean }[] = [{ path: '/', name: 'Lifo HD', icon: DISK_ICON, disk: true }];
     try {
-      const entries = await this.vfs.readdir('/home/user/Desktop');
-      this.iconsContainer.innerHTML = '';
-
-      for (const entry of entries) {
-        const icon = document.createElement('div');
-        icon.className = 'lf-desktop-icon';
-
-        const isDir = entry.type === 'directory';
-        const emoji = isDir ? '\uD83D\uDCC1' : this.getFileEmoji(entry.name);
-
-        icon.innerHTML = `
-          <div class="lf-desktop-icon-emoji">${emoji}</div>
-          <div class="lf-desktop-icon-label">${entry.name}</div>
-        `;
-
-        icon.addEventListener('click', () => {
-          this.iconsContainer.querySelectorAll('.lf-desktop-icon').forEach((i) => i.classList.remove('selected'));
-          icon.classList.add('selected');
-        });
-
-        icon.addEventListener('dblclick', () => {
-          this.onOpenFile?.(`/home/user/Desktop/${entry.name}`);
-        });
-
-        this.iconsContainer.appendChild(icon);
+      for (const e of vfs.readdir(DESKTOP).filter((e) => !e.name.startsWith('.')).sort((a, b) => a.name.localeCompare(b.name))) {
+        const path = joinPath(DESKTOP, e.name);
+        entries.push({ path, name: e.name, icon: e.type === 'directory' ? FOLDER_ICON : fileIcon(e.name) });
       }
     } catch {
-      // Desktop dir may not exist yet
+      /* no Desktop folder */
     }
-  }
-
-  private getFileEmoji(name: string): string {
-    const ext = name.split('.').pop()?.toLowerCase();
-    switch (ext) {
-      case 'txt': case 'md': return '\uD83D\uDCC4';
-      case 'js': case 'ts': case 'py': return '\uD83D\uDCDC';
-      case 'png': case 'jpg': case 'gif': return '\uD83D\uDDBC\uFE0F';
-      case 'mp3': case 'wav': return '\uD83C\uDFB5';
-      default: return '\uD83D\uDCC4';
-    }
-  }
-
-  private showContextMenu(x: number, y: number): void {
-    this.hideContextMenu();
-
-    this.contextMenu = document.createElement('div');
-    this.contextMenu.className = 'lf-context-menu';
-    this.contextMenu.style.left = `${x}px`;
-    this.contextMenu.style.top = `${y}px`;
-
-    const items: Array<{ label: string; action: () => void } | { separator: true }> = [
-      { label: 'New Folder', action: () => this.createDesktopItem('directory') },
-      { label: 'New File', action: () => this.createDesktopItem('file') },
-      { separator: true },
-      { label: 'Refresh', action: () => this.loadDesktopIcons() },
-    ];
-
-    for (const item of items) {
-      if ('separator' in item) {
-        const sep = document.createElement('div');
-        sep.className = 'lf-context-menu-separator';
-        this.contextMenu.appendChild(sep);
-      } else {
-        const el = document.createElement('div');
-        el.className = 'lf-context-menu-item';
-        el.textContent = item.label;
-        el.addEventListener('click', () => {
-          item.action();
-          this.hideContextMenu();
+    this.iconsEl.replaceChildren(
+      ...entries.map((entry) => {
+        const el = h(
+          'div',
+          { class: 'lf-desktop-icon', 'data-path': entry.path, draggable: entry.disk ? 'false' : 'true', tabindex: 0, title: entry.path },
+          h('div', { class: 'lf-desktop-icon-img', html: entry.icon }),
+          h('div', { class: 'lf-desktop-icon-name' }, entry.name),
+        );
+        el.addEventListener('pointerdown', (e) => {
+          e.stopPropagation();
+          this.select([entry.path]);
         });
-        this.contextMenu.appendChild(el);
-      }
-    }
-
-    document.body.appendChild(this.contextMenu);
+        el.addEventListener('dblclick', () => this.d.open(entry.path));
+        el.addEventListener('keydown', (e) => e.key === 'Enter' && this.d.open(entry.path));
+        el.addEventListener('dragstart', (e) => {
+          e.dataTransfer?.setData(DRAG_MIME, JSON.stringify([entry.path]));
+          e.dataTransfer?.setData('text/plain', entry.path);
+        });
+        el.addEventListener('contextmenu', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          this.select([entry.path]);
+          showContextMenu(this.iconMenu(entry.path, !!entry.disk), e.clientX, e.clientY);
+        });
+        return el;
+      }),
+    );
   }
 
-  private hideContextMenu(): void {
-    if (this.contextMenu) {
-      this.contextMenu.remove();
-      this.contextMenu = null;
-    }
+  private surfaceMenu(): MenuEntry[] {
+    const { files, launch } = this.d;
+    return [
+      { label: 'New Folder', action: () => void files.newFolder(DESKTOP) },
+      { label: 'New File', action: () => void files.newFile(DESKTOP) },
+      { separator: true, label: '' },
+      { label: 'Open in Terminal', action: () => launch('terminal', DESKTOP) },
+      { label: 'Open in Finder', action: () => launch('finder', DESKTOP) },
+      { separator: true, label: '' },
+      { label: 'Change Wallpaper…', action: () => launch('settings', 'wallpaper') },
+      { label: this.d.settings.get('showDesktopIcons') ? 'Hide Desktop Icons' : 'Show Desktop Icons', action: () => this.d.settings.set('showDesktopIcons', !this.d.settings.get('showDesktopIcons')) },
+    ];
   }
 
-  private async createDesktopItem(type: 'file' | 'directory'): Promise<void> {
-    const base = '/home/user/Desktop';
-    try {
-      await this.vfs.mkdir(base, { recursive: true });
-    } catch { /* exists */ }
-
-    const name = type === 'directory' ? 'untitled folder' : 'untitled.txt';
-    const path = `${base}/${name}`;
-
-    try {
-      if (type === 'directory') {
-        await this.vfs.mkdir(path);
-      } else {
-        await this.vfs.writeFile(path, '');
-      }
-      this.loadDesktopIcons();
-    } catch { /* may already exist */ }
+  private iconMenu(path: string, disk: boolean): MenuEntry[] {
+    const { files, launch, open } = this.d;
+    const items: MenuEntry[] = [
+      { label: 'Open', action: () => open(path) },
+      { label: 'Open in Terminal', action: () => launch('terminal', disk ? '/' : path) },
+      { label: 'Get Info', action: () => files.getInfo(path) },
+    ];
+    if (!disk) {
+      items.push(
+        { separator: true, label: '' },
+        { label: 'Rename', action: () => void files.rename(path) },
+        { label: 'Duplicate', action: () => files.duplicate(path) },
+        { label: 'Copy Path', action: () => void navigator.clipboard?.writeText(path) },
+        { separator: true, label: '' },
+        { label: 'Move to Trash', action: () => files.moveToTrash([path]) },
+      );
+    }
+    return items;
   }
 }
