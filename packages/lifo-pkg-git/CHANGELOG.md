@@ -4,6 +4,8 @@
 
 ### Patch Changes
 
+- `git --version` prints a version instead of an error.
+- `git init` takes `-q`/`--quiet`, `-b`/`--initial-branch` and `--bare`, and creates a missing target directory.
 - Updated dependencies
   - @lifo-sh/core@0.6.7
 

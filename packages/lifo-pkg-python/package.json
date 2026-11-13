@@ -1,0 +1,65 @@
+{
+  "name": "lifo-pkg-python",
+  "version": "0.1.0",
+  "description": "Python 3 (CPython on WebAssembly, via Pyodide) and pip for Lifo",
+  "license": "MIT",
+  "author": "Sanket Sahu",
+  "type": "module",
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./pip": {
+      "import": "./dist/pip.js",
+      "types": "./dist/pip.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "lifo": {
+    "commands": {
+      "python": "./dist/index.js",
+      "python3": "./dist/index.js",
+      "pip": "./dist/pip.js",
+      "pip3": "./dist/pip.js"
+    }
+  },
+  "keywords": [
+    "lifo-pkg",
+    "python",
+    "pyodide",
+    "pip"
+  ],
+  "scripts": {
+    "build": "vite build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "node ../../scripts/ensure-pnpm-publish.mjs"
+  },
+  "dependencies": {
+    "pyodide": "314.0.7"
+  },
+  "peerDependencies": {
+    "@lifo-sh/core": "workspace:*"
+  },
+  "peerDependenciesMeta": {
+    "@lifo-sh/core": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@lifo-sh/core": "workspace:*",
+    "typescript": "^5.7.0",
+    "vite": "^6.0.0",
+    "vite-plugin-dts": "^4.5.0",
+    "vitest": "^3.0.0"
+  }
+}
