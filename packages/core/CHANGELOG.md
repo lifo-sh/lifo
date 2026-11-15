@@ -1,3 +1,39 @@
+## 0.10.31
+
+### Patch Changes
+
+- browser-metro 1.5.20 → 1.5.21: the preview's `process` gets a silent `process.emitWarning` when it has none. three 0.187's CommonJS build calls it as it loads, so every app using `three` / `@react-three/*` showed a blank preview ("process.emitWarning is not a function").
+
+## 0.10.30
+
+### Patch Changes
+
+- browser-metro 1.5.17 → 1.5.20 for the editor's artboards and web preview (the phone already runs it through rnrun 0.4.28):
+  - 1.5.18: a wrapped package's real code (`<name>__original`) is never fetched from the package server on a rebuild. That fetch failed every rebuild of an app using expo-sensors ("Failed to fetch package 'expo-sensors__original@^58.0.0'"). Also Expo DOM components (`'use dom'`).
+  - 1.5.19: modules that export one value under several names.
+  - 1.5.20: the console exists before the console polyfill runs.
+
+## 0.10.29
+
+### Patch Changes
+
+- `awk`: associative arrays (`a[k]`, `a[i,j]`, `in`, `for (k in a)`, `delete`, `length(a)`), `split()`, user functions (arrays by reference, recursion), `getline` (next record, `var`, `< file`), `close()` and `do … while`; CONVFMT/OFMT number formatting. `!seen[$0]++` and `{c[$1]++} END{…}` work (lifo-sh/lifo#117).
+- Text commands (`grep`, `sed`, `awk`, `sort`, `head`, `tail`, `cut`, `uniq`, `nl`, `rev`, `wc`, `diff`) read files whose extension is missing or unknown (Makefile, Dockerfile, LICENSE, `.mjs`, `.lock`, …). These used to be skipped as "binary file" without being read. The first bytes now decide, as in GNU grep: a NUL byte means binary.
+
+## 0.10.28
+
+### Patch Changes
+
+- `sed`: BRE patterns treat `| + ? ( ) { }` as literal characters and `\| \+ \? \( \) \{ \}` as the special forms, as GNU sed does. `-E`/`-r` switch to ERE. Bracket expressions keep `|` and POSIX classes. `addr,+N` addresses work. A RapidNative agent's `sed -i` rename had corrupted an 831-line file, because `|` was read as alternation and every repair matched nothing (lifo-sh/lifo#115).
+- `tr`: POSIX classes (`[:print:]`, `[:space:]`, …), ranges, escapes and octal, `-c/-C/-d/-s/-t` and combined flags, SET2 padding, `[c*n]` and `[=c=]`.
+- `awk`: a real expression parser, adding the ternary, comparisons, arithmetic, regex match, concatenation, `printf`, `if/while/for`, `next/exit`, expression and range patterns, `-v`, FS/OFS/ORS, and the string builtins with `sub/gsub/match`. Arrays, `split()`, functions and `getline` fail with a clear "not supported" message instead of printing wrong output.
+
+## 0.10.27
+
+### Patch Changes
+
+- browser-metro 1.5.17 (pinned from 1.5.10). Apps using pdfjs-dist 6 bundle again: its worker wrapper writes `import("${url}")` inside a string, and the bundle failed fetching the package "${url}" (reactnative-run#153). Brings 1.5.11-1.5.16 along (JSON imports, first-scan speed-up, shared host cache), which the RapidNative editor already ran through its own override.
+
 ## 0.10.26
 
 ### Patch Changes
