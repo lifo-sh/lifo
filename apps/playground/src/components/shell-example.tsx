@@ -129,7 +129,9 @@ export function ShellExample({ title, subtitle, box, bootTab, onRestart, default
               Service worker unavailable in this browser — switch preview to
               postMessage (top-right).
             </div>
-          ) : boxId ? (
+          ) : boxId && swReady ? (
+            // Only once the service worker is active and has this box's channel: a frame that
+            // loads earlier goes past it to the web server (a 404 on first visit).
             <UiPreviewBrowser boxId={boxId} port={defaultPreviewPort} />
           ) : (
             <div className="flex-1 h-full grid place-items-center text-[12px] text-tokyo-comment">

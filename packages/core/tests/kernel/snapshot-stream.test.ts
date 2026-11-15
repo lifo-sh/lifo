@@ -51,7 +51,7 @@ describe('streaming snapshot import', () => {
     expect(metaB).toEqual(metaA);
     expect(b.env.FOO).toBe('bar');
     for (const s of [a, b]) {
-      expect(await s.fs.readFile(deep, 'utf8')).toBe('module.exports = 42;\n');
+      expect(await s.fs.readFile(deep)).toBe('module.exports = 42;\n');
       expect(s.kernel.vfs.readFile('/home/user/app/big.bin').length).toBe(3 * 1024 * 1024);
       expect(s.kernel.vfs.readlink('/home/user/app/link.txt')).toBe('hello.txt');
       expect((await s.commands.run('ls -d /home/user/empty-dir')).exitCode).toBe(0);

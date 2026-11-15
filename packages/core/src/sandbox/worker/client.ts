@@ -427,8 +427,10 @@ export class WorkerSandbox {
 		return new Uint8Array(await this.rpc.call<ArrayBuffer>('exportSnapshot', [options]));
 	}
 
-	async importSnapshot(data: Uint8Array): Promise<SnapshotMetadata | null> {
-		const buf = ownBuffer(data).slice(0);
+	/** Replace the box's files with a snapshot (bytes, or a stream of them, as Sandbox takes). */
+	async importSnapshot(data: Uint8Array | ReadableStream<Uint8Array>): Promise<SnapshotMetadata | null> {
+		const bytes = data instanceof Uint8Array ? data : new Uint8Array(await new Response(data).arrayBuffer());
+		const buf = ownBuffer(bytes).slice(0);
 		const meta = await this.rpc.call<SnapshotMetadata | null>('importSnapshot', [buf], [buf]);
 		this._cwd = await this.rpc.call<string>('cwd');
 		await this.getEnv();

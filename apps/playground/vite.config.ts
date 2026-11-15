@@ -44,6 +44,9 @@ export default defineConfig(({ command }) => ({
       'isomorphic-git',
     ],
   },
+  // Module workers: the Isolation example's box worker (src/lib/box.worker.ts) loads core, which
+  // splits into chunks, and Vite's default classic (iife) worker build can't code-split.
+  worker: { format: 'es' },
   build: {
     rollupOptions: {
       output: {

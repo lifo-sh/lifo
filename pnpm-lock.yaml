@@ -188,6 +188,9 @@ importers:
       '@lifo-sh/core':
         specifier: workspace:*
         version: link:../core
+      lifo-pkg-agent:
+        specifier: workspace:*
+        version: link:../lifo-pkg-agent
       lifo-pkg-git:
         specifier: workspace:*
         version: link:../lifo-pkg-git
