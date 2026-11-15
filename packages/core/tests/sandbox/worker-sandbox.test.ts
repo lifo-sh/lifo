@@ -125,7 +125,7 @@ describe('WorkerSandbox over a MessageChannel', () => {
 		expect(r.exitCode).not.toBe(0);
 	});
 
-	it('runs the worker entry setup with the page\'s extra, and refuses page-side register', async () => {
+	it('runs the worker entry setup with the page\'s extra', async () => {
 		const box = await boxPair({ setup: { greeting: 'from setup' } }, (b, extra) => {
 			b.commands.register('hello', async (ctx) => {
 				ctx.stdout.write(`${(extra as { greeting: string }).greeting}\n`);
@@ -133,7 +133,88 @@ describe('WorkerSandbox over a MessageChannel', () => {
 			});
 		});
 		expect((await box.commands.run('hello')).stdout).toBe('from setup\n');
-		expect(() => box.commands.register('x', () => 0)).toThrow(/registers its commands in the worker/);
+	});
+
+	describe('host commands (registered in the page)', () => {
+		it('runs a page-side command with the box\'s args, env and cwd, and streams its output', async () => {
+			const box = await boxPair({ env: { WHO: 'box' } });
+			const seen: unknown[] = [];
+			const pageOnly = { secret: 'page state the box cannot see' };
+			await box.commands.register('pagecmd', async (ctx) => {
+				seen.push({ args: ctx.args, who: ctx.env.WHO, cwd: ctx.cwd });
+				ctx.stdout.write(`${pageOnly.secret.length}\n`);
+				ctx.stderr.write('to stderr\n');
+				return 3;
+			});
+			const r = await box.commands.run('mkdir -p /tmp/h && cd /tmp/h && pagecmd a "b c"');
+			expect(r.exitCode).toBe(3);
+			expect(r.stdout).toBe(`${pageOnly.secret.length}\n`);
+			expect(r.stderr).toBe('to stderr\n');
+			expect(seen).toEqual([{ args: ['a', 'b c'], who: 'box', cwd: '/tmp/h' }]);
+			// It's a command like any other: pipes and scripts reach it.
+			expect((await box.commands.run('pagecmd | tr 0-9 X')).stdout).toBe('XX\n');
+		});
+
+		it('reads stdin from the box, a line at a time or all at once', async () => {
+			const box = await boxPair();
+			await box.commands.register('upper', async (ctx) => {
+				ctx.stdout.write((await ctx.stdin!.readAll()).toUpperCase());
+				return 0;
+			});
+			await box.commands.register('firstline', async (ctx) => {
+				let text = '';
+				for (let chunk = await ctx.stdin!.read(); chunk !== null; chunk = await ctx.stdin!.read()) text += chunk;
+				ctx.stdout.write(text.split('\n')[0] + '\n');
+				return 0;
+			});
+			expect((await box.commands.run('printf "one\\ntwo\\n" | upper')).stdout).toBe('ONE\nTWO\n');
+			expect((await box.commands.run('printf "one\\ntwo\\n" | firstline')).stdout).toBe('one\n');
+			expect((await box.commands.run('upper', { stdin: 'from run\n' })).stdout).toBe('FROM RUN\n');
+		});
+
+		it('runs sub-commands in the box and writes files there', async () => {
+			const box = await boxPair();
+			await box.commands.register('probe', async (ctx) => {
+				const r = await ctx.executeCaptureResult!('echo in-box; exit 4');
+				ctx.vfs.mkdir('/tmp/probe', { recursive: true });
+				ctx.vfs.writeFile('/tmp/probe/out.bin', new Uint8Array([1, 2, 3]));
+				ctx.stdout.write(`${r.stdout.trim()} ${r.code} ${await ctx.fs.exists('/tmp/probe')}\n`);
+				expect(() => ctx.vfs.readFile('/tmp/probe/out.bin')).toThrow(/use the async ctx.fs/);
+				return 0;
+			});
+			expect((await box.commands.run('probe')).stdout).toBe('in-box 4 true\n');
+			expect([...(await box.fs.readFile('/tmp/probe/out.bin', null))]).toEqual([1, 2, 3]);
+		});
+
+		it('passes the box\'s abort to the page', async () => {
+			const box = await boxPair();
+			let aborted = false;
+			await box.commands.register('wait', (ctx) =>
+				new Promise<number>((resolve) => {
+					ctx.signal.addEventListener('abort', () => {
+						aborted = true;
+						resolve(130);
+					});
+				}),
+			);
+			const ac = new AbortController();
+			const p = box.commands.run('wait', { signal: ac.signal });
+			setTimeout(() => ac.abort(), 100);
+			expect((await p).exitCode).not.toBe(0);
+			await until(() => aborted);
+		});
+
+		it('reports a page-side error as the command\'s, and only registered names reach the page', async () => {
+			const box = await boxPair();
+			await box.commands.register('boom', async () => {
+				throw new Error('page says no');
+			});
+			const r = await box.commands.run('boom');
+			expect(r.exitCode).toBe(1);
+			expect(r.stderr).toContain('boom: page says no');
+			expect((await box.commands.run('notregistered')).exitCode).toBe(127);
+			await expect(box.commands.register('bad name', async () => 0)).rejects.toThrow(/Not a command name/);
+		});
 	});
 
 	it('fails calls after destroy', async () => {

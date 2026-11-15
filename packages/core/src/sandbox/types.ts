@@ -10,6 +10,16 @@ import type { BoxNet } from '../node-compat/net.js';
 // ─── Sandbox Options ───
 
 export interface SandboxOptions {
+  /**
+   * Where the box runs. `Sandbox` always runs it in the realm that creates it: in a browser that is
+   * the page itself, so code in the box (`node`, npm packages, an agent's commands) can read the
+   * page's DOM, storage and session. That is right for trusted code; for anything else in a
+   * browser, use `WorkerSandbox` (a Web Worker, optionally on a separate box origin).
+   *
+   * `'page'` changes nothing about how the box runs: it records that the in-page box is intended
+   * and silences the one-time console note `Sandbox.create` prints in a browser page.
+   */
+  realm?: 'page';
   /** Enable IndexedDB persistence (default: false) */
   persist?: boolean;
   /** Extra environment variables (merged with defaults) */

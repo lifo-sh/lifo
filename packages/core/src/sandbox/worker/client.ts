@@ -5,8 +5,11 @@
  *
  * - The box can't reach the page: no DOM, page globals, localStorage, sessionStorage or
  *   document.cookie, and its requests carry no cookies. That's the point.
- * - Commands are registered in the worker (its entry's `setup`), because a function can't cross
- *   from the page into the worker. `commands.register` here throws and says so.
+ * - Commands that should run in the box are registered in the worker (its entry's `setup`),
+ *   because a function can't cross from the page into the worker. `commands.register` here adds a
+ *   host command instead: it runs in the page, and the box gets a command of that name that
+ *   forwards each call here (args, env, cwd, stdin, output, abort, exit code). The box gains
+ *   exactly the commands the page registers, nothing more.
  * - `kernel` and `shell` live in the worker, so there's no direct handle to them.
  * - `destroy()` terminates the worker: every process in the box stops at once.
  *
@@ -21,9 +24,11 @@ import type { ITerminal } from '../../terminal/ITerminal.js';
 import type { BoxAuth } from '../../cloud/box-auth.js';
 import type { SnapshotMetadata } from '../../kernel/vfs/snapshot.js';
 import type { CommandResult, RunOptions, SnapshotOptions, SandboxFs } from '../types.js';
+import type { CommandContext } from '../../commands/types.js';
+import type { VFS } from '../../kernel/vfs/VFS.js';
 import type { SandboxFetchInit } from '../Sandbox.js';
-import { RpcChannel, ownBuffer, type Endpoint } from './rpc.js';
-import type { CreateRequest } from './host.js';
+import { RpcChannel, ownBuffer, HOST_VFS_WRITES, type Endpoint } from './rpc.js';
+import type { CreateRequest, HostRunRequest } from './host.js';
 import { openBoxFrame, type BoxFrame, type BoxFrameOptions } from './frame.js';
 
 export interface WorkerSandboxOptions {
@@ -50,6 +55,32 @@ export interface WorkerSandboxOptions {
 }
 
 type Waitable = { terminate?: () => void };
+
+/**
+ * What a host command gets: a CommandContext whose args, env, cwd, stdin, stdout, stderr and
+ * signal are the box's, plus `fs`, the box's filesystem (async). `ctx.vfs` is a stand-in: its
+ * writes (writeFile, mkdir, ...) are sent to the box and finish before the command exits; its
+ * reads throw (use `ctx.fs`). `executeCapture`/`executeCaptureResult` run in the box's shell.
+ */
+export interface HostCommandContext extends CommandContext {
+	fs: SandboxFs;
+}
+
+/** A command implemented in the page and run by the box (WorkerSandbox.commands.register). */
+export type HostCommand = (ctx: HostCommandContext) => Promise<number>;
+
+/** `ctx.vfs` for a host command: writes go to the box (tracked in `pending`), reads throw. */
+function hostVfs(write: (op: string, args: unknown[]) => Promise<unknown>, pending: Promise<unknown>[]): VFS {
+	return new Proxy({} as VFS, {
+		get(_, op) {
+			if (typeof op !== 'string' || op === 'then') return undefined;
+			if (HOST_VFS_WRITES.includes(op)) return (...args: unknown[]) => void pending.push(write(op, args));
+			return () => {
+				throw new Error(`vfs.${op} isn't available in a host command (the box's files are in its worker); use the async ctx.fs`);
+			};
+		},
+	});
+}
 
 function isTerminal(t: unknown): t is ITerminal {
 	return !!t && typeof t === 'object' && typeof (t as ITerminal).write === 'function' && typeof (t as ITerminal).onData === 'function';
@@ -88,7 +119,11 @@ export class WorkerSandbox {
 	readonly isolation = 'worker' as const;
 	readonly commands: {
 		run(cmd: string, options?: RunOptions): Promise<CommandResult>;
-		register(name: string, handler: unknown): never;
+		/**
+		 * Add a host command: `handler` runs here in the page, and the box can run it by `name`
+		 * like any other command (in its shell, pipes and scripts). Resolves once the box has it.
+		 */
+		register(name: string, handler: HostCommand): Promise<void>;
 	};
 	readonly fs: SandboxFs;
 	/** The box's environment as of the last call (read it again with `getEnv()`). */
@@ -102,6 +137,8 @@ export class WorkerSandbox {
 	private destroyed = false;
 	private frame: BoxFrame | null = null;
 	private reannounce: (() => void) | null = null;
+	private hostCommands = new Map<string, HostCommand>();
+	private hostRuns = new Map<number, AbortController>();
 
 	private constructor(
 		private readonly rpc: RpcChannel,
@@ -114,11 +151,11 @@ export class WorkerSandbox {
 			const cb = this.streams.get(id);
 			(s === 'o' ? cb?.onStdout : cb?.onStderr)?.(d);
 		});
+		rpc.handle('host.run', (id: number, name: string, req: HostRunRequest) => this.runHostCommand(id, name, req));
+		rpc.on('host.abort', (id: number) => this.hostRuns.get(id)?.abort());
 		this.commands = {
 			run: (cmd, options) => this.run(cmd, options),
-			register: () => {
-				throw new Error('A box in a worker registers its commands in the worker: pass them to serveSandbox({ setup }) in the worker entry.');
-			},
+			register: (name, handler) => this.registerHostCommand(name, handler),
 		};
 		const call = <T>(op: string, args: unknown[], transferList: Transferable[] = []) => this.rpc.call<T>('fs', [op, args], transferList);
 		this.fs = {
@@ -256,6 +293,57 @@ export class WorkerSandbox {
 		}
 	}
 
+	private async registerHostCommand(name: string, handler: HostCommand): Promise<void> {
+		if (typeof handler !== 'function') throw new TypeError(`commands.register: the handler for ${name} is not a function`);
+		this.hostCommands.set(name, handler);
+		try {
+			await this.rpc.call('commands.register', [name]);
+		} catch (err) {
+			if (this.hostCommands.get(name) === handler) this.hostCommands.delete(name);
+			throw err;
+		}
+	}
+
+	/** The box runs a host command: call the page's handler with a context that talks to the box. */
+	private async runHostCommand(id: number, name: string, req: HostRunRequest): Promise<number> {
+		const handler = this.hostCommands.get(name);
+		if (!handler) throw new Error('command not found');
+		const ac = new AbortController();
+		if (req.aborted) ac.abort();
+		this.hostRuns.set(id, ac);
+		const pending: Promise<unknown>[] = [];
+		const stream = (s: 'o' | 'e', isTTY: boolean) => ({
+			isTTY,
+			write: (d: string) => {
+				if (d) this.rpc.emit('host.out', { id, s, d: String(d) });
+			},
+		});
+		const executeCaptureResult = (input: string, opts?: { cwd?: string }) =>
+			this.rpc.call<{ stdout: string; stderr: string; code: number }>('host.exec', [id, input, opts]);
+		const ctx: HostCommandContext = {
+			args: req.args,
+			env: req.env,
+			cwd: req.cwd,
+			vfs: hostVfs((op, args) => this.rpc.call('host.vfs', [id, op, args]), pending),
+			fs: this.fs,
+			stdout: stream('o', req.tty[0]),
+			stderr: stream('e', req.tty[1]),
+			signal: ac.signal,
+			stdin: req.stdin
+				? { read: () => this.rpc.call<string | null>('host.stdin', [id, false]), readAll: () => this.rpc.call<string>('host.stdin', [id, true]) }
+				: undefined,
+			executeCaptureResult,
+			executeCapture: (input, opts) => executeCaptureResult(input, opts).then((r) => r.stdout),
+		};
+		try {
+			const code = await handler(ctx);
+			await Promise.all(pending);
+			return typeof code === 'number' ? code : 0;
+		} finally {
+			this.hostRuns.delete(id);
+		}
+	}
+
 	/**
 	 * Show the box's shell in a terminal in the page: an element or selector (an xterm.js terminal
 	 * is made), or your own ITerminal. Attaching again moves the shell.
@@ -383,6 +471,7 @@ export class WorkerSandbox {
 		if (this.destroyed) return;
 		this.destroyed = true;
 		this.detachTerminal();
+		for (const ac of this.hostRuns.values()) ac.abort();
 		this.reannounce?.();
 		const end = () => {
 			this.rpc.close();

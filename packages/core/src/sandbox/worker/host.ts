@@ -10,7 +10,8 @@
  * no localStorage, sessionStorage or document.cookie. Requests the box makes are sent without the
  * site's cookies (fetch, XMLHttpRequest and EventSource are made credential-less, and WebSockets
  * to the page's own origin are refused). The page lends capabilities only through methods it
- * serves on purpose, such as `auth.getToken`.
+ * serves on purpose, such as `auth.getToken`, and through host commands: commands the page
+ * registers with WorkerSandbox.commands.register, which the box can run by name.
  *
  * What a same-origin worker can't hide: it shares the page's origin, so a module import from the
  * site's own URLs still carries cookies, and IndexedDB and the Cache API are shared. A box worker
@@ -20,10 +21,11 @@
 
 import { Sandbox } from '../Sandbox.js';
 import type { ITerminal } from '../../terminal/ITerminal.js';
+import type { CommandContext } from '../../commands/types.js';
 import type { SnapshotOptions } from '../types.js';
 import { Buffer } from '../../node-compat/buffer.js';
 import { ServiceWorkerBridge } from '../../kernel/network/ServiceWorkerBridge.js';
-import { RpcChannel, transfer, ownBuffer, type Endpoint } from './rpc.js';
+import { RpcChannel, transfer, ownBuffer, HOST_VFS_WRITES, type Endpoint } from './rpc.js';
 
 export interface ServeSandboxOptions {
 	/**
@@ -50,6 +52,18 @@ export interface CreateRequest {
 	/** The page's terminal size, if it shows a terminal. */
 	terminal?: { cols: number; rows: number } | null;
 	setup?: unknown;
+}
+
+/** What the box tells the page about a call to a host command (see WorkerSandbox.commands.register). */
+export interface HostRunRequest {
+	args: string[];
+	env: Record<string, string>;
+	cwd: string;
+	/** Whether the command has stdin; the page reads it back through `host.stdin`. */
+	stdin: boolean;
+	/** Whether stdout and stderr are the terminal. */
+	tty: [boolean, boolean];
+	aborted: boolean;
 }
 
 /** An ITerminal whose screen is in the page: output is batched into messages, input comes back. */
@@ -318,6 +332,63 @@ export function serveSandbox(endpoint: Endpoint, options: ServeSandboxOptions = 
 		return bridge.boxId;
 	});
 
+	// Host commands: commands the page implements (WorkerSandbox.commands.register). The page names
+	// them; the box gets a command of that name that forwards each call to the page and streams its
+	// output back. The box can call the page only through the names the page registered.
+	const hostRuns = new Map<number, CommandContext>();
+	let nextHostRun = 1;
+	const hostRun = (id: number) => {
+		const ctx = hostRuns.get(id);
+		if (!ctx) throw new Error('That command has finished');
+		return ctx;
+	};
+	const runHostCommand = async (name: string, ctx: CommandContext): Promise<number> => {
+		const id = nextHostRun++;
+		hostRuns.set(id, ctx);
+		const onAbort = () => rpc.emit('host.abort', id);
+		ctx.signal.addEventListener('abort', onAbort, { once: true });
+		try {
+			const req: HostRunRequest = {
+				args: ctx.args,
+				env: ctx.env,
+				cwd: ctx.cwd,
+				stdin: !!ctx.stdin,
+				tty: [!!ctx.stdout.isTTY, !!ctx.stderr.isTTY],
+				aborted: ctx.signal.aborted,
+			};
+			return await rpc.call<number>('host.run', [id, name, req]);
+		} catch (err) {
+			ctx.stderr.write(`${name}: ${(err as Error).message}\n`);
+			return 1;
+		} finally {
+			ctx.signal.removeEventListener('abort', onAbort);
+			hostRuns.delete(id);
+		}
+	};
+	rpc.handle('commands.register', (name: string) => {
+		if (typeof name !== 'string' || !/^[\w.+-]+$/.test(name)) throw new Error(`Not a command name: ${String(name)}`);
+		need().commands.register(name, (ctx) => runHostCommand(name, ctx));
+	});
+	rpc.on('host.out', ({ id, s, d }: { id: number; s: 'o' | 'e'; d: string }) => {
+		const ctx = hostRuns.get(id);
+		(s === 'e' ? ctx?.stderr : ctx?.stdout)?.write(d);
+	});
+	rpc.handle('host.stdin', (id: number, all: boolean) => {
+		const stdin = hostRun(id).stdin;
+		if (!stdin) return all ? '' : null;
+		return all ? stdin.readAll() : stdin.read();
+	});
+	rpc.handle('host.exec', (id: number, input: string, opts?: { cwd?: string }) => {
+		const ctx = hostRun(id);
+		if (!ctx.executeCaptureResult) throw new Error('This shell cannot run sub-commands');
+		return ctx.executeCaptureResult(input, opts);
+	});
+	rpc.handle('host.vfs', (id: number, op: string, args: unknown[]) => {
+		if (!HOST_VFS_WRITES.includes(op)) throw new Error(`vfs.${op} is not available`);
+		const vfs = hostRun(id).vfs as unknown as Record<string, (...a: unknown[]) => unknown>;
+		vfs[op](...args);
+	});
+
 	rpc.handle('destroy', () => {
 		if (!box) return;
 		const registry = box.shell.getProcessRegistry();
@@ -333,4 +404,19 @@ export function serveSandbox(endpoint: Endpoint, options: ServeSandboxOptions = 
 
 	rpc.emit('ready');
 	return rpc;
+}
+
+/**
+ * In a box's worker started by `serveBoxFrame`: serve the box on the port the host page hands
+ * over (instead of on the worker's own global, which only the host page can reach).
+ */
+export function serveSandboxWhenConnected(scope: Endpoint, options: ServeSandboxOptions = {}): void {
+	const onMessage = (event: { data: unknown; ports?: readonly MessagePort[] }) => {
+		const data = event.data as { type?: string } | null;
+		const port = event.ports?.[0];
+		if (data?.type !== 'lifo-box-port' || !port) return;
+		scope.removeEventListener('message', onMessage as (e: { data: unknown }) => void);
+		serveSandbox(port as unknown as Endpoint, options);
+	};
+	scope.addEventListener('message', onMessage as (e: { data: unknown }) => void);
 }

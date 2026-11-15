@@ -20,9 +20,11 @@ export default defineConfig({
     // Keep dist/ in place between watch rebuilds, so a consumer never sees it half-empty.
     emptyOutDir: !watching,
     lib: {
-      entry: 'src/index.ts',
+      // index: everything. client: the page side of a worker box (WorkerSandbox, box frames,
+      // pageAuth), small enough for a page that keeps the box itself in a worker.
+      entry: { index: 'src/index.ts', client: 'src/client.ts' },
       formats: ['es'],
-      fileName: 'index',
+      fileName: (_format, name) => `${name}.js`,
     },
     rollupOptions: {
       external,

@@ -10,7 +10,8 @@ import { firefoxPlugin } from './src/vite-plugin-firefox';
 // LIFO_EMBED=1: served by the lifo.sh website's dev server, which proxies /playground/*
 // here (website/scripts/dev.mjs), so edits show up on the site live. Same base as the
 // production copy, its own port (5273) so it can run next to a standalone `pnpm dev`, and
-// HMR talks to this server directly, since the proxy doesn't carry it.
+// HMR talks to this server directly, since the proxy doesn't carry it: at localhost, which is
+// where it listens, also when the site frames the app from its box origin (http://127.0.0.1:3000).
 const embedded = process.env.LIFO_EMBED === '1';
 
 export default defineConfig(({ command }) => ({
@@ -20,7 +21,7 @@ export default defineConfig(({ command }) => ({
     port: embedded ? 5273 : 5173,
     ...(embedded && {
       strictPort: true,
-      hmr: { clientPort: 5273 },
+      hmr: { host: 'localhost', clientPort: 5273 },
       headers: { 'Service-Worker-Allowed': '/_sw/' },
     }),
     // Pre-transform the entry + example modules at startup so the first time you

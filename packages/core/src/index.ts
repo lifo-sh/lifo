@@ -1,6 +1,6 @@
 // Sandbox (high-level API)
 export { Sandbox, WorkerSandbox, serveSandbox, lockDownCredentials, RpcChannel, openBoxFrame, serveBoxFrame, serveSandboxWhenConnected } from './sandbox/index.js';
-export type { WorkerSandboxOptions, ServeSandboxOptions, RpcEndpoint, BoxFrame, BoxFrameOptions, ServeBoxFrameOptions } from './sandbox/index.js';
+export type { WorkerSandboxOptions, HostCommand, HostCommandContext, ServeSandboxOptions, RpcEndpoint, BoxFrame, BoxFrameOptions, ServeBoxFrameOptions } from './sandbox/index.js';
 export type {
 	SandboxOptions,
 	RunOptions,

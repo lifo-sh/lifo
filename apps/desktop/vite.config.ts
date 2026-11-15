@@ -9,7 +9,7 @@ export default defineConfig(({ command }) => ({
 	base: command === 'build' || embedded ? '/desktop/' : '/',
 	server: {
 		port: embedded ? 5274 : 3001,
-		...(embedded && { strictPort: true, hmr: { clientPort: 5274 } }),
+		...(embedded && { strictPort: true, hmr: { host: 'localhost', clientPort: 5274 } }),
 	},
 	resolve: {
 		alias: {

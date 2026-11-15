@@ -629,7 +629,36 @@ box.commands.<span class="code-fn">register</span>(<span class="code-string">'ag
 <span class="code-string">browser text | head</span>
 <span class="code-string">agent "What is the top story on Hacker News?"</span>`;
 
+const CODE_ISOLATION = `\
+<span class="code-comment">// box.worker.ts: the box side, one line</span>
+<span class="code-keyword">import</span> { serveSandbox } <span class="code-keyword">from</span> <span class="code-string">'@lifo-sh/core'</span>
+<span class="code-fn">serveSandbox</span>(self)
+
+<span class="code-comment">// The page: a box in a Web Worker. Code in it can't reach</span>
+<span class="code-comment">// this page's DOM, storage, cookies or variables, and a busy</span>
+<span class="code-comment">// loop in it doesn't freeze the page.</span>
+<span class="code-keyword">import</span> { Sandbox, WorkerSandbox } <span class="code-keyword">from</span> <span class="code-string">'@lifo-sh/core'</span>
+
+<span class="code-keyword">const</span> box = <span class="code-keyword">await</span> WorkerSandbox.<span class="code-fn">create</span>({
+  worker: () => <span class="code-keyword">new</span> <span class="code-fn">Worker</span>(
+    <span class="code-keyword">new</span> <span class="code-fn">URL</span>(<span class="code-string">'./box.worker.ts'</span>, <span class="code-keyword">import</span>.meta.url),
+    { type: <span class="code-string">'module'</span> }),
+})
+<span class="code-keyword">await</span> box.commands.<span class="code-fn">run</span>(<span class="code-string">'node probe.js'</span>)
+
+<span class="code-comment">// The same box in the page: for code you trust.</span>
+<span class="code-comment">// It shares the page's realm and main thread.</span>
+<span class="code-comment">// realm: 'page' says that's intended; nothing else changes.</span>
+<span class="code-keyword">const</span> inPage = <span class="code-keyword">await</span> Sandbox.<span class="code-fn">create</span>({ realm: <span class="code-string">'page'</span> })
+
+<span class="code-comment">// probe.js, run in each box</span>
+<span class="code-keyword">const</span> page = globalThis    <span class="code-comment">// node hides \`document\`; this doesn't</span>
+console.<span class="code-fn">log</span>(page.document.title)
+console.<span class="code-fn">log</span>(page.localStorage.<span class="code-fn">getItem</span>(<span class="code-string">'lifo-isolation-demo'</span>))
+console.<span class="code-fn">log</span>(page.document.cookie)`;
+
 export const codeSnippets: Record<string, string> = {
+	isolation: CODE_ISOLATION,
 	interactive: CODE_INTERACTIVE,
 	headless: CODE_HEADLESS,
 	agent: CODE_AGENT,

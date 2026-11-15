@@ -26,8 +26,6 @@
  * (previews, close). Every message is checked for origin and source on both sides.
  */
 
-import type { Endpoint } from './rpc.js';
-import { serveSandbox, type ServeSandboxOptions } from './host.js';
 
 export interface BoxFrameOptions {
 	/** The box origin, e.g. `https://box.example.net`. It must be a different site from the page. */
@@ -203,19 +201,4 @@ export function serveBoxFrame(options: ServeBoxFrameOptions): void {
 	});
 
 	for (const origin of allowed) window.parent.postMessage({ type: 'lifo-box-host-ready' }, origin);
-}
-
-/**
- * In a box's worker started by `serveBoxFrame`: serve the box on the port the host page hands
- * over (instead of on the worker's own global, which only the host page can reach).
- */
-export function serveSandboxWhenConnected(scope: Endpoint, options: ServeSandboxOptions = {}): void {
-	const onMessage = (event: { data: unknown; ports?: readonly MessagePort[] }) => {
-		const data = event.data as { type?: string } | null;
-		const port = event.ports?.[0];
-		if (data?.type !== 'lifo-box-port' || !port) return;
-		scope.removeEventListener('message', onMessage as (e: { data: unknown }) => void);
-		serveSandbox(port as unknown as Endpoint, options);
-	};
-	scope.addEventListener('message', onMessage as (e: { data: unknown }) => void);
 }

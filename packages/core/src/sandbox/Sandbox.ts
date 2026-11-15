@@ -81,6 +81,24 @@ function resolveTarget(input: string | URL, portOption?: number): { port: number
 	return { port, url: parsed.pathname + parsed.search };
 }
 
+let pageRealmNoted = false;
+
+/**
+ * Once per page: say that a box made with `Sandbox` in a browser page runs in the page. Silent in
+ * workers (WorkerSandbox runs a Sandbox inside its worker), in Node and in workerd, and when the
+ * caller passed `realm: 'page'`.
+ */
+function notePageRealm(): void {
+	if (pageRealmNoted) return;
+	if (typeof window === 'undefined' || typeof document === 'undefined') return;
+	pageRealmNoted = true;
+	console.info(
+		"[lifo] This Sandbox runs in the page, so code in the box can read the page's DOM, storage and session. " +
+			"For code you don't fully trust, use WorkerSandbox (https://lifo.sh/docs/understand/security). " +
+			"Pass `realm: 'page'` to Sandbox.create to keep the in-page box and hide this note.",
+	);
+}
+
 export class Sandbox {
 	/** Programmatic command execution */
 	readonly commands: SandboxCommands;
@@ -123,6 +141,8 @@ export class Sandbox {
 	 * Orchestrates all boot steps: Kernel, VFS, Registry, Shell, config sourcing.
 	 */
 	static async create(options?: SandboxOptions): Promise<Sandbox> {
+		if (options?.realm !== 'page') notePageRealm();
+
 		// 1. Create and boot kernel
 		const kernel = new Kernel();
 		await kernel.boot({ persist: options?.persist ?? false });

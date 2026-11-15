@@ -6,6 +6,7 @@ import { codeSnippets } from '@/data/code-snippets';
 const GitExample = lazy(() => import('@/examples/git'));
 const InteractiveExample = lazy(() => import('@/examples/interactive'));
 const HeadlessExample = lazy(() => import('@/examples/headless'));
+const IsolationExample = lazy(() => import('@/examples/isolation'));
 const AgentExample = lazy(() => import('@/examples/agent'));
 const HttpExample = lazy(() => import('@/examples/http'));
 const ExpressExample = lazy(() => import('@/examples/express'));
@@ -47,6 +48,7 @@ export const examples: ExampleConfig[] = [
   { id: 'interactive', label: 'Interactive Shell', group: 'Examples', Component: InteractiveExample },
   { id: 'headless', label: 'Headless / AI Agent', group: 'Examples', Component: HeadlessExample },
   { id: 'agent', label: 'Browser agent (WebLLM + Firefox)', group: 'Examples', Component: AgentExample },
+  { id: 'isolation', label: 'Isolation: page vs worker', group: 'Examples', Component: IsolationExample },
   { id: 'http', label: 'HTTP Server', group: 'Examples', Component: HttpExample },
   { id: 'explorer', label: 'File Explorer', group: 'Examples', Component: ExplorerExample },
   { id: 'npm', label: 'npm', group: 'Examples', Component: NpmExample },

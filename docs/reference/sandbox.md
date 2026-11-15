@@ -5,7 +5,11 @@ import { Sandbox } from '@lifo-sh/core';
 const box = await Sandbox.create(options);
 ```
 
-The same API in the browser and in Node.js 20+.
+The same API in the browser and in Node.js 20+. `Sandbox` runs the box in the realm that creates
+it. In a browser page that is the page itself, so code in the box can read the page's DOM, storage
+and session: use it for code you trust. For anything else in a browser, use
+[`WorkerSandbox`](#workersandbox-a-box-in-a-web-worker), which runs the same box in a Web Worker
+([Security and isolation](../understand/security.md)).
 
 ## Sandbox.create(options?)
 
@@ -18,6 +22,7 @@ The same API in the browser and in Node.js 20+.
 | `terminal` | `string \| HTMLElement \| ITerminal` | a CSS selector or element to put an xterm.js terminal in (needs `@lifo-sh/ui`), or your own terminal; without it the box is headless |
 | `mounts` | `{ virtualPath, hostPath, readOnly?, fsModule? }[]` | Node only: host folders to show in the box |
 | `auth` | `{ baseUrl, getToken }` | lend the box a login: `lifo whoami`, `lifo tunnel` and `lifo cloud` in the box act as that account. `getToken()` returns a `lifo_` token or `null`; it's called the first time a command needs one, and the result is reused until a minute before it expires. The token never goes into the box's env or files |
+| `realm` | `'page'` | says the in-page box is intended. It changes nothing about how the box runs; it hides the one-time console note `Sandbox.create` prints in a browser page |
 | `net` | `{ connect(opts) }` | real outbound TCP for the box's `net` and `tls` modules, from a host that has it. `connect({ host, port, tls?, servername? })` returns a socket: `{ opened, onData(cb), onClose(cb), write(bytes), end(), destroy(), startTls?() }`. Without it (the default, and always in a browser tab) those modules are stubs. Lifo Cloud passes one built on workerd's `connect()`; the host decides which addresses a box may reach |
 
 Default environment: `HOME=/home/user`, `USER=user`, `HOSTNAME=lifo`, `SHELL=/bin/sh`,
@@ -101,7 +106,8 @@ All methods are async.
 `WorkerSandbox.create(options)` runs the box in a Web Worker, so code in it can't reach the page
 ([Security and isolation](../understand/security.md#a-box-in-a-web-worker)). The worker's entry
 calls `serveSandbox(self, { setup(box, extra) {...} })`, where `setup` registers commands and
-packages: they must run in the worker, so `commands.register` on the page side throws.
+packages that run in the box. A command that needs the page (the DOM, a canvas, the GPU) is a
+host command, registered on the page side (below).
 
 | Option | |
 |---|---|
@@ -120,6 +126,35 @@ service worker, and preview requests are answered inside the box's worker. `kern
 stay in the worker. `destroy()` terminates the worker, which stops every process at once
 (and removes the iframe of a box on another origin). Buffers (snapshots, binary files) are
 transferred, not copied.
+
+### Host commands
+
+**`commands.register(name, command) → Promise`** on a `WorkerSandbox` adds a host command: the
+command runs in the page, and the box gets a command of that name (in `/usr/bin`, usable in its
+shell, pipes and scripts) that forwards each call to it. It resolves once the box has it.
+
+```js
+await box.commands.register('page-title', async (ctx) => {
+  ctx.stdout.write(document.title + '\n'); // runs in the page: the DOM is here
+  return 0;
+});
+await box.commands.run('page-title | tr a-z A-Z'); // the box reaches the page only this way
+```
+
+`ctx` is a command context whose `args`, `env`, `cwd`, `signal` and `stdin` come from the box
+(stdin is read from the box as the command asks for it), and whose `stdout` and `stderr` stream
+back to it. `executeCapture(line)` and `executeCaptureResult(line)` run a line in the box's shell.
+`ctx.fs` is the box's filesystem (async, as `box.fs`). `ctx.vfs` stands in for the box's
+synchronous VFS: its writes (`writeFile`, `appendFile`, `mkdir`, `unlink`, `rename`, `copyFile`,
+`touch`, `rmdir`, `rmdirRecursive`, `symlink`, `chmod`) are sent to the box and land before the
+command exits; its reads throw, so use `ctx.fs`. When the box stops the command (Ctrl+C, a
+`timeout`, a `signal`), `ctx.signal` aborts. The return value is the exit code; a thrown error
+prints `name: message` to stderr and exits 1. `setRawMode` isn't available.
+
+Host commands are how the box reaches the page, so treat them as an API the box can call: the
+box gains exactly the commands registered this way and nothing else, and code in the box can call
+them with any arguments and stdin. Check what they're given as you would input from a user.
+Commands that don't need the page belong in the worker's `setup`, where they run inside the box.
 
 A box on another origin also has `origin` (the box origin; `null` otherwise) and
 `servePreviewsOnOrigin()`, which serves its previews from the box origin's service worker and

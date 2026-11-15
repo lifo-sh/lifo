@@ -7,6 +7,7 @@ import { TerminalArea } from '@/components/terminal-area';
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable';
 import { bootShell } from '@/lib/shell';
 import { setFirefox } from '@/lib/agent';
+import { SITE_ORIGIN, askSite } from '@/lib/site';
 
 // The in-browser agent from the browser-in-browser experiment (lifo-pkg-agent), split pane: a Lifo
 // terminal on the left, a real Firefox (Gecko compiled to WebAssembly) on the right. `browser`
@@ -14,6 +15,8 @@ import { setFirefox } from '@/lib/agent';
 // it can answer. Firefox needs a cross-origin isolated page and a network relay (on lifo.sh: a
 // login); without them `browser` reads pages as text instead.
 async function relayUrl(): Promise<string | null> {
+  // Framed from lifo.sh's box origin: the framing page asks with the visitor's login (lib/site.ts).
+  if (SITE_ORIGIN) return askSite('wisp-token');
   const res = await fetch('/api/wisp-token', { cache: 'no-store' }).catch(() => null);
   if (!res?.ok) return null;
   return ((await res.json()) as { url?: string }).url ?? null;

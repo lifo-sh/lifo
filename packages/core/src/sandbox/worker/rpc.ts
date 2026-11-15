@@ -123,6 +123,12 @@ export class RpcChannel {
 	}
 }
 
+/**
+ * The VFS writes a host command may make through `ctx.vfs` (they're synchronous in the box, so the
+ * page sends them and waits for them before the command exits). Reads go through the async `ctx.fs`.
+ */
+export const HOST_VFS_WRITES: readonly string[] = ['writeFile', 'appendFile', 'mkdir', 'unlink', 'rename', 'copyFile', 'touch', 'rmdir', 'rmdirRecursive', 'symlink', 'chmod'];
+
 /** The underlying ArrayBuffer of a typed array, sliced if it's a view on a bigger buffer. */
 export function ownBuffer(bytes: Uint8Array): ArrayBuffer {
 	if (bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength && bytes.buffer instanceof ArrayBuffer) return bytes.buffer;

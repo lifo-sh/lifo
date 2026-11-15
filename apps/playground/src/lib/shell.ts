@@ -40,6 +40,7 @@ import calCommand from 'lifo-pkg-cal';
 import bcCommand from 'lifo-pkg-bc';
 import manCommand from 'lifo-pkg-man';
 import { registerAgentCommands } from './agent';
+import { SITE_ORIGIN, askSite } from './site';
 import orchdCommand from 'orchd/lifo';
 
 /**
@@ -63,14 +64,22 @@ export function browserCorsEnv(): Record<string, string> {
 
 let authProbe: Promise<BoxAuth | undefined> | null = null;
 
+// One function for every box, so setBoxAuth keeps a box's cached token across shells.
+const siteToken = async () => {
+  const token = await askSite('box-token');
+  return token?.startsWith('lifo_') ? token : null;
+};
+
 /**
  * The website's login for this playground's boxes, when it's served by lifo.sh (or the local
  * website) at /playground: `lifo whoami | tunnel | cloud` then act as the logged-in visitor, with a
- * one-hour token from /api/box-token. Standalone (`pnpm dev`) there's no such endpoint and boxes
+ * one-hour token from /api/box-token. Framed from lifo.sh's box origin, the token comes from the
+ * framing page instead (./site.ts). Standalone (`pnpm dev`) there's no such endpoint and boxes
  * behave as before. Probed once with a GET, which the website answers 405 (it only mints on POST).
  */
 export function playgroundAuth(): Promise<BoxAuth | undefined> {
   if (typeof location === 'undefined') return Promise.resolve(undefined);
+  if (SITE_ORIGIN) return Promise.resolve({ baseUrl: SITE_ORIGIN, getToken: siteToken });
   authProbe ??= fetch('/api/box-token', { method: 'GET', credentials: 'same-origin' })
     .then((res) => (res.status === 405 || res.status === 401 ? pageAuth(location.origin) : undefined))
     .catch(() => undefined);

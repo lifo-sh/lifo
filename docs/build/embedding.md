@@ -56,9 +56,10 @@ Vite, Express, Postgres, Supabase, Expo and more. Embed it in an `<iframe>`:
   `expo-router`, `create-expo-app`, `browser-metro`, `expo-supabase`, `git`, `ffmpeg`.
 - `embed=1` hides the examples sidebar.
 
-The playground lives on lifo.sh's origin, so the box runs there, not in your page. That also
-keeps code in it away from your page's cookies and storage (see
-[Security and isolation](../understand/security.md)).
+The playground is served by lifo.sh (on lifo.sh's own origin, or on its separate box origin when
+one is configured, which the URL above forwards to), so the box runs there, not in your page.
+That also keeps code in it away from your page's cookies and storage (see
+[Security and isolation](../understand/security.md)). An embed never gets a lifo.sh login.
 
 ## Driving a box from your UI
 

@@ -22,7 +22,10 @@ package's code), that JavaScript runs in the same engine and the same realm as t
 created the box. Lifo gives it its own `fs`, `process` and `require`, but nothing stops it
 from reaching past them to the real globals.
 
-Run this to see it. The code inside the box reads this page's title:
+Run this to see it. The code inside the box reads the title of the page that created it. On
+lifo.sh the docs' examples don't run in the docs page, for exactly this reason: each runs in an
+isolated frame, so it prints that frame's title ("Lifo example (isolated frame)"). In your own
+page it would print yours:
 
 ```js live
 import { Sandbox } from '@lifo-sh/core';
@@ -47,7 +50,8 @@ reach, and the worker strips the site's cookies from the requests the box makes.
 talks to the box over messages, with the same API as `Sandbox` (async where it has to be).
 
 ```js
-// box.worker.js: the box's realm. Register commands and packages here.
+// box.worker.js: the box's realm. Register commands and packages here (commands that need the
+// page are host commands, below).
 import { serveSandbox } from '@lifo-sh/core';
 serveSandbox(self, { setup(box) { /* box.commands.register(...) */ } });
 ```
@@ -62,6 +66,12 @@ const box = await WorkerSandbox.create({
 });
 await box.commands.run(`node -e "console.log(typeof document)"`); // undefined
 ```
+
+A command that needs the page (the DOM, a canvas, the GPU) can be a host command:
+`box.commands.register(name, fn)` on the page side runs `fn` in the page, and the box can run it by
+name like any other command ([Host commands](../reference/sandbox.md#host-commands)). The box gains
+exactly the commands registered this way and nothing more, and it can call them with any
+arguments, so write them as you would an API for an untrusted caller.
 
 ### On another origin
 
@@ -120,13 +130,24 @@ server, the cloud) are unaffected. Any site that hosts boxes in a same-origin wo
 the same for its own endpoints.
 
 **Treat what comes back as untrusted.** In every setup, code in the box can send messages to the
-page: the page should handle what the box returns as data, never as code or HTML.
+page: the page should handle what the box returns as data, never as code or HTML. The same goes
+for host commands: their arguments and stdin come from code in the box.
 
-**On lifo.sh**, the live demos and the dashboard Playground run their boxes on a separate box
-origin when one is configured (in development, `127.0.0.1` next to `localhost`), and in a
-same-origin worker otherwise. The Agent demo and the [agent page](../build/agents.md) still run
-theirs in the page, because the agent's model (WebLLM) and Firefox are wired to the box from the
-page.
+**On lifo.sh**, no box runs in a page of the site:
+
+- The live demos, the dashboard Playground, the Agent demo and the [agent page](../build/agents.md)
+  run their boxes in a Web Worker: on a separate box origin when one is configured (in development,
+  `127.0.0.1` next to `localhost`), and in a same-origin worker otherwise. On the agent page,
+  `browser` (Firefox) and `agent` (WebLLM) are host commands: they run in the page, and the box
+  reaches the page only through them.
+- The playground (/playground, the docs' playground embeds) and the desktop (/desktop, the home
+  page's desktop) run boxes in their own page, so with a box origin the site frames them from it.
+  They get the visitor's login through the framing page, which answers only the box origin's frame
+  and hands over only a one-hour terminal token (and a 5-minute Firefox relay ticket for the
+  browser agent), never the session. Without a box origin they're served from lifo.sh.
+- The docs' runnable JavaScript examples never run in the docs page: they run in a frame on the
+  box origin, or, without one, in a sandboxed frame with an opaque origin, which has no storage, no
+  service worker and no session.
 
 ## What to do about it
 
@@ -137,6 +158,13 @@ page.
   the box's worker from a different origin (another domain, not a subdomain of yours), inside a
   sandboxed `<iframe>`, and hand its port to `WorkerSandbox`. The browser's origin isolation then
   covers what a same-origin worker can't.
+- **Previews count as box code.** An app served from the box and shown in an `<iframe>` runs with
+  that frame's origin. A frame on your site's origin with `allow-same-origin` (or a `blob:` URL
+  your page made) runs the app as your site, whatever realm the box itself is in. Serve previews
+  from the box origin, or use a frame without `allow-same-origin`.
+- **Keeping the box in the page on purpose** (a trusted single-user tool, an existing integration
+  that uses `box.kernel` and `box.shell`): `Sandbox` stays supported. Pass `realm: 'page'` to say
+  so; it hides the one-time console note and changes nothing else.
 - **Code you don't trust, on a server:** run the box in a separate process or container with
   only the permissions you'd give that code anyway, or use a VM-based sandbox. Lifo's own
   [cloud boxes](../cloud/boxes.md) do the equivalent: each box gets its own V8 isolate, no

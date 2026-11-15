@@ -1,7 +1,8 @@
 import { describe, expect, it, afterEach } from 'vitest';
 import { MessageChannel } from 'node:worker_threads';
 import { WorkerSandbox } from '../../src/sandbox/worker/client.js';
-import { openBoxFrame, serveBoxFrame, serveSandboxWhenConnected } from '../../src/sandbox/worker/frame.js';
+import { openBoxFrame, serveBoxFrame } from '../../src/sandbox/worker/frame.js';
+import { serveSandboxWhenConnected } from '../../src/sandbox/worker/host.js';
 import type { Endpoint } from '../../src/sandbox/worker/rpc.js';
 
 // A box on another origin (frame.ts): the host page on the box origin answers only its allowed
