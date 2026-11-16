@@ -1,3 +1,17 @@
+## 0.10.32
+
+### Patch Changes
+
+- `mv` and `cp` handle several sources and their flags (#122, #123). Both read only their first two arguments, so `mv a b c dir/` ran as `mv a b`: `b` was overwritten with `a`, the rest were ignored, and it exited 0. Flags were taken as file names. They now follow coreutils:
+  - every source is moved or copied
+  - several sources need an existing directory as the target
+  - a missing source is reported and the others still go
+  - a directory can't be moved or copied into itself
+  - `cp -r` copies directory trees
+  - `mv` never deletes the target before renaming
+
+  A RapidNative agent lost every screen of an app this way.
+
 ## 0.10.31
 
 ### Patch Changes
