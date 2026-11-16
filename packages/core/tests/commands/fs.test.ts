@@ -232,6 +232,113 @@ describe('mv', () => {
   });
 });
 
+describe('mv with several sources and flags', () => {
+  let vfs: VFS;
+
+  beforeEach(() => {
+    vfs = new VFS();
+    vfs.mkdir('/app');
+    vfs.mkdir('/app/(app)');
+    vfs.writeFile('/app/(app)/index.tsx', 'INDEX');
+    vfs.writeFile('/app/(app)/coin-flip.tsx', 'COIN');
+    vfs.writeFile('/app/(app)/dice.tsx', 'DICE');
+    vfs.mkdir('/app/(app)/(tabs)');
+  });
+
+  // RapidNative escalation 2026-11-16: only args[0] and args[1] were read, so this renamed index.tsx
+  // onto coin-flip.tsx, ignored the rest, exited 0, and the agent then deleted the folder it thought was empty.
+  it('moves every source into the directory', async () => {
+    const { default: mv } = await import('../../src/commands/fs/mv.js');
+    const ctx = createContext(vfs, ['index.tsx', 'coin-flip.tsx', 'dice.tsx', '(tabs)/'], '/app/(app)');
+    expect(await mv(ctx)).toBe(0);
+    expect(vfs.readFileString('/app/(app)/(tabs)/index.tsx')).toBe('INDEX');
+    expect(vfs.readFileString('/app/(app)/(tabs)/coin-flip.tsx')).toBe('COIN');
+    expect(vfs.readFileString('/app/(app)/(tabs)/dice.tsx')).toBe('DICE');
+    expect(vfs.exists('/app/(app)/index.tsx')).toBe(false);
+  });
+
+  it('refuses several sources when the target is not a directory, changing nothing', async () => {
+    const { default: mv } = await import('../../src/commands/fs/mv.js');
+    const ctx = createContext(vfs, ['index.tsx', 'coin-flip.tsx', 'dice.tsx'], '/app/(app)');
+    expect(await mv(ctx)).toBe(1);
+    expect(ctx.stderr.text).toContain("target 'dice.tsx' is not a directory");
+    expect(vfs.readFileString('/app/(app)/coin-flip.tsx')).toBe('COIN');
+    expect(vfs.readFileString('/app/(app)/index.tsx')).toBe('INDEX');
+  });
+
+  it('reads flags as flags, not file names', async () => {
+    const { default: mv } = await import('../../src/commands/fs/mv.js');
+    const ctx = createContext(vfs, ['-fv', 'index.tsx', 'home.tsx'], '/app/(app)');
+    expect(await mv(ctx)).toBe(0);
+    expect(vfs.readFileString('/app/(app)/home.tsx')).toBe('INDEX');
+    expect(ctx.stdout.text).toContain('renamed');
+    const n = createContext(vfs, ['-n', 'dice.tsx', 'coin-flip.tsx'], '/app/(app)');
+    expect(await mv(n)).toBe(0);
+    expect(vfs.readFileString('/app/(app)/coin-flip.tsx')).toBe('COIN');
+    expect(vfs.exists('/app/(app)/dice.tsx')).toBe(true);
+  });
+
+  it('fails on a missing source but still moves the others', async () => {
+    const { default: mv } = await import('../../src/commands/fs/mv.js');
+    const ctx = createContext(vfs, ['nope.tsx', 'dice.tsx', '(tabs)'], '/app/(app)');
+    expect(await mv(ctx)).toBe(1);
+    expect(ctx.stderr.text).toContain("cannot stat 'nope.tsx'");
+    expect(vfs.exists('/app/(app)/(tabs)/dice.tsx')).toBe(true);
+  });
+
+  it('will not move a directory into itself', async () => {
+    const { default: mv } = await import('../../src/commands/fs/mv.js');
+    const ctx = createContext(vfs, ['/app/(app)', '/app/(app)/(tabs)']);
+    expect(await mv(ctx)).toBe(1);
+    expect(vfs.exists('/app/(app)/index.tsx')).toBe(true);
+  });
+});
+
+describe('cp with several sources and -r', () => {
+  let vfs: VFS;
+
+  beforeEach(() => {
+    vfs = new VFS();
+    vfs.mkdir('/src');
+    vfs.writeFile('/src/a.txt', 'A');
+    vfs.mkdir('/src/sub');
+    vfs.writeFile('/src/sub/b.txt', 'B');
+    vfs.writeFile('/one.txt', '1');
+    vfs.writeFile('/two.txt', '2');
+    vfs.mkdir('/out');
+  });
+
+  it('copies every source into the directory', async () => {
+    const { default: cp } = await import('../../src/commands/fs/cp.js');
+    const ctx = createContext(vfs, ['/one.txt', '/two.txt', '/out']);
+    expect(await cp(ctx)).toBe(0);
+    expect(vfs.readFileString('/out/one.txt')).toBe('1');
+    expect(vfs.readFileString('/out/two.txt')).toBe('2');
+  });
+
+  it('copies a directory tree with -r, and refuses one without it', async () => {
+    const { default: cp } = await import('../../src/commands/fs/cp.js');
+    const without = createContext(vfs, ['/src', '/copy']);
+    expect(await cp(without)).toBe(1);
+    expect(without.stderr.text).toContain('-r not specified');
+    expect(vfs.exists('/copy')).toBe(false);
+    const ctx = createContext(vfs, ['-r', '/src', '/copy']);
+    expect(await cp(ctx)).toBe(0);
+    expect(vfs.readFileString('/copy/a.txt')).toBe('A');
+    expect(vfs.readFileString('/copy/sub/b.txt')).toBe('B');
+    const into = createContext(vfs, ['-R', '/src', '/out']);
+    expect(await cp(into)).toBe(0);
+    expect(vfs.readFileString('/out/src/sub/b.txt')).toBe('B');
+  });
+
+  it('refuses several sources when the target is not a directory', async () => {
+    const { default: cp } = await import('../../src/commands/fs/cp.js');
+    const ctx = createContext(vfs, ['/one.txt', '/two.txt', '/three.txt']);
+    expect(await cp(ctx)).toBe(1);
+    expect(vfs.exists('/three.txt')).toBe(false);
+  });
+});
+
 describe('touch', () => {
   let vfs: VFS;
 
