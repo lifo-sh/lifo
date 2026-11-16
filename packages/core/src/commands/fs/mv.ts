@@ -71,15 +71,12 @@ const command: Command = async (ctx) => {
           exitCode = 1;
           continue;
         }
-        if (targetDir) {
-          if (ctx.vfs.readdir(target).length) {
-            ctx.stderr.write(`mv: cannot move '${srcArg}' to '${target}': Directory not empty\n`);
-            exitCode = 1;
-            continue;
-          }
-          ctx.vfs.rmdir(target);
-        } else {
-          ctx.vfs.unlink(target);
+        // A file is replaced by the rename itself, never deleted first: if the rename then fails
+        // (across mounts), the existing file must still be there.
+        if (targetDir && ctx.vfs.readdir(target).length) {
+          ctx.stderr.write(`mv: cannot move '${srcArg}' to '${target}': Directory not empty\n`);
+          exitCode = 1;
+          continue;
         }
       }
       ctx.vfs.rename(src, target);

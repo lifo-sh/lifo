@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { VFS } from '../../src/kernel/vfs/index.js';
+import { VFS, VFSError } from '../../src/kernel/vfs/index.js';
 import type { CommandContext, CommandOutputStream } from '../../src/commands/types.js';
 
 // Helper to create a command context
@@ -284,6 +284,30 @@ describe('mv with several sources and flags', () => {
     expect(await mv(ctx)).toBe(1);
     expect(ctx.stderr.text).toContain("cannot stat 'nope.tsx'");
     expect(vfs.exists('/app/(app)/(tabs)/dice.tsx')).toBe(true);
+  });
+
+  it('keeps the existing file when the move fails', async () => {
+    const { default: mv } = await import('../../src/commands/fs/mv.js');
+    const real = vfs.rename.bind(vfs);
+    vfs.rename = () => {
+      throw new VFSError('EINVAL' as any, 'cannot rename across mount boundaries');
+    };
+    const ctx = createContext(vfs, ['dice.tsx', 'coin-flip.tsx'], '/app/(app)');
+    expect(await mv(ctx)).toBe(1);
+    vfs.rename = real;
+    expect(vfs.readFileString('/app/(app)/coin-flip.tsx')).toBe('COIN');
+    expect(vfs.readFileString('/app/(app)/dice.tsx')).toBe('DICE');
+  });
+
+  it('replaces an existing file, and moves a directory into an existing one', async () => {
+    const { default: mv } = await import('../../src/commands/fs/mv.js');
+    expect(await mv(createContext(vfs, ['dice.tsx', 'coin-flip.tsx'], '/app/(app)'))).toBe(0);
+    expect(vfs.readFileString('/app/(app)/coin-flip.tsx')).toBe('DICE');
+    vfs.mkdir('/empty');
+    vfs.mkdir('/full');
+    vfs.writeFile('/full/x', 'X');
+    expect(await mv(createContext(vfs, ['/full', '/empty']))).toBe(0);
+    expect(vfs.readFileString('/empty/full/x')).toBe('X');
   });
 
   it('will not move a directory into itself', async () => {
