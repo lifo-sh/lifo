@@ -1,3 +1,9 @@
+## 0.10.33
+
+### Patch Changes
+
+- browser-metro 1.5.22 (exact pin): the artboard's data-bx-path plugin copies regex literals whole, and quoted strings end at the line (RapidNative/reactnative-run#172). A quote inside a regex (`.replace(/"/g, "&quot;")`) used to flip every string after it, so `"<h2>"` in a string got an attribute written into it and the whole artboard bundle failed (Knotsy, Nov 2026). A stray apostrophe in JSX text (`Don't`) no longer swallows the tags on later lines either.
+
 ## 0.10.32
 
 ### Patch Changes
