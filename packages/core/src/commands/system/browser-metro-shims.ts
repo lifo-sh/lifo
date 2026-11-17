@@ -1302,8 +1302,18 @@ export const SM_RESOLVER_AND_ERROR_HANDLERS =
   "  }}, '*');\n" +
   '}\n' +
   'window.onerror = function(msg, src, line, col, err) { postRuntimeError(msg, err && err.stack); return false; };\n' +
+  // A media element's play() promise rejects with an AbortError when the video/audio is paused or given a new
+  // source before playback starts ("The play() request was interrupted by a new load request"). That is the
+  // browser's normal answer, not an app failure, but nothing awaits that promise inside expo-video's web player, so
+  // it surfaced as the project's "1 Error found" with a Fix with AI button (ClipKit's editor artboard, Nov 2026) and,
+  // being first, hid any real error after it (only the first runtime error is posted).
+  "function isMediaPlayAbort(r) {\n" +
+  "  var name = r && r.name; var msg = String((r && r.message) || r || '');\n" +
+  "  return name === 'AbortError' && /play\\(\\) request was interrupted|interrupted by a (new load request|call to pause)|The operation was aborted.*media/i.test(msg);\n" +
+  '}\n' +
   "window.addEventListener('unhandledrejection', function(e) {\n" +
-  "  var r = e.reason; postRuntimeError(r instanceof Error ? r.message : String(r || 'Unhandled rejection'), r && r.stack);\n" +
+  '  var r = e.reason; if (isMediaPlayAbort(r)) return;\n' +
+  "  postRuntimeError(r instanceof Error ? r.message : String(r || 'Unhandled rejection'), r && r.stack);\n" +
   '});\n' +
   '})();\n';
 
