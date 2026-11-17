@@ -1,3 +1,9 @@
+## 0.10.35
+
+### Patch Changes
+
+- Ships the 0.10.34 fix for real: 0.10.34 was published from a stale `dist/` (built before #126), so the preview still reported an interrupted media `play()` as an app error. `prepublishOnly` now builds the package (core and the CLI) after the pnpm check, so a publish always ships the code at that commit.
+
 ## 0.10.34
 
 ### Patch Changes
