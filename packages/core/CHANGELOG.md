@@ -1,3 +1,9 @@
+## 0.10.34
+
+### Patch Changes
+
+- The preview no longer reports a media element's interrupted `play()` as an app error (#126). A `<video>`'s `play()` promise rejects with an `AbortError` ("The play() request was interrupted by a new load request") when it is paused or given a new source before playback starts. That is the browser's normal answer, but expo-video's web player doesn't catch it, so the editor showed "1 Error found" with Fix with AI (ClipKit, Nov 2026). Being the first runtime error, it also hid any real one after it. Other rejections, including other `AbortError`s, are still reported.
+
 ## 0.10.33
 
 ### Patch Changes
