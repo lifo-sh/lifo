@@ -1,6 +1,6 @@
 {
   "name": "@lifo-sh/core",
-  "version": "0.10.31",
+  "version": "0.10.35",
   "description": "A tiny Linux-like OS in TypeScript for browsers, Node and serverless -- kernel, shell, VFS, and 60+ commands",
   "license": "MIT",
   "repository": {
@@ -47,11 +47,11 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "prepublishOnly": "node ../../scripts/ensure-pnpm-publish.mjs"
+    "prepublishOnly": "node ../../scripts/ensure-pnpm-publish.mjs && pnpm run build"
   },
   "dependencies": {
     "acorn": "^8.17.0",
-    "browser-metro": "1.5.21",
+    "browser-metro": "1.5.22",
     "ws": "^8.19.0"
   },
   "peerDependencies": {

@@ -1,6 +1,6 @@
 {
   "name": "lifo-sh",
-  "version": "0.10.31",
+  "version": "0.10.35",
   "description": "Run Lifo (a Linux-like OS) in your terminal -- npx lifo-sh",
   "license": "MIT",
   "repository": {
@@ -36,7 +36,7 @@
   "scripts": {
     "build": "tsup",
     "dev": "NODE_ENV=development tsx src/index.ts",
-    "prepublishOnly": "node ../../scripts/ensure-pnpm-publish.mjs",
+    "prepublishOnly": "node ../../scripts/ensure-pnpm-publish.mjs && pnpm run build",
     "test": "vitest run",
     "test:watch": "vitest"
   },

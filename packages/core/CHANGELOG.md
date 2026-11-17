@@ -1,3 +1,35 @@
+## 0.10.35
+
+### Patch Changes
+
+- Ships the 0.10.34 fix for real: 0.10.34 was published from a stale `dist/` (built before #126), so the preview still reported an interrupted media `play()` as an app error. `prepublishOnly` now builds the package (core and the CLI) after the pnpm check, so a publish always ships the code at that commit.
+
+## 0.10.34
+
+### Patch Changes
+
+- The preview no longer reports a media element's interrupted `play()` as an app error (#126). A `<video>`'s `play()` promise rejects with an `AbortError` ("The play() request was interrupted by a new load request") when it is paused or given a new source before playback starts. That is the browser's normal answer, but expo-video's web player doesn't catch it, so the editor showed "1 Error found" with Fix with AI (ClipKit, Nov 2026). Being the first runtime error, it also hid any real one after it. Other rejections, including other `AbortError`s, are still reported.
+
+## 0.10.33
+
+### Patch Changes
+
+- browser-metro 1.5.22 (exact pin): the artboard's data-bx-path plugin copies regex literals whole, and quoted strings end at the line (RapidNative/reactnative-run#172). A quote inside a regex (`.replace(/"/g, "&quot;")`) used to flip every string after it, so `"<h2>"` in a string got an attribute written into it and the whole artboard bundle failed (Knotsy, Nov 2026). A stray apostrophe in JSX text (`Don't`) no longer swallows the tags on later lines either.
+
+## 0.10.32
+
+### Patch Changes
+
+- `mv` and `cp` handle several sources and their flags (#122, #123). Both read only their first two arguments, so `mv a b c dir/` ran as `mv a b`: `b` was overwritten with `a`, the rest were ignored, and it exited 0. Flags were taken as file names. They now follow coreutils:
+  - every source is moved or copied
+  - several sources need an existing directory as the target
+  - a missing source is reported and the others still go
+  - a directory can't be moved or copied into itself
+  - `cp -r` copies directory trees
+  - `mv` never deletes the target before renaming
+
+  A RapidNative agent lost every screen of an app this way.
+
 ## 0.10.31
 
 ### Patch Changes
