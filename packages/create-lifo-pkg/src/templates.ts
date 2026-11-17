@@ -219,7 +219,7 @@ async function main() {
   const registry = createDefaultRegistry();
   registry.register('${name}', ${camelCase(name)}Command);
   registry.register('help', createHelpCommand(registry));
-  registry.register('lifo', createLifoPkgCommand(registry));
+  registry.register('lifo', createLifoPkgCommand(registry, undefined, kernel));
 
   // 3. Create terminal + shell
   const terminal = new Terminal(document.getElementById('terminal')!);
@@ -314,7 +314,7 @@ async function main() {
   const registry = createDefaultRegistry();
   registry.register('${name}', ${camelCase(name)}Command);
   registry.register('help', createHelpCommand(registry));
-  registry.register('lifo', createLifoPkgCommand(registry));
+  registry.register('lifo', createLifoPkgCommand(registry, undefined, kernel));
 
   // Create shell
   const env = kernel.getDefaultEnv();

@@ -63,6 +63,11 @@ export interface TarEntry {
   type: 'file' | 'directory';
   mode: number;
   mtime: number;
+  /**
+   * Set for a symbolic link (tar type '2'): its target. Such an entry keeps `type: 'file'` with
+   * empty data, so readers that don't know about links (npm and tar extraction) behave as before.
+   */
+  linkname?: string;
 }
 
 function tarWriteString(buf: Uint8Array, offset: number, str: string, len: number): void {
@@ -103,7 +108,7 @@ function tarReadOctal(buf: Uint8Array, offset: number, len: number): number {
  * next entry's path, so deep trees (e.g. node_modules) round-trip instead of
  * truncating and colliding.
  */
-function tarLongNameBlocks(pathBytes: Uint8Array): Uint8Array[] {
+function tarLongNameBlocks(pathBytes: Uint8Array, typeFlag = 76 /* 'L'; 'K' (75) for a link target */): Uint8Array[] {
   const header = new Uint8Array(512);
   tarWriteString(header, 0, '././@LongLink', 100);
   tarWriteOctal(header, 100, 0, 8); // mode
@@ -111,7 +116,7 @@ function tarLongNameBlocks(pathBytes: Uint8Array): Uint8Array[] {
   tarWriteOctal(header, 116, 0, 8); // gid
   tarWriteOctal(header, 124, pathBytes.length + 1, 12); // size = path + NUL
   tarWriteOctal(header, 136, 0, 12); // mtime
-  header[156] = 76; // 'L'
+  header[156] = typeFlag;
   tarWriteString(header, 257, 'ustar', 6);
   tarWriteString(header, 263, '00', 2);
   tarWriteString(header, 265, 'user', 32);
@@ -141,10 +146,16 @@ export function createTar(entries: TarEntry[]): Uint8Array {
     tarWriteOctal(header, 100, entry.mode, 8);      // mode
     tarWriteOctal(header, 108, 0, 8);               // uid
     tarWriteOctal(header, 116, 0, 8);               // gid
-    tarWriteOctal(header, 124, entry.data.length, 12); // size
+    const isLink = entry.linkname !== undefined;
+    if (isLink) {
+      const linkBytes = encode(entry.linkname!);
+      if (linkBytes.length > 100) blocks.push(...tarLongNameBlocks(linkBytes, 75));
+    }
+    tarWriteOctal(header, 124, isLink ? 0 : entry.data.length, 12); // size
     tarWriteOctal(header, 136, Math.floor(entry.mtime / 1000), 12); // mtime
     // type flag
-    header[156] = entry.type === 'directory' ? 53 : 48; // '5' or '0'
+    header[156] = entry.type === 'directory' ? 53 : isLink ? 50 : 48; // '5', '2' or '0'
+    if (isLink) tarWriteString(header, 157, entry.linkname!, 100); // linkname
     // ustar magic
     tarWriteString(header, 257, 'ustar', 6);
     tarWriteString(header, 263, '00', 2);            // version
@@ -158,7 +169,7 @@ export function createTar(entries: TarEntry[]): Uint8Array {
 
     blocks.push(header);
 
-    if (entry.type === 'file' && entry.data.length > 0) {
+    if (entry.type === 'file' && !isLink && entry.data.length > 0) {
       // Data blocks, padded to 512 bytes
       const paddedLen = Math.ceil(entry.data.length / 512) * 512;
       const dataBlock = new Uint8Array(paddedLen);
@@ -198,6 +209,7 @@ export function parseTar(data: Uint8Array): TarEntry[] {
   let offset = 0;
   // Long-name overrides for the NEXT file entry, set by PAX ('x') / GNU ('L').
   let nextPathOverride: string | null = null;
+  let nextLinkOverride: string | null = null; // GNU 'K': a symlink target over 100 bytes
 
   while (offset + 512 <= data.length) {
     const header = data.subarray(offset, offset + 512);
@@ -235,7 +247,8 @@ export function parseTar(data: Uint8Array): TarEntry[] {
       nextPathOverride = new TextDecoder().decode(blockData).replace(/\0+$/, '');
       continue;
     }
-    if (typeFlag === 75 /* K (GNU longlink) — not needed, skip payload */) {
+    if (typeFlag === 75 /* K (GNU longlink): the next entry's link target */) {
+      nextLinkOverride = new TextDecoder().decode(blockData).replace(/\0+$/, '');
       continue;
     }
 
@@ -245,16 +258,136 @@ export function parseTar(data: Uint8Array): TarEntry[] {
     const isDir = typeFlag === 53 || path.endsWith('/'); // '5' or trailing /
     if (path.endsWith('/')) path = path.slice(0, -1);
 
-    entries.push({
+    const entry: TarEntry = {
       path,
       data: blockData,
       type: isDir ? 'directory' : 'file',
       mode: mode || (isDir ? 0o755 : 0o644),
       mtime,
-    });
+    };
+    if (typeFlag === 50 /* '2' symlink */) entry.linkname = nextLinkOverride ?? tarReadString(header, 157, 100);
+    nextLinkOverride = null;
+    entries.push(entry);
   }
 
   return entries;
+}
+
+/**
+ * `parseTar` over a stream: yields each entry as soon as its data has arrived, holding at most one
+ * entry (plus a partial block) in memory instead of the whole archive. Same format handling as
+ * `parseTar` (ustar prefix, PAX and GNU long names and link targets).
+ */
+export async function* parseTarStream(source: AsyncIterable<Uint8Array> | ReadableStream<Uint8Array>): AsyncGenerator<TarEntry> {
+  let buf: Uint8Array = new Uint8Array(0);
+  const it = toAsyncIterable(source)[Symbol.asyncIterator]();
+  let done = false;
+  // Make sure `buf` holds at least n bytes (false at the end of the stream).
+  // Chunks are collected and joined once (joining per chunk would copy a large file over and over).
+  const need = async (n: number): Promise<boolean> => {
+    if (buf.length >= n || done) return buf.length >= n;
+    const parts: Uint8Array[] = buf.length ? [buf] : [];
+    let have = buf.length;
+    while (have < n) {
+      const r = await it.next();
+      if (r.done) {
+        done = true;
+        break;
+      }
+      parts.push(r.value);
+      have += r.value.length;
+    }
+    buf = parts.length === 1 ? parts[0] : joinParts(parts, have);
+    return buf.length >= n;
+  };
+  let nextPathOverride: string | null = null;
+  let nextLinkOverride: string | null = null;
+  try {
+    while (await need(512)) {
+      const header = buf.subarray(0, 512);
+      let allZero = true;
+      for (let i = 0; i < 512; i++) {
+        if (header[i] !== 0) { allZero = false; break; }
+      }
+      if (allZero) return;
+
+      const nameField = tarReadString(header, 0, 100);
+      const mode = tarReadOctal(header, 100, 8);
+      const size = tarReadOctal(header, 124, 12);
+      const mtime = tarReadOctal(header, 136, 12) * 1000;
+      const typeFlag = header[156];
+      const prefix = tarReadString(header, 345, 155);
+      const linkField = tarReadString(header, 157, 100);
+
+      const dataLen = size > 0 ? size : 0;
+      const padded = Math.ceil(dataLen / 512) * 512;
+      if (!(await need(512 + padded)) && buf.length < 512 + dataLen) return; // truncated archive
+      // A copy, so the entry doesn't pin the stream's chunk (or the rest of the buffer).
+      const blockData = dataLen > 0 ? buf.slice(512, 512 + dataLen) : new Uint8Array(0);
+      buf = buf.subarray(Math.min(buf.length, 512 + padded));
+
+      if (typeFlag === 120 /* x */ || typeFlag === 103 /* g */) {
+        const p = parsePaxPath(blockData);
+        if (p) nextPathOverride = p;
+        continue;
+      }
+      if (typeFlag === 76 /* L */) {
+        nextPathOverride = new TextDecoder().decode(blockData).replace(/\0+$/, '');
+        continue;
+      }
+      if (typeFlag === 75 /* K */) {
+        nextLinkOverride = new TextDecoder().decode(blockData).replace(/\0+$/, '');
+        continue;
+      }
+
+      let path = nextPathOverride ?? (prefix ? prefix + '/' + nameField : nameField);
+      nextPathOverride = null;
+      const isDir = typeFlag === 53 || path.endsWith('/');
+      if (path.endsWith('/')) path = path.slice(0, -1);
+      const entry: TarEntry = { path, data: blockData, type: isDir ? 'directory' : 'file', mode: mode || (isDir ? 0o755 : 0o644), mtime };
+      if (typeFlag === 50 /* '2' symlink */) entry.linkname = nextLinkOverride ?? linkField;
+      nextLinkOverride = null;
+      yield entry;
+    }
+  } finally {
+    await it.return?.();
+  }
+}
+
+function joinParts(parts: Uint8Array[], total: number): Uint8Array {
+  const out = new Uint8Array(total);
+  let at = 0;
+  for (const p of parts) {
+    out.set(p, at);
+    at += p.length;
+  }
+  return out;
+}
+
+/** The bytes of a gzip stream, decompressed as they arrive. */
+export function gunzipStream(source: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> {
+  return source.pipeThrough(new DecompressionStream('gzip') as unknown as ReadableWritablePair<Uint8Array, Uint8Array>);
+}
+
+function toAsyncIterable(source: AsyncIterable<Uint8Array> | ReadableStream<Uint8Array>): AsyncIterable<Uint8Array> {
+  if ((source as AsyncIterable<Uint8Array>)[Symbol.asyncIterator]) return source as AsyncIterable<Uint8Array>;
+  const reader = (source as ReadableStream<Uint8Array>).getReader();
+  return {
+    [Symbol.asyncIterator]() {
+      return {
+        async next() {
+          const r = await reader.read();
+          return r.done ? { done: true as const, value: undefined } : { done: false as const, value: r.value };
+        },
+        async return() {
+          try {
+            await reader.cancel();
+          } catch {}
+          return { done: true as const, value: undefined };
+        },
+      };
+    },
+  };
 }
 
 // ─── Zip format (stored entries, no compression) ───

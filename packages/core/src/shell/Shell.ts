@@ -5,7 +5,8 @@ import type { CommandOutputStream } from '../commands/types.js';
 import { resolve } from '../utils/path.js';
 import { BOLD, GREEN, BLUE, RESET } from '../utils/colors.js';
 import { VFSError } from '../kernel/vfs/index.js';
-import { Interpreter, type BuiltinFn, type InterpreterConfig } from './interpreter.js';
+import { Interpreter, ExitSignal, type BuiltinFn, type InterpreterConfig } from './interpreter.js';
+import { needsMoreInput } from './parser.js';
 import { HistoryManager } from './history.js';
 import { JobTable } from './jobs.js';
 import { ProcessRegistry } from './ProcessRegistry.js';
@@ -64,6 +65,9 @@ export class Shell {
   // Paste queue for multiline paste support
   private pasteQueue: string[] = [];
 
+  /** Lines typed so far of an unfinished command (`if …`, `cat <<EOF`, `ls |`), shown with `> `. */
+  private continuation: string | null = null;
+
   constructor(
     terminal: ITerminal,
     vfs: VFS,
@@ -114,7 +118,7 @@ export class Shell {
     this.builtins.set('echo', (args, stdout) => this.builtinEcho(args, stdout));
     this.builtins.set('clear', () => this.builtinClear());
     this.builtins.set('export', (args) => this.builtinExport(args));
-    this.builtins.set('exit', (_args, stdout) => this.builtinExit(stdout));
+    this.builtins.set('exit', (args, stdout) => this.builtinExit(args, stdout));
     this.builtins.set('true', () => Promise.resolve(0));
     this.builtins.set('false', () => Promise.resolve(1));
     this.builtins.set('jobs', (_args, stdout) => this.builtinJobs(stdout));
@@ -202,7 +206,12 @@ export class Shell {
     if (options?.cwd) {
       this.cwd = options.cwd;
     }
+    // The env overlay applies to this one execution, then the previous values come back, so
+    // per-command variables (tokens, keys) don't leak into later commands.
+    let savedEnv: Record<string, string | undefined> | undefined;
     if (options?.env) {
+      savedEnv = {};
+      for (const key of Object.keys(options.env)) savedEnv[key] = this.env[key];
       Object.assign(this.env, options.env);
     }
 
@@ -214,6 +223,7 @@ export class Shell {
       terminalStdin.close();
     }
 
+    this.interpreter.scriptDepth++;
     try {
       const exitCode = await this.interpreter.executeLine(cmd, terminalStdin, {
         stdout: stdoutStream,
@@ -222,19 +232,53 @@ export class Shell {
       });
       return { stdout: stdoutBuf, stderr: stderrBuf, exitCode };
     } catch (e) {
+      if (e instanceof ExitSignal) return { stdout: stdoutBuf, stderr: stderrBuf, exitCode: e.exitCode };
       const msg = e instanceof Error ? (e.stack || e.message) : String(e);
       stderrBuf += msg + '\n';
       options?.onStderr?.(msg + '\n');
       return { stdout: stdoutBuf, stderr: stderrBuf, exitCode: 1 };
     } finally {
       this._executeDepth--;
+      this.interpreter.scriptDepth--;
       if (prevCwd !== undefined) {
         this.cwd = prevCwd;
+      }
+      if (savedEnv) {
+        for (const [key, value] of Object.entries(savedEnv)) {
+          if (value === undefined) delete this.env[key];
+          else this.env[key] = value;
+        }
       }
     }
   }
 
-  start(): void {
+  private started = false;
+
+  /**
+   * Move the shell to another terminal (Sandbox.attach/detach). Keyboard input from the
+   * previous terminal is ignored from now on; if the shell is running, a fresh prompt is
+   * shown on the new one.
+   */
+  setTerminal(terminal: ITerminal): void {
+    this.terminal = terminal;
+    this.lineBuffer = '';
+    this.cursorPos = 0;
+    this.screenCursorRow = 0;
+    if (!this.started) return;
+    terminal.onData((data) => {
+      if (this.terminal === terminal) this.handleInput(data);
+    });
+    if (!this.running) this.printPrompt();
+  }
+
+  /**
+   * Start the interactive loop: read keys from the terminal and show a prompt. `sourceRc`
+   * (default true) first sources /etc/profile and ~/.liforc, ~/.bashrc or ~/.profile; the
+   * Sandbox passes false because it has already sourced them.
+   */
+  start(options?: { sourceRc?: boolean }): void {
+    if (this.started) return;
+    this.started = true;
     // Register this shell instance as a process
     // First shell gets PID 1, subsequent shells get PID 2, 3, etc.
     const shellPromise = new Promise<number>(() => {}); // Never resolves (shell runs forever)
@@ -250,8 +294,15 @@ export class Shell {
       abortController: shellAbortController,
     });
 
-    this.terminal.onData((data) => this.handleInput(data));
+    const terminal = this.terminal;
+    terminal.onData((data) => {
+      if (this.terminal === terminal) this.handleInput(data);
+    });
 
+    if (options?.sourceRc === false) {
+      this.printPrompt();
+      return;
+    }
     // Source rc files on startup (like bash/zsh)
     this.sourceRcFiles().then(() => {
       this.printPrompt();
@@ -304,6 +355,7 @@ export class Shell {
   }
 
   private handleInput(data: string): void {
+    if (this.exited) return;
     // Raw mode: bypass all shell line editing, deliver keypresses directly
     if (this.running && this.terminalStdin?.rawMode) {
       this.terminalStdin.feed(data);
@@ -326,10 +378,19 @@ export class Shell {
             // There's a newline after this segment, execute it
             this.redrawLine();
             this.terminal.write('\r\n');
-            const line = this.lineBuffer.trim();
+            const typed = this.lineBuffer;
             this.lineBuffer = '';
             this.cursorPos = 0;
             this.historyIndex = -1;
+            const complete = this.takeCompleteLine(typed, false);
+            if (complete === null) {
+              // An unfinished command: the pasted lines that follow complete it.
+              for (let j = 1; j < lines.length; j++) this.pasteQueue.push(lines[j]);
+              if (this.pasteQueue.length === 0) this.terminal.write('> ');
+              else this.drainPasteQueue();
+              return;
+            }
+            const line = complete;
             if (line) {
               this.history.push(line);
               // Queue remaining lines before executing
@@ -389,6 +450,7 @@ export class Shell {
         this.abortController.abort();
       } else {
         this.terminal.write('^C\r\n');
+        this.continuation = null;
         this.lineBuffer = '';
         this.cursorPos = 0;
         this.screenCursorRow = 0;
@@ -403,7 +465,11 @@ export class Shell {
         this.terminalStdin.close();
         return;
       }
-      // When not running, Ctrl+D on empty line does nothing (or could exit)
+      // At an empty prompt, Ctrl+D ends a session that has one (onExit); otherwise nothing.
+      if (!this.running && this.exitHandler && this.lineBuffer.length === 0) {
+        this.writeToTerminal('logout\n');
+        this.endSession(0);
+      }
       return;
     }
 
@@ -446,11 +512,13 @@ export class Shell {
     // Enter
     if (data === '\r') {
       this.terminal.write('\r\n');
-      const line = this.lineBuffer.trim();
+      const typed = this.lineBuffer;
       this.lineBuffer = '';
       this.cursorPos = 0;
       this.screenCursorRow = 0;
       this.historyIndex = -1;
+      const line = this.takeCompleteLine(typed);
+      if (line === null) return; // waiting for more lines at the "> " prompt
 
       if (line) {
         this.history.push(line);
@@ -649,6 +717,7 @@ export class Shell {
   }
 
   private getPromptWidth(): number {
+    if (this.continuation !== null) return 2; // "> "
     const home = this.env['HOME'] ?? '/home/user';
     let displayPath = this.cwd;
     if (this.cwd === home) displayPath = '~';
@@ -711,8 +780,16 @@ export class Shell {
     }
     const user = this.env['USER'] ?? 'user';
     const host = this.env['HOSTNAME'] ?? 'lifo';
-    this.terminal.write(`${BOLD}${GREEN}${user}@${host}${RESET}:${BOLD}${BLUE}${displayPath}${RESET}$ `);
+    this.terminal.write(this.continuation !== null ? '> ' : `${BOLD}${GREEN}${user}@${host}${RESET}:${BOLD}${BLUE}${displayPath}${RESET}$ `);
     this.terminal.write(this.lineBuffer);
+
+    // Terminals (xterm.js, and real ones) defer the wrap after the last column: the cursor stays
+    // on that row until the next character arrives. When the line ends exactly at the edge,
+    // force the wrap so the cursor is on the row the math below assumes; otherwise the next
+    // redraw moves up one row too many and wipes the line above (the previous command's output).
+    if (cols > 0 && totalLen > 0 && totalLen % cols === 0) {
+      this.terminal.write(' \b');
+    }
 
     // After writing all content, figure out which row the cursor is on.
     // If content exactly fills N rows, the terminal auto-wraps cursor to the next row.
@@ -743,10 +820,51 @@ export class Shell {
     this.screenCursorRow = desiredRow;
   }
 
+  /**
+   * Adds a typed line to any unfinished command. Returns the whole command once it is
+   * complete (trimmed), or null while more lines are needed, after showing the `> ` prompt
+   * (when `prompt` is true).
+   */
+  private takeCompleteLine(typed: string, prompt = true): string | null {
+    const full = this.continuation !== null ? this.continuation + '\n' + typed : typed;
+    if (full.trim() && needsMoreInput(full)) {
+      this.continuation = full;
+      if (prompt) this.terminal.write('> ');
+      return null;
+    }
+    this.continuation = null;
+    return full.trim();
+  }
+
   private drainPasteQueue(): void {
     const next = this.pasteQueue.shift();
     if (next !== undefined) {
+      if (this.continuation !== null) {
+        // Part of an unfinished command (a here-doc body keeps its blank lines and indentation).
+        this.terminal.write(next + '\r\n');
+        const complete = this.takeCompleteLine(next, false);
+        if (complete === null) {
+          if (this.pasteQueue.length === 0) this.terminal.write('> ');
+          else this.drainPasteQueue();
+          return;
+        }
+        if (complete) {
+          this.history.push(complete);
+          this.executeLine(complete);
+        } else {
+          this.printPrompt();
+          this.drainPasteQueue();
+        }
+        return;
+      }
       const line = next.trim();
+      if (line && needsMoreInput(line)) {
+        this.terminal.write(line + '\r\n');
+        this.continuation = next;
+        if (this.pasteQueue.length === 0) this.terminal.write('> ');
+        else this.drainPasteQueue();
+        return;
+      }
       if (line) {
         this.terminal.write(line);
         this.terminal.write('\r\n');
@@ -916,6 +1034,9 @@ export class Shell {
 
     try {
       await this.interpreter.executeLine(actualLine, this.terminalStdin);
+    } catch (e) {
+      // `exit` while a programmatic run is in flight; there's no session to end here.
+      if (!(e instanceof ExitSignal)) throw e;
     } finally {
       this.terminalStdin?.close();
       this.terminalStdin = null;
@@ -925,6 +1046,11 @@ export class Shell {
       this.abortController = null;
     }
 
+    if (this.pendingExit !== null) {
+      this.pasteQueue = [];
+      this.endSession(this.pendingExit);
+      return;
+    }
     this.printPrompt();
     this.drainPasteQueue();
   }
@@ -989,9 +1115,31 @@ export class Shell {
     return 0;
   }
 
-  private async builtinExit(stdout: CommandOutputStream): Promise<number> {
+  private async builtinExit(args: string[], stdout: CommandOutputStream): Promise<number> {
     stdout.write('logout\n');
+    // With a session to end (onExit), the shell stops once this line finishes.
+    if (this.exitHandler) this.pendingExit = args[0] ? parseInt(args[0], 10) & 255 : 0;
     return 0;
+  }
+
+  /** Called when `exit` (or Ctrl+D at an empty prompt) ends this session. */
+  private exitHandler: ((code: number) => void) | null = null;
+  private pendingExit: number | null = null;
+  private exited = false;
+
+  /**
+   * End the session on `exit` or Ctrl+D at an empty prompt: input is ignored from then on and
+   * `cb` gets the exit code. Without a handler, `exit` only prints "logout" (the page's shell
+   * has no session to end).
+   */
+  onExit(cb: (code: number) => void): void {
+    this.exitHandler = cb;
+  }
+
+  private endSession(code: number): void {
+    if (this.exited) return;
+    this.exited = true;
+    this.exitHandler?.(code);
   }
 
   private async builtinJobs(stdout: CommandOutputStream): Promise<number> {

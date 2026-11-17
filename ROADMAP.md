@@ -1,5 +1,9 @@
 # Lifo roadmap
 
+## Platform plan (Nov 2026)
+
+**Your agent builds it. Lifo runs it.** Lifo is becoming the runtime for everything an agent generates (web and React Native apps, terminals, editors, databases), running in the browser at zero compute cost, with the cloud one click away to share, persist, keep running or deploy. Whatever runs on the user's device stays MIT; whatever runs on Lifo's servers is a paid service. The full plan lives in the dev workspace at `docs/plan/2026-11-11-product-and-gtm-plan.md`; where this file disagrees with it, the plan wins.
+
 ## North star
 
 **A developer can run agent code, dev servers, and real stacks in a sandbox that boots instantly — in the browser and in Node today, and as a single Docker-free binary you can drop on any host tomorrow.**
@@ -16,11 +20,12 @@ Lifo is a **tiny Linux-like VM** — a kernel with a virtual filesystem, a bash-
 - Enough Node.js compatibility that real CLIs and dev servers run unmodified.
 - Running real stacks (create-expo-app, Vite, Expo Router, Supabase via tinbase).
 - Sandboxing agent-generated code safely, client-side or server-side.
+- An embeddable preview SDK and agent interface (MCP tools) for products that run generated apps.
+- Paid cloud services around the runtime: tunnels, persistence, hosting, deploy, build cache.
 
 **Out of scope**
 
 - Being a full Linux kernel / running arbitrary native ELF binaries.
-- A hosted cloud product. Lifo is a library and (soon) a binary you run yourself.
 
 ## Current state
 

@@ -89,7 +89,7 @@ export function createDefaultRegistry(): CommandRegistry {
   registry.registerLazy('whoami', () => import('./system/whoami.js'));
   registry.registerLazy('hostname', () => import('./system/hostname.js'));
   registry.registerLazy('free', () => import('./system/free.js'));
-  registry.registerLazy('which', () => import('./system/which.js'));
+  registry.registerLazy('which', async () => ({ default: (await import('./system/which.js')).createWhichCommand(registry) }));
 
   // Network
   registry.registerLazy('curl', () => import('./net/curl.js'));

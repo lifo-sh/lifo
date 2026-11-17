@@ -6,12 +6,18 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@lifo-sh/core": "workspace:*",
     "@lifo-sh/ui": "workspace:*",
-    "@xterm/xterm": "^5.5.0"
+    "@xterm/xterm": "^5.5.0",
+    "lifo-pkg-git": "workspace:*",
+    "lifo-pkg-vi": "workspace:*",
+    "lifo-pkg-nano": "workspace:*",
+    "lifo-pkg-less": "workspace:*",
+    "lifo-pkg-python": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.7.0",

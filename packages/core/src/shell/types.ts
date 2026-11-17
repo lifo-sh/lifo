@@ -10,6 +10,8 @@ export enum TokenKind {
   RedirectOut,    // >
   RedirectAppend, // >>
   RedirectIn,     // <
+  HereDoc,        // << / <<- (the next token is a Word holding the body)
+  HereString,     // <<<
   RedirectErr,    // 2>
   RedirectErrAppend, // 2>>
   RedirectAll,    // &>
@@ -63,7 +65,7 @@ export interface SimpleCommandNode {
 }
 
 export interface RedirectionNode {
-  operator: '>' | '>>' | '<' | '2>' | '2>>' | '&>' | '2>&1' | '>&2' | '>&1';
+  operator: '>' | '>>' | '<' | '<<' | '<<<' | '2>' | '2>>' | '&>' | '2>&1' | '>&2' | '>&1';
   /** Empty for dup operators (2>&1 / >&2 / >&1) — they duplicate an existing
    *  stream rather than open a file. */
   target: WordPart[];
@@ -111,6 +113,12 @@ export interface FunctionDefNode {
   body: CompoundCommandNode;
 }
 
+export interface SubshellNode {
+  type: 'subshell';
+  body: ListNode[];
+  redirections: RedirectionNode[];
+}
+
 export interface GroupNode {
   type: 'group';
   body: ListNode[];
@@ -125,6 +133,7 @@ export type CompoundCommandNode =
   | UntilNode
   | CaseNode
   | GroupNode
+  | SubshellNode
   | FunctionDefNode;
 
 export type ASTNode = ScriptNode | ListNode | PipelineNode | CompoundCommandNode;

@@ -3,6 +3,7 @@ import { Menu, PanelLeft } from 'lucide-react';
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable';
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from '@/components/ui/sheet';
 import { SidebarNav } from '@/components/sidebar-nav';
+import { LifoLogo } from '@/components/logo';
 import { ExampleHost } from '@/components/example-host';
 import { OutputChromeProvider } from '@/components/output-chrome';
 import { findExample, snippetFor } from '@/examples/registry';
@@ -14,18 +15,27 @@ import { useIsMobile } from '@/hooks/use-is-mobile';
  * example's snippet is handed down via OutputChrome. ExampleHost keeps every
  * example's kernel/terminal mounted across switches.
  */
+// Deep links: ?example=<id> opens that example (ids in examples/registry.tsx), and the URL
+// follows as you switch. ?embed=1 starts with the sidebar collapsed, for an <iframe>.
+const params = new URLSearchParams(typeof location === 'undefined' ? '' : location.search);
+const initialExample = findExample(params.get('example') ?? 'interactive').id;
+const embedded = params.get('embed') === '1';
+
 export function App() {
-  const [activeId, setActiveId] = useState('interactive');
+  const [activeId, setActiveId] = useState(initialExample);
   const isMobile = useIsMobile();
   const active = findExample(activeId);
   const showCode = !active.hideCode;
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
   // Desktop: collapse the examples sidebar to give the output full width.
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(embedded);
   const select = (id: string) => {
     setActiveId(id);
     setSidebarOpen(false);
+    const url = new URL(location.href);
+    url.searchParams.set('example', id);
+    history.replaceState(history.state, '', url);
   };
   const showSidebar = !isMobile && !sidebarCollapsed;
 
@@ -36,7 +46,9 @@ export function App() {
         <Sheet open={sidebarOpen} onOpenChange={setSidebarOpen}>
           <SheetTrigger className="flex items-center gap-2 text-tokyo-muted text-sm">
             <Menu className="size-4" />
-            <span className="font-semibold text-tokyo-fg-bright">Lifo</span>
+            <LifoLogo className="size-5" />
+            <span className="font-semibold text-tokyo-fg-bright tracking-tight">lifo</span>
+            <span className="text-tokyo-comment">Playground</span>
           </SheetTrigger>
           <SheetContent side="left" className="w-[240px] p-0 bg-tokyo-bg-dark border-tokyo-border">
             <SheetTitle className="sr-only">Examples</SheetTitle>

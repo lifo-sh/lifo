@@ -95,13 +95,21 @@ interface NodeStat {
   isSocket: () => boolean;
 }
 
+const S_IFDIR = 0o040000;
+const S_IFREG = 0o100000;
+const S_IFLNK = 0o120000;
+
 function toNodeStat(stat: VfsStat): NodeStat {
   const isFile = stat.type === 'file';
   const isDir = stat.type === 'directory';
+  const isLink = stat.type === 'symlink';
   return {
     dev: 0,
     ino: 0,
-    mode: stat.mode,
+    // Node's mode carries the file type (S_IFDIR/S_IFREG) above the permission bits; the VFS
+    // keeps only permissions. Emscripten's NODEFS (PGlite, other wasm ports) checks the type
+    // bits and fails with EINVAL (errno 28) without them.
+    mode: (isDir ? S_IFDIR : isLink ? S_IFLNK : S_IFREG) | (stat.mode & 0o7777),
     nlink: isDir ? 2 : 1,
     uid: 1000,
     gid: 1000,
@@ -119,7 +127,7 @@ function toNodeStat(stat: VfsStat): NodeStat {
     birthtime: new Date(stat.ctime),
     isFile: () => isFile,
     isDirectory: () => isDir,
-    isSymbolicLink: () => false,
+    isSymbolicLink: () => isLink,
     isBlockDevice: () => false,
     isCharacterDevice: () => false,
     isFIFO: () => false,
@@ -136,10 +144,13 @@ interface NodeError extends Error {
   path: string;
 }
 
+// Linux errno values, negated as Node reports them.
+const ERRNO: Record<string, number> = { ENOENT: -2, EEXIST: -17, ENOTDIR: -20, EISDIR: -21, EINVAL: -22, ENOTEMPTY: -39, ELOOP: -40 };
+
 function toNodeError(e: VFSError, syscall: string, path: string): NodeError {
   const err = new Error(e.message) as NodeError;
   err.code = e.code;
-  err.errno = -2;
+  err.errno = ERRNO[e.code] ?? -2;
   err.syscall = syscall;
   err.path = path;
   err.name = 'Error';
@@ -261,14 +272,47 @@ export function createFs(vfs: VFS, cwd: string) {
     return toNodeStat(vfs.stat(abs));
   }
 
+  /** A VFS call with VFSErrors turned into Node errors (code, errno, syscall, path). */
+  function vfsCall<T>(syscall: string, abs: string, fn: () => T): T {
+    try {
+      return fn();
+    } catch (e) {
+      if (e instanceof VFSError) throw toNodeError(e, syscall, abs);
+      throw e;
+    }
+  }
+
   function lstatSync(path: string | URL, options?: { throwIfNoEntry?: boolean }): NodeStat | undefined {
-    return statSync(path, options);
+    const abs = resolvePath(cwd, path);
+    try {
+      return toNodeStat(vfs.lstat(abs));
+    } catch (e) {
+      if (e instanceof VFSError && e.code === 'ENOENT' && options?.throwIfNoEntry === false) return undefined;
+      if (e instanceof VFSError) throw toNodeError(e, 'lstat', abs);
+      throw e;
+    }
   }
 
   function mkdirSync(path: string | URL, options?: { recursive?: boolean; mode?: number } | number): void {
     const abs = resolvePath(cwd, path);
     const opts = typeof options === 'number' ? {} : options;
     vfs.mkdir(abs, { recursive: opts?.recursive });
+  }
+
+  /** A new directory named prefix + six random characters (fs.mkdtemp). */
+  function mkdtempSync(prefix: string): string {
+    const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    const bytes = new Uint8Array(6);
+    for (let attempt = 0; attempt < 16; attempt++) {
+      crypto.getRandomValues(bytes);
+      let suffix = '';
+      for (const b of bytes) suffix += chars[b % chars.length];
+      const abs = resolvePath(cwd, `${prefix}${suffix}`);
+      if (vfs.exists(abs)) continue;
+      vfs.mkdir(abs);
+      return abs;
+    }
+    throw toNodeError(new VFSError('EEXIST', `mkdtemp '${prefix}XXXXXX'`), 'mkdtemp', prefix);
   }
 
   function readdirSync(path: string | URL, options?: { encoding?: string; withFileTypes?: boolean }): string[] | Dirent[] {
@@ -280,7 +324,7 @@ export function createFs(vfs: VFS, cwd: string) {
         path: abs,
         isFile: () => e.type === 'file',
         isDirectory: () => e.type === 'directory',
-        isSymbolicLink: () => false,
+        isSymbolicLink: () => e.type === 'symlink',
         isBlockDevice: () => false,
         isCharacterDevice: () => false,
         isFIFO: () => false,
@@ -304,6 +348,23 @@ export function createFs(vfs: VFS, cwd: string) {
     }
   }
 
+  /** Node's rmSync: files, or directories with `recursive`; `force` ignores a missing path. */
+  function rmSync(path: string | URL, options?: { recursive?: boolean; force?: boolean }): void {
+    const abs = resolvePath(cwd, path);
+    // lstat, not exists/stat: a dangling symlink exists to rm, and rm removes a link, not its target.
+    const st = lstatSync(abs, { throwIfNoEntry: false });
+    if (!st) {
+      if (options?.force) return;
+      throw makeEnoent('rm', abs);
+    }
+    if (st.isDirectory()) {
+      if (options?.recursive) vfs.rmdirRecursive(abs);
+      else vfs.rmdir(abs);
+    } else {
+      vfs.unlink(abs);
+    }
+  }
+
   function renameSync(oldPath: string | URL, newPath: string | URL): void {
     const abs1 = resolvePath(cwd, oldPath);
     const abs2 = resolvePath(cwd, newPath);
@@ -316,13 +377,49 @@ export function createFs(vfs: VFS, cwd: string) {
     vfs.copyFile(abs1, abs2);
   }
 
-  function chmodSync(_path: string | URL, _mode: number): void {
-    // No-op in VFS
+  /** A mode as Node takes it: a number, or an octal string like '755'. */
+  function toMode(mode: number | string): number {
+    return typeof mode === 'string' ? parseInt(mode, 8) : mode;
+  }
+
+  /** A time as Node takes it: a Date, or seconds since the epoch (number or numeric string). */
+  function toMs(t: unknown): number {
+    if (t instanceof Date) return t.getTime();
+    const n = typeof t === 'string' ? Number(t) : (t as number);
+    return Number.isFinite(n) ? n * 1000 : Date.now();
+  }
+
+  function chmodSync(path: string | URL, mode: number | string): void {
+    const abs = resolvePath(cwd, path);
+    vfsCall('chmod', abs, () => vfs.chmod(abs, toMode(mode)));
   }
 
   function chownSync(_path: string | URL, _uid: number, _gid: number): void {
     // No-op in VFS
   }
+
+  // Owners aren't kept (every file is the box user's). Emscripten's NODEFS (PGlite) calls
+  // utimesSync on every file it creates.
+  function utimesSync(path: string | URL, atime: unknown, mtime: unknown): void {
+    const abs = resolvePath(cwd, path);
+    if (!vfs.exists(abs)) throw makeEnoent('utime', abs);
+    vfsCall('utime', abs, () => vfs.utimes(abs, toMs(atime), toMs(mtime)));
+  }
+  // The VFS keeps no times on a symlink itself; on a link these set its target's.
+  const lutimesSync = utimesSync;
+  function futimesSync(fd: number, atime: unknown, mtime: unknown): void {
+    const entry = getFd(fd);
+    vfsCall('futime', entry.path, () => vfs.utimes(entry.path, toMs(atime), toMs(mtime)));
+  }
+  function fchmodSync(fd: number, mode: number | string): void {
+    const entry = getFd(fd);
+    vfsCall('fchmod', entry.path, () => vfs.chmod(entry.path, toMode(mode)));
+  }
+  function fchownSync(fd: number, _uid: number, _gid: number): void {
+    getFd(fd);
+  }
+  const lchmodSync = chmodSync;
+  const lchownSync = chownSync;
 
   function accessSync(path: string | URL, _mode?: number): void {
     const abs = resolvePath(cwd, path);
@@ -331,21 +428,18 @@ export function createFs(vfs: VFS, cwd: string) {
     }
   }
 
+  function realpathOf(path: string | URL): string {
+    const abs = resolvePath(cwd, path);
+    if (!vfs.exists(abs)) throw makeEnoent('realpath', abs);
+    return vfsCall('realpath', abs, () => vfs.realpath(abs));
+  }
   const realpathSync = Object.assign(
     function realpathSync(path: string | URL): string {
-      const abs = resolvePath(cwd, path);
-      if (!vfs.exists(abs)) {
-        throw makeEnoent('realpath', abs);
-      }
-      return abs;
+      return realpathOf(path);
     },
     {
       native: function realpathSyncNative(path: string | URL): string {
-        const abs = resolvePath(cwd, path);
-        if (!vfs.exists(abs)) {
-          throw makeEnoent('realpath', abs);
-        }
-        return abs;
+        return realpathOf(path);
       },
     },
   );
@@ -466,10 +560,13 @@ export function createFs(vfs: VFS, cwd: string) {
     // No-op
   }
 
-  // ─── Symlink stubs ───
+  // ─── Links ───
 
-  function symlinkSync(_target: string, _path: string, _type?: string): void {
-    // No-op - VFS has no symlink support yet
+  function symlinkSync(target: string | URL, path: string | URL, _type?: string): void {
+    const abs = resolvePath(cwd, path);
+    // The target is stored as given (relative targets resolve from the link's directory).
+    const to = target instanceof URL ? target.pathname : String(target);
+    vfsCall('symlink', abs, () => vfs.symlink(to, abs));
   }
 
   function linkSync(_existingPath: string, _newPath: string): void {
@@ -477,12 +574,19 @@ export function createFs(vfs: VFS, cwd: string) {
   }
 
   function readlinkSync(path: string | URL): string {
-    // The VFS has no symlinks. Node's readlink throws ENOENT on a missing path
-    // and EINVAL on a non-symlink — returning the path itself (as before) made
-    // resolvers like enhanced-resolve treat every file as a self-symlink and
-    // fail. Mirror Node so those resolvers correctly skip symlink handling.
+    // Node's readlink throws ENOENT on a missing path and EINVAL on a non-symlink — returning the
+    // path itself (as before symlinks existed) made resolvers like enhanced-resolve treat every
+    // file as a self-symlink and fail.
     const abs = resolvePath(cwd, path);
-    if (!vfs.exists(abs)) {
+    try {
+      return vfs.readlink(abs);
+    } catch (e) {
+      if (!(e instanceof VFSError) || (e.code !== 'ENOENT' && e.code !== 'EINVAL')) {
+        if (e instanceof VFSError) throw toNodeError(e, 'readlink', abs);
+        throw e;
+      }
+    }
+    if (!vfs.exists(abs) && !lstatSync(abs, { throwIfNoEntry: false })) {
       throw Object.assign(new Error(`ENOENT: no such file or directory, readlink '${abs}'`), {
         code: 'ENOENT', errno: -2, syscall: 'readlink', path: abs,
       });
@@ -534,6 +638,11 @@ export function createFs(vfs: VFS, cwd: string) {
     const callback = typeof optionsOrCb === 'function' ? optionsOrCb : cb!;
     const options = typeof optionsOrCb === 'function' ? undefined : optionsOrCb;
     wrapCallback(() => mkdirSync(path, options), callback);
+  }
+
+  function mkdtemp(prefix: string, optionsOrCb: unknown, cb?: Callback<string>): void {
+    const callback = (typeof optionsOrCb === 'function' ? optionsOrCb : cb) as Callback<string>;
+    wrapCallback(() => mkdtempSync(prefix), callback);
   }
 
   function readdir(path: string | URL, optionsOrCb: { encoding?: string; withFileTypes?: boolean } | Callback<string[]>, cb?: Callback<string[] | Dirent[]>): void {
@@ -830,7 +939,10 @@ export function createFs(vfs: VFS, cwd: string) {
     appendFile: async (path: string | URL, data: unknown) => appendFileSync(path, await drainWriteData(data)),
     stat: async (path: string | URL) => statSync(path),
     lstat: async (path: string | URL) => lstatSync(path),
+    symlink: async (target: string | URL, path: string | URL, _type?: string) => symlinkSync(target, path),
+    readlink: async (path: string | URL) => readlinkSync(path),
     mkdir: async (path: string | URL, options?: { recursive?: boolean }) => { mkdirSync(path, options); },
+    mkdtemp: async (prefix: string) => mkdtempSync(prefix),
     readdir: async (path: string | URL, options?: { encoding?: string; withFileTypes?: boolean }) => readdirSync(path, options),
     unlink: async (path: string | URL) => unlinkSync(path),
     rmdir: async (path: string | URL, options?: { recursive?: boolean }) => rmdirSync(path, options),
@@ -839,7 +951,10 @@ export function createFs(vfs: VFS, cwd: string) {
     access: async (path: string | URL, mode?: number) => accessSync(path, mode),
     realpath: async (path: string | URL) => realpathSync(path),
     truncate: async (path: string | URL, len?: number) => truncateSync(path, len),
-    chmod: async (_path: string | URL, _mode: number) => {},
+    chmod: async (path: string | URL, mode: number | string) => chmodSync(path, mode),
+    lchmod: async (path: string | URL, mode: number | string) => chmodSync(path, mode),
+    utimes: async (path: string | URL, atime: unknown, mtime: unknown) => utimesSync(path, atime, mtime),
+    lutimes: async (path: string | URL, atime: unknown, mtime: unknown) => utimesSync(path, atime, mtime),
     chown: async (_path: string | URL, _uid: number, _gid: number) => {},
     open: async (path: string | URL, flags?: string | number, mode?: number) => {
       const fd = openSync(path, flags, mode);
@@ -855,7 +970,8 @@ export function createFs(vfs: VFS, cwd: string) {
         }),
         stat: async () => fstatSync(fd),
         truncate: async (len?: number) => ftruncateSync(fd, len),
-        chmod: async (_mode: number) => {},
+        chmod: async (mode: number | string) => fchmodSync(fd, mode),
+        utimes: async (atime: unknown, mtime: unknown) => futimesSync(fd, atime, mtime),
         chown: async (_uid: number, _gid: number) => {},
         sync: async () => {},
         datasync: async () => {},
@@ -913,13 +1029,22 @@ export function createFs(vfs: VFS, cwd: string) {
     statSync,
     lstatSync,
     mkdirSync,
+    mkdtempSync,
     readdirSync,
     unlinkSync,
     rmdirSync,
+    rmSync,
     renameSync,
     copyFileSync,
     chmodSync,
     chownSync,
+    fchmodSync,
+    lchmodSync,
+    fchownSync,
+    lchownSync,
+    utimesSync,
+    futimesSync,
+    lutimesSync,
     accessSync,
     realpathSync,
     truncateSync,
@@ -940,9 +1065,14 @@ export function createFs(vfs: VFS, cwd: string) {
     stat,
     lstat,
     mkdir,
+    mkdtemp,
     readdir,
     unlink,
     rename,
+    rm: (path: string | URL, optsOrCb: unknown, maybeCb?: (err: Error | null) => void) => {
+      const cb = (typeof optsOrCb === 'function' ? optsOrCb : maybeCb) as (err: Error | null) => void;
+      try { rmSync(path, typeof optsOrCb === 'object' ? (optsOrCb as { recursive?: boolean; force?: boolean }) : undefined); cb(null); } catch (e) { cb(e as Error); }
+    },
     access,
     exists,
     open,
@@ -951,6 +1081,29 @@ export function createFs(vfs: VFS, cwd: string) {
     write,
     fstat,
     realpath,
+    chmod: (path: string | URL, mode: number | string, cb: (err: Error | null) => void) => {
+      queueMicrotask(() => { try { chmodSync(path, mode); cb(null); } catch (e) { cb(e as Error); } });
+    },
+    lchmod: (path: string | URL, mode: number | string, cb: (err: Error | null) => void) => {
+      queueMicrotask(() => { try { chmodSync(path, mode); cb(null); } catch (e) { cb(e as Error); } });
+    },
+    fchmod: (fd: number, mode: number | string, cb: (err: Error | null) => void) => {
+      queueMicrotask(() => { try { fchmodSync(fd, mode); cb(null); } catch (e) { cb(e as Error); } });
+    },
+    symlink: (target: string | URL, path: string | URL, typeOrCb: unknown, cb?: (err: Error | null) => void) => {
+      const done = (typeof typeOrCb === 'function' ? typeOrCb : cb) as (err: Error | null) => void;
+      queueMicrotask(() => { try { symlinkSync(target, path); done(null); } catch (e) { done(e as Error); } });
+    },
+    readlink: (path: string | URL, optOrCb: unknown, cb?: Callback<string>) => {
+      const done = (typeof optOrCb === 'function' ? optOrCb : cb) as Callback<string>;
+      wrapCallback(() => readlinkSync(path), done);
+    },
+    utimes: (path: string | URL, atime: unknown, mtime: unknown, cb: (err: Error | null) => void) => {
+      try { utimesSync(path, atime, mtime); cb(null); } catch (e) { cb(e as Error); }
+    },
+    futimes: (fd: number, atime: unknown, mtime: unknown, cb: (err: Error | null) => void) => {
+      try { futimesSync(fd, atime, mtime); cb(null); } catch (e) { cb(e as Error); }
+    },
     // Streams
     createReadStream,
     createWriteStream,

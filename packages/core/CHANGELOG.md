@@ -1,3 +1,9 @@
+## 0.10.36
+
+### Patch Changes
+
+- Lifo Cloud: the `LifoCloud` client (`lifo cloud push`, pull, exec, shell, usage) and the safe env filter it uses; boxes in an isolated worker or a separate-origin frame (`WorkerSandbox`, `serveSandbox`, `serveBoxFrame`, `pageAuth` for one-hour terminal logins on a site's pages); files that survive in durable storage (`SqliteMountProvider`). Includes everything in 0.10.32 to 0.10.35 from main.
+
 ## 0.10.35
 
 ### Patch Changes

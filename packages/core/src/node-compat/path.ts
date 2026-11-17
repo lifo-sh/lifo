@@ -80,20 +80,23 @@ export function format(pathObj: Partial<ParsedPath>): string {
 
 export const sep = '/';
 export const delimiter = ':';
-export const posix = {
-  normalize, isAbsolute, join, resolve: (...args: string[]) => resolve(cwdBase(), ...args),
-  dirname, basename, extname, relative, parse, format, sep, delimiter,
-};
-// Minimal win32 path — Lifo is posix-only but packages like vite reference win32.sep
-export const win32 = {
-  normalize, isAbsolute, join, resolve: (...args: string[]) => resolve(cwdBase(), ...args),
-  dirname, basename, extname, relative, parse, format,
-  sep: '\\',
-  delimiter: ';',
-};
+
+/**
+ * The `path` module a node run gets: resolve() is based on the run's cwd. (A run's cwd can't
+ * change: process.chdir() isn't supported.) Reading globalThis.process instead gets the host's
+ * cwd when the box runs in Node.js, where the run doesn't replace the global process.
+ */
+export function createPathModule(getCwd: () => string = cwdBase) {
+  const res = (...args: string[]) => resolve(getCwd(), ...args);
+  const posix = { normalize, isAbsolute, join, resolve: res, dirname, basename, extname, relative, parse, format, sep, delimiter };
+  // Minimal win32 path — Lifo is posix-only but packages like vite reference win32.sep
+  const win32 = { normalize, isAbsolute, join, resolve: res, dirname, basename, extname, relative, parse, format, sep: '\\', delimiter: ';' };
+  return { normalize, isAbsolute, join, resolve: res, dirname, basename, extname, relative, parse, format, sep, delimiter, posix, win32 };
+}
+
+const defaultPath = createPathModule();
+export const posix = defaultPath.posix;
+export const win32 = defaultPath.win32;
 
 export { normalize, isAbsolute, join, resolve };
-export default {
-  normalize, isAbsolute, join, resolve: (...args: string[]) => resolve(cwdBase(), ...args),
-  dirname, basename, extname, relative, parse, format, sep, delimiter, posix, win32,
-};
+export default defaultPath;

@@ -9,6 +9,8 @@
  *   init    <name>       scaffold a new lifo package template
  *   link    <path>       dev-link a local package directory
  *   unlink  <name>       remove a dev link
+ *   login | logout | whoami | tunnel | cloud   lifo.sh account, tunnels, cloud boxes (lifo-cloud.ts)
+ *   services                                   tools that run on Lifo's servers (remote-tool.ts)
  */
 
 import type { Command, CommandContext, CommandOutputStream } from '../types.js';
@@ -27,6 +29,9 @@ import {
   readLifoManifest,
   createLifoCommand,
 } from '../../pkg/lifo-runtime.js';
+import type { VirtualRequestHandler } from '../../kernel/index.js';
+import { lifoCloudCommand, lifoLogin, lifoLogout, lifoTunnel, lifoWhoami } from './lifo-cloud.js';
+import { lifoServicesCommand, registerOrLocal } from './remote-tool.js';
 
 const GLOBAL_MODULES = '/usr/lib/node_modules';
 
@@ -42,8 +47,16 @@ function printHelp(stdout: CommandOutputStream): void {
   stdout.write('  init <name>            scaffold a new lifo package\n');
   stdout.write('  link [path]            dev-link a local package\n');
   stdout.write('  unlink <name>          remove a dev link\n');
+  stdout.write('\nAccount:\n');
+  stdout.write('  login [--base-url URL] log in to lifo.sh in your browser\n');
+  stdout.write('  logout                 log out and revoke this login\'s key\n');
+  stdout.write('  whoami                 show who is logged in\n');
+  stdout.write('  tunnel <port> [--name] share a port in this box on a public URL\n');
+  stdout.write('  cloud <command>        run this box on Lifo Cloud (lifo cloud --help)\n');
+  stdout.write('  services [command]     tools that run on Lifo\'s servers, like ffmpeg (lifo services --help)\n');
   stdout.write('\nEnvironment:\n');
   stdout.write('  LIFO_CDN               CDN for ESM imports (default: https://esm.sh)\n');
+  stdout.write('  LIFO_BASE_URL          website to log in to (default: https://lifo.sh)\n');
 }
 
 // ─── install ───
@@ -88,7 +101,7 @@ async function lifoInstall(
     for (const [cmdName, entryRelPath] of Object.entries(manifest.commands)) {
       const entryPath = join(pkgDir, entryRelPath);
       if (ctx.vfs.exists(entryPath)) {
-        registry.register(cmdName, createLifoCommand(entryPath, ctx.vfs));
+        registerOrLocal(registry, ctx.vfs, cmdName, createLifoCommand(entryPath, ctx.vfs));
         ctx.stdout.write(`  registered command: ${cmdName}\n`);
       }
     }
@@ -427,6 +440,7 @@ function lifoUnlink(ctx: CommandContext): number {
 export function createLifoPkgCommand(
   registry: CommandRegistry,
   _shellExecute?: ShellExecuteFn,
+  kernel?: { portRegistry: Map<number, VirtualRequestHandler> },
 ): Command {
   return async (ctx) => {
     const subcommand = ctx.args[0];
@@ -456,6 +470,18 @@ export function createLifoPkgCommand(
         return lifoLink(ctx, registry);
       case 'unlink':
         return lifoUnlink(ctx);
+      case 'login':
+        return lifoLogin(ctx);
+      case 'logout':
+        return lifoLogout(ctx);
+      case 'whoami':
+        return lifoWhoami(ctx);
+      case 'tunnel':
+        return lifoTunnel(ctx, kernel?.portRegistry);
+      case 'cloud':
+        return lifoCloudCommand(ctx);
+      case 'services':
+        return lifoServicesCommand(ctx);
       default:
         ctx.stderr.write(`lifo: unknown command '${subcommand}'\n`);
         ctx.stderr.write('Run lifo --help for usage\n');
@@ -512,7 +538,7 @@ export function rehydrateGlobalPackages(vfs: VFS, registry: CommandRegistry): vo
         for (const [cmdName, entryRelPath] of Object.entries(manifest.commands)) {
           const entryPath = join(pkgDir, entryRelPath);
           if (vfs.exists(entryPath)) {
-            registry.register(cmdName, createLifoCommand(entryPath, vfs));
+            registerOrLocal(registry, vfs, cmdName, createLifoCommand(entryPath, vfs));
           }
         }
         continue; // lifo manifest takes priority — skip npm bin check

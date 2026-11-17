@@ -1,69 +1,70 @@
+// About This Box: the Lifo menu's first item. Live uptime, processes, servers, files.
+
 import type { AppDefinition, AppContext, AppInstance } from '../../types';
+import type { DesktopWindow } from '../../core/Window';
+import { APP_ICONS, LIFO_MARK } from '../../icons';
+import { h } from '../../core/ui';
+import { formatBytes, formatDuration } from '../../core/box';
 
 class AboutInstance implements AppInstance {
   readonly appId = 'about';
+  private timer = 0;
+  private stats!: HTMLElement;
+  private usage: { files: number; bytes: number; partial: boolean } | null = null;
 
   constructor(private ctx: AppContext) {}
 
-  mount(container: HTMLElement): void {
-    const wrapper = document.createElement('div');
-    wrapper.style.cssText = `
-      width: 100%; height: 100%; display: flex; flex-direction: column;
-      align-items: center; justify-content: center; gap: 16px;
-      background: #1a1b26; color: #c0caf5; text-align: center; padding: 32px;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    `;
-
-    const logo = document.createElement('div');
-    logo.style.cssText = 'font-size: 64px; margin-bottom: 8px;';
-    logo.textContent = '\uD83D\uDDA5\uFE0F';
-
-    const title = document.createElement('div');
-    title.style.cssText = 'font-size: 22px; font-weight: 700;';
-    title.textContent = 'Lifo Desktop';
-
-    const version = document.createElement('div');
-    version.style.cssText = 'font-size: 13px; color: #565f89;';
-    version.textContent = 'Version 1.0.0';
-
-    const info = document.createElement('div');
-    info.style.cssText = 'font-size: 12px; color: #565f89; line-height: 1.8;';
-
-    // Gather system info
-    const ua = navigator.userAgent;
-    const mem = (navigator as unknown as Record<string, unknown>).deviceMemory ?? 'N/A';
-
-    (async () => {
-      let vfsInfo = '';
-      try {
-        const procVersion = await this.ctx.kernel.vfs.readFile('/proc/version');
-        vfsInfo = typeof procVersion === 'string' ? procVersion : new TextDecoder().decode(procVersion);
-      } catch {
-        vfsInfo = 'Lifo Kernel';
-      }
-
-      info.innerHTML = [
-        `Kernel: ${vfsInfo.trim()}`,
-        `Browser: ${ua.split(') ').pop()?.split('/')[0] ?? ua}`,
-        `Memory: ${mem} GB`,
-        `Platform: ${navigator.platform}`,
-      ].join('<br>');
-    })();
-
-    wrapper.append(logo, title, version, info);
-    container.appendChild(wrapper);
+  mount(container: HTMLElement, _win: DesktopWindow): void {
+    this.stats = h('div', { class: 'lf-about-stats' });
+    container.append(
+      h(
+        'div',
+        { class: 'lf-about-box', 'data-drag': '' },
+        h('div', { class: 'lf-about-logo', html: LIFO_MARK }),
+        h('h2', {}, 'Lifo'),
+        h('p', { class: 'lf-muted' }, 'A Linux-like OS in your browser tab'),
+        this.stats,
+        h(
+          'div',
+          { class: 'lf-dialog-buttons center', 'data-nodrag': '' },
+          h('button', { class: 'lf-btn', onclick: () => this.ctx.launch('activity') }, 'Activity Monitor…'),
+          h('a', { class: 'lf-btn', href: 'https://lifo.sh/docs', target: '_blank', rel: 'noopener' }, 'Documentation'),
+        ),
+      ),
+    );
+    this.render();
+    this.timer = window.setInterval(() => this.render(), 1000);
   }
 
-  unmount(): void {}
+  private render(): void {
+    const box = this.ctx.box;
+    this.usage ??= box.usage('/');
+    const row = (k: string, v: string) => h('div', { class: 'lf-info-row' }, h('span', {}, k), h('span', {}, v));
+    this.stats.replaceChildren(
+      row('Uptime', formatDuration(Date.now() - box.bootedAt)),
+      row('Processes', String(box.processes.getAll().filter((p) => p.status !== 'zombie').length)),
+      row('Servers', box.ports().length ? box.ports().map((p) => `:${p}`).join(' ') : 'none'),
+      row('Files', `${this.usage.files.toLocaleString()}${this.usage.partial ? '+' : ''} · ${formatBytes(this.usage.bytes)}`),
+      row('Runs on', navigator.userAgent.includes('Chrome') ? 'Chromium, in this tab' : 'this browser tab'),
+    );
+  }
+
+  unmount(): void {
+    clearInterval(this.timer);
+  }
 
   getTitle(): string {
-    return 'About This Mac';
+    return 'About This Box';
   }
 }
 
 export const aboutDefinition: AppDefinition = {
   id: 'about',
-  name: 'About This Mac',
-  icon: '\u2139\uFE0F',
+  name: 'About This Box',
+  icon: APP_ICONS.about,
+  singleton: true,
+  hidden: true,
+  size: { width: 340, height: 400 },
+  minSize: { width: 300, height: 360 },
   createInstance: (ctx) => new AboutInstance(ctx),
 };

@@ -77,7 +77,10 @@ export class VirtualUpgradeSocket extends EventEmitter {
 		if (!this.destroyed) {
 			this.sendBytes(typeof data === 'string' ? textEncoder.encode(data) : data);
 		}
-		callback?.();
+		// Asynchronously, as Node does: `ws` sets its close timer right after write() returns and
+		// clears it when the socket closes; a synchronous callback closed the socket first and left
+		// the timer holding the process for 30 s.
+		if (callback) queueMicrotask(callback);
 		return true;
 	}
 

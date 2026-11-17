@@ -4,12 +4,26 @@ import tailwindcss from '@tailwindcss/vite';
 import path from 'path';
 import { portBridgePlugin } from './src/vite-plugin-port-bridge';
 import { corsProxyPlugin } from './src/vite-plugin-cors-proxy';
+import { browsePlugin } from './src/vite-plugin-browse';
+import { firefoxPlugin } from './src/vite-plugin-firefox';
+
+// LIFO_EMBED=1: served by the lifo.sh website's dev server, which proxies /playground/*
+// here (website/scripts/dev.mjs), so edits show up on the site live. Same base as the
+// production copy, its own port (5273) so it can run next to a standalone `pnpm dev`, and
+// HMR talks to this server directly, since the proxy doesn't carry it: at localhost, which is
+// where it listens, also when the site frames the app from its box origin (http://127.0.0.1:3000).
+const embedded = process.env.LIFO_EMBED === '1';
 
 export default defineConfig(({ command }) => ({
-  base: command === 'build' ? '/playground/' : '/',
-  plugins: [react(), tailwindcss(), portBridgePlugin(), corsProxyPlugin()],
+  base: command === 'build' || embedded ? '/playground/' : '/',
+  plugins: [react(), tailwindcss(), portBridgePlugin(), corsProxyPlugin(), browsePlugin(), firefoxPlugin()],
   server: {
-    port: 5173,
+    port: embedded ? 5273 : 5173,
+    ...(embedded && {
+      strictPort: true,
+      hmr: { host: 'localhost', clientPort: 5273 },
+      headers: { 'Service-Worker-Allowed': '/_sw/' },
+    }),
     // Pre-transform the entry + example modules at startup so the first time you
     // open an example it isn't a cold on-demand transform stall. Dev only.
     warmup: {
@@ -30,6 +44,9 @@ export default defineConfig(({ command }) => ({
       'isomorphic-git',
     ],
   },
+  // Module workers: the Isolation example's box worker (src/lib/box.worker.ts) loads core, which
+  // splits into chunks, and Vite's default classic (iife) worker build can't code-split.
+  worker: { format: 'es' },
   build: {
     rollupOptions: {
       output: {
@@ -55,6 +72,8 @@ export default defineConfig(({ command }) => ({
       '@lifo-sh/core': path.resolve(__dirname, '../../packages/core/src/index.ts'),
       '@lifo-sh/ui': path.resolve(__dirname, '../../packages/ui/src/index.ts'),
       'lifo-pkg-git': path.resolve(__dirname, '../../packages/lifo-pkg-git/src/index.ts'),
+      // A directory, so lifo-pkg-agent/worker and /browser resolve to src/worker.ts and src/browser.ts.
+      'lifo-pkg-agent': path.resolve(__dirname, '../../packages/lifo-pkg-agent/src'),
       'lifo-pkg-ffmpeg': path.resolve(__dirname, '../../packages/lifo-pkg-ffmpeg/src/index.ts'),
     },
   },

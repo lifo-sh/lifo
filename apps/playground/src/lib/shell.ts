@@ -24,6 +24,9 @@ import {
   createNpmCommand,
   createNpxCommand,
   createLifoPkgCommand,
+  pageAuth,
+  setBoxAuth,
+  type BoxAuth,
   type Kernel,
 } from '@lifo-sh/core';
 import type { ITerminal } from '@lifo-sh/core';
@@ -36,6 +39,8 @@ import viCommand from 'lifo-pkg-vi';
 import calCommand from 'lifo-pkg-cal';
 import bcCommand from 'lifo-pkg-bc';
 import manCommand from 'lifo-pkg-man';
+import { registerAgentCommands } from './agent';
+import { SITE_ORIGIN, askSite } from './site';
 import orchdCommand from 'orchd/lifo';
 
 /**
@@ -57,10 +62,34 @@ export function browserCorsEnv(): Record<string, string> {
   };
 }
 
+let authProbe: Promise<BoxAuth | undefined> | null = null;
+
+// One function for every box, so setBoxAuth keeps a box's cached token across shells.
+const siteToken = async () => {
+  const token = await askSite('box-token');
+  return token?.startsWith('lifo_') ? token : null;
+};
+
+/**
+ * The website's login for this playground's boxes, when it's served by lifo.sh (or the local
+ * website) at /playground: `lifo whoami | tunnel | cloud` then act as the logged-in visitor, with a
+ * one-hour token from /api/box-token. Framed from lifo.sh's box origin, the token comes from the
+ * framing page instead (./site.ts). Standalone (`pnpm dev`) there's no such endpoint and boxes
+ * behave as before. Probed once with a GET, which the website answers 405 (it only mints on POST).
+ */
+export function playgroundAuth(): Promise<BoxAuth | undefined> {
+  if (typeof location === 'undefined') return Promise.resolve(undefined);
+  if (SITE_ORIGIN) return Promise.resolve({ baseUrl: SITE_ORIGIN, getToken: siteToken });
+  authProbe ??= fetch('/api/box-token', { method: 'GET', credentials: 'same-origin' })
+    .then((res) => (res.status === 405 || res.status === 401 ? pageAuth(location.origin) : undefined))
+    .catch(() => undefined);
+  return authProbe;
+}
+
 export interface BootShellOptions {
   /** Extra installable-package commands to register. git is always
    *  registered ('git' entries are accepted for back-compat). */
-  pkgs?: Array<'git' | 'ffmpeg' | 'orchd'>;
+  pkgs?: Array<'git' | 'ffmpeg' | 'orchd' | 'agent'>;
   /** Register node/curl/tunnel + the network/systemctl command set. */
   network?: boolean;
   /** Boot enabled systemd services after sourcing profile (e.g. tunnel). */
@@ -111,10 +140,20 @@ export async function bootShell(
   registry.register('cal', calCommand);
   registry.register('bc', bcCommand);
   registry.register('man', manCommand);
+  // Python (Pyodide) in every shell, loaded the first time it runs: the package is a few KB and
+  // the interpreter (about 6 MB) comes from the CDN only when someone types `python3`.
+  for (const name of ['python', 'python3']) {
+    registry.register(name, async (ctx) => (await import('lifo-pkg-python')).default(ctx));
+  }
+  for (const name of ['pip', 'pip3']) {
+    registry.register(name, async (ctx) => (await import('lifo-pkg-python')).pip(ctx));
+  }
   if (opts.pkgs?.includes('ffmpeg')) registry.register('ffmpeg', ffmpegCommand);
   if (opts.pkgs?.includes('orchd')) registry.register('orchd', orchdCommand);
+  if (opts.pkgs?.includes('agent')) registerAgentCommands(registry);
   bootLifoPackages(kernel.vfs, registry);
 
+  setBoxAuth(kernel.vfs, await playgroundAuth());
   const env = { ...kernel.getDefaultEnv(), ...browserCorsEnv(), ...opts.env };
   if (opts.cwd) env.PWD = opts.cwd;
   const shell = new Shell(terminal, kernel.vfs, registry, env, kernel.processRegistry);
@@ -137,7 +176,7 @@ export async function bootShell(
   };
   registry.register('npm', createNpmCommand(registry, shellExecute, kernel));
   registry.register('npx', createNpxCommand(registry, shellExecute));
-  registry.register('lifo', createLifoPkgCommand(registry, shellExecute));
+  registry.register('lifo', createLifoPkgCommand(registry, shellExecute, kernel));
 
   if (opts.network) {
     registry.register('node', createNodeCommand(kernel));

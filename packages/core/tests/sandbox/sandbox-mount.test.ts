@@ -362,9 +362,13 @@ describe('Sandbox.mountNative', () => {
     // so we test with a scenario where we explicitly don't pass fsModule
     // and mock the globalThis.require to not exist.
     const origRequire = globalThis.require;
+    const proc = process as unknown as Record<string, unknown>;
+    const origGetBuiltin = proc.getBuiltinModule;
     try {
-      // Temporarily remove require
+      // Temporarily remove both ways core finds node:fs: require, and (in ES modules)
+      // process.getBuiltinModule.
       (globalThis as Record<string, unknown>).require = undefined;
+      proc.getBuiltinModule = undefined;
 
       expect(() => {
         sandbox.mountNative('/mnt/x', '/some/host/path');
@@ -372,6 +376,7 @@ describe('Sandbox.mountNative', () => {
     } finally {
       // Restore
       (globalThis as Record<string, unknown>).require = origRequire;
+      proc.getBuiltinModule = origGetBuiltin;
     }
   });
 

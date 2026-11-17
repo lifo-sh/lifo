@@ -62,27 +62,13 @@ const command: Command = async (ctx) => {
 
   function applyChmod(filePath: string): void {
     const st = ctx.vfs.stat(filePath);
-    const newMode = parseMode(modeStr, st.mode);
-    // VFS stat returns mode but we need to update via the internal node.
-    // Since VFS doesn't expose a chmod method, we'll use writeFile trick
-    // Actually the INode.mode is exposed through stat, but we need to set it.
-    // For now, we read and rewrite (preserving content) to update via the VFS.
-    // This is a limitation -- ideally VFS would have a chmod method.
-    // We'll just report the mode change for now.
     if (st.type === 'directory' && recursive) {
-      try {
-        const entries = ctx.vfs.readdir(filePath);
-        for (const entry of entries) {
-          const childPath = filePath === '/' ? '/' + entry.name : filePath + '/' + entry.name;
-          applyChmod(childPath);
-        }
-      } catch {
-        // skip
+      for (const entry of ctx.vfs.readdir(filePath)) {
+        if (entry.type === 'symlink') continue; // like chmod -R: links inside the tree aren't followed
+        applyChmod(filePath === '/' ? '/' + entry.name : filePath + '/' + entry.name);
       }
     }
-    // Since we can't directly set mode on VFS nodes without a chmod method,
-    // we report success. In a real implementation, VFS.chmod() would be added.
-    void newMode;
+    ctx.vfs.chmod(filePath, parseMode(modeStr, st.mode));
   }
 
   let exitCode = 0;

@@ -16,7 +16,10 @@
  *   lifo attach <id>              Wire this terminal to an existing VM.
  *   lifo stop <id>                Send SIGTERM to the daemon and remove session files.
  *
- *   lifo login / logout / whoami  Auth helpers (see auth.ts).
+ *   lifo login / logout / whoami  Log in to lifo.sh in the browser (see auth.ts).
+ *                                 --base-url <url> or --local (http://localhost:3000)
+ *                                 picks the website; the last login becomes the default.
+ *   lifo tunnel <port> [--name n] Put localhost:<port> on a public URL (see tunnel.ts).
  *
  * Port forwarding
  * ───────────────
@@ -77,7 +80,7 @@ import type { ExposedPort } from '@lifo-sh/core';
 import * as nodeHttp from 'node:http';
 import { NodeTerminal } from './NodeTerminal.js';
 import { DaemonTerminal } from './DaemonTerminal.js';
-import { TOKEN_PATH, readToken, handleLogin, handleLogout, handleWhoami } from './auth.js';
+import { handleLogin, handleLogout, handleWhoami, boxAuthEnv } from './auth.js';
 import { SESSIONS_DIR, writeSession, deleteSession, readSession, listSessions } from './session.js';
 import { startDaemon } from './daemon.js';
 import { attachToSession, attachViaTcp } from './attach.js';
@@ -88,9 +91,58 @@ import {
 	readSnapshotArchive,
 	listSnapshots,
 } from './snapshot.js';
-import { handleTunnel, createHostTunnelCommand } from './tunnel.js';
+import { handleTunnel } from './tunnel.js';
+import { handleCloud } from './cloud.js';
+import WebSocketImpl from 'ws';
+import type { Command, CommandRegistry } from '@lifo-sh/core';
+
 import { parseExpose, type ExposeMapping } from './args.js';
 import { serialize, deserialize } from '@lifo-sh/core';
+
+// `lifo tunnel` inside a box uses the global WebSocket, which Node only has from 22 on.
+(globalThis as { WebSocket?: unknown }).WebSocket ??= WebSocketImpl;
+
+/**
+ * `tunnel <port>` inside the box: shorthand for `lifo tunnel <port>`, which shares a
+ * port of THIS BOX publicly (core's lifo-cloud.ts). To share a host port, run
+ * `lifo-sh tunnel <port>` on the host instead.
+ */
+function createBoxTunnelAlias(registry: CommandRegistry): Command {
+	return async (ctx) => {
+		const lifo = await registry.resolve('lifo');
+		if (!lifo) {
+			ctx.stderr.write('tunnel: the lifo command is not available\n');
+			return 1;
+		}
+		return lifo({ ...ctx, args: ['tunnel', ...ctx.args] });
+	};
+}
+
+/**
+ * git, vi, nano, less, python (with pip) and browser in every box this CLI starts. Core leaves
+ * them out to stay small (they are `lifo install` packages); each loads the first time it runs.
+ * `browser` drives a real Chromium on Lifo's Browser service with this login (or any CDP endpoint
+ * in BROWSER_WS_ENDPOINT); Node has no DOMParser for the text browser, so there is no fallback.
+ */
+const DEFAULT_PACKAGES: Record<string, () => Promise<{ default: Command }>> = {
+	git: () => import('lifo-pkg-git') as Promise<{ default: Command }>,
+	vi: () => import('lifo-pkg-vi') as Promise<{ default: Command }>,
+	vim: () => import('lifo-pkg-vi') as Promise<{ default: Command }>,
+	nano: () => import('lifo-pkg-nano') as Promise<{ default: Command }>,
+	less: () => import('lifo-pkg-less') as Promise<{ default: Command }>,
+	python: () => import('lifo-pkg-python') as Promise<{ default: Command }>,
+	python3: () => import('lifo-pkg-python') as Promise<{ default: Command }>,
+	pip: () => import('lifo-pkg-python/pip') as Promise<{ default: Command }>,
+	pip3: () => import('lifo-pkg-python/pip') as Promise<{ default: Command }>,
+	browser: () => import('lifo-pkg-agent/chromium').then((m) => ({ default: m.createChromiumBrowserCommand() as unknown as Command })),
+};
+
+function registerDefaultPackages(registry: CommandRegistry): void {
+	for (const [name, load] of Object.entries(DEFAULT_PACKAGES)) {
+		if (registry.has(name)) continue; // installed with `lifo install`: that one wins
+		registry.register(name, async (ctx) => (await load()).default(ctx));
+	}
+}
 
 // ─── CLI argument parsing ──────────────────────────────────────────────────────
 
@@ -98,7 +150,7 @@ import { serialize, deserialize } from '@lifo-sh/core';
  * All recognised user-facing subcommands. Used by getEffectiveArgs() to find
  * where the real user input starts when pnpm dev mode injects extra args.
  */
-const SUBCOMMANDS = new Set(['login', 'logout', 'whoami', 'list', 'attach', 'stop', 'new', 'snapshot', 'tunnel']);
+const SUBCOMMANDS = new Set(['login', 'logout', 'whoami', 'list', 'attach', 'stop', 'new', 'snapshot', 'tunnel', 'cloud', 'help']);
 
 /**
  * Returns the user-facing args, stripping any leading positional args that
@@ -350,15 +402,14 @@ async function runDaemon(
 	// Overlay env from the snapshot manifest, if the archive carried one.
 	if (restored?.env && typeof restored.env === 'object') {
 		for (const [k, v] of Object.entries(restored.env)) {
-			if (k !== 'LIFO_HOST_DIR' && k !== 'LIFO_AUTH_TOKEN' && k !== 'LIFO_TOKEN_PATH') {
+			if (k !== 'LIFO_HOST_DIR' && k !== 'LIFO_AUTH_TOKEN' && k !== 'LIFO_TOKEN_PATH' && k !== 'LIFO_BASE_URL') {
 				env[k] = v;
 			}
 		}
 	}
 
-	const token = readToken();
-	if (token) env.LIFO_AUTH_TOKEN = token;
-	env.LIFO_TOKEN_PATH = TOKEN_PATH;
+	// The host's lifo.sh login, so `lifo tunnel` in the box works without logging in again.
+	Object.assign(env, await boxAuthEnv());
 
 	const shell = new Shell(daemonTerminal, kernel.vfs, registry, env, kernel.processRegistry);
 
@@ -372,7 +423,8 @@ async function runDaemon(
 	registry.register('help', createHelpCommand(registry));
 	registry.register('node', createNodeCommand(kernel));
 	registry.register('curl', createCurlCommand(kernel));
-	registry.register('tunnel', createHostTunnelCommand());
+	registry.register('tunnel', createBoxTunnelAlias(registry));
+	registerDefaultPackages(registry);
 
 	const npmShellExecute = async (
 		cmd: string,
@@ -387,7 +439,7 @@ async function runDaemon(
 		return result.exitCode;
 	};
 	registry.register('npm', createNpmCommand(registry, npmShellExecute));
-	registry.register('lifo', createLifoPkgCommand(registry, npmShellExecute));
+	registry.register('lifo', createLifoPkgCommand(registry, npmShellExecute, kernel));
 
 	await shell.sourceFile('/etc/profile');
 	await shell.sourceFile(env.HOME + '/.bashrc');
@@ -546,9 +598,8 @@ async function runInteractive(opts: CliOptions): Promise<void> {
 	env.PWD = MOUNT_PATH;
 	env.LIFO_HOST_DIR = hostDir;
 
-	const token = readToken();
-	if (token) env.LIFO_AUTH_TOKEN = token;
-	env.LIFO_TOKEN_PATH = TOKEN_PATH;
+	// The host's lifo.sh login, so `lifo tunnel` in the box works without logging in again.
+	Object.assign(env, await boxAuthEnv());
 
 	const shell = new Shell(terminal, kernel.vfs, registry, env, kernel.processRegistry);
 
@@ -562,7 +613,8 @@ async function runInteractive(opts: CliOptions): Promise<void> {
 	registry.register('help', createHelpCommand(registry));
 	registry.register('node', createNodeCommand(kernel));
 	registry.register('curl', createCurlCommand(kernel));
-	registry.register('tunnel', createHostTunnelCommand());
+	registry.register('tunnel', createBoxTunnelAlias(registry));
+	registerDefaultPackages(registry);
 
 	const npmShellExecute = async (
 		cmd: string,
@@ -577,7 +629,7 @@ async function runInteractive(opts: CliOptions): Promise<void> {
 		return result.exitCode;
 	};
 	registry.register('npm', createNpmCommand(registry, npmShellExecute));
-	registry.register('lifo', createLifoPkgCommand(registry, npmShellExecute));
+	registry.register('lifo', createLifoPkgCommand(registry, npmShellExecute, kernel));
 
 	await shell.sourceFile('/etc/profile');
 	await shell.sourceFile(env.HOME + '/.bashrc');
@@ -593,6 +645,10 @@ async function runInteractive(opts: CliOptions): Promise<void> {
 
 	// 8b. Boot enabled services
 	await kernel.bootServices();
+
+	// 8c. Show the prompt and start reading keys. (Missing since the daemon refactor,
+	// so `npx lifo-sh` printed the banner and then never answered.)
+	shell.start();
 
 	// 9. Override exit
 	(shell as any).builtins.set(
@@ -617,6 +673,40 @@ async function runInteractive(opts: CliOptions): Promise<void> {
 	process.on('SIGHUP', cleanup);
 }
 
+const USAGE = `lifo-sh: a Linux-like OS in your terminal (https://lifo.sh)
+
+Usage
+  lifo-sh [--mount <dir>] [--expose <port>[:<hostPort>]]   a shell; exits with the terminal
+  lifo-sh new [--mount <dir>] [--expose ...]                a box that keeps running; attach now
+  lifo-sh --detach [--mount <dir>] [--expose ...] [--port <tcp>]   start one in the background
+
+Boxes
+  lifo-sh list                                list running boxes
+  lifo-sh attach <id> | <host>:<port>         open a shell in a running box (Ctrl+D detaches)
+  lifo-sh stop <id>                           stop a box
+
+Snapshots
+  lifo-sh snapshot save <id> [--output <file.tar.gz>]
+  lifo-sh snapshot restore <file.tar.gz> [--mount <dir>]
+  lifo-sh snapshot list
+
+lifo.sh
+  lifo-sh login [--local | --base-url <url>] [--no-browser]
+  lifo-sh logout | whoami
+  lifo-sh tunnel <port> [--name <name>]      put localhost:<port> on a public URL
+  lifo-sh cloud push <name> --port <n>       run this directory on Lifo Cloud (lifo-sh cloud --help)
+  lifo-sh cloud shell <name>                 a shell in a cloud box, like ssh (~. disconnects)
+  lifo-sh cloud stats <name> | usage         CPU, requests, memory, uptime; this month's usage
+
+Options
+  --mount, -m <dir>      folder on this machine to show at /mnt/host (default: a new temp folder)
+  --expose <p>[:<h>]     publish the box's port p on 127.0.0.1:h (default h = p); repeatable
+  --port <tcp>           with --detach: also accept attaches over TCP (no auth; trusted networks only)
+  -h, --help             this help
+  -v, --version          print the version
+
+Docs: https://github.com/lifo-sh/lifo/tree/main/docs`;
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -624,10 +714,18 @@ async function main() {
 	const args = getEffectiveArgs();
 	const cmd = args[0];
 
+	if (cmd === '--help' || cmd === '-h' || cmd === 'help') { console.log(USAGE); return; }
+	if (cmd === '--version' || cmd === '-v') {
+		const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string };
+		console.log(pkg.version);
+		return;
+	}
+
 	// ── Auth commands ──────────────────────────────────────────────────────────
-	if (cmd === 'login') { await handleLogin(); return; }
-	if (cmd === 'logout') { handleLogout(); return; }
-	if (cmd === 'whoami') { await handleWhoami(); return; }
+	if (cmd === 'login') { await handleLogin(args.slice(1)); return; }
+	if (cmd === 'logout') { await handleLogout(args.slice(1)); return; }
+	if (cmd === 'whoami') { await handleWhoami(args.slice(1)); return; }
+	if (cmd === 'cloud') { process.exitCode = await handleCloud(args.slice(1)); return; }
 
 	// ── VM lifecycle commands ──────────────────────────────────────────────────
 	if (cmd === 'list') { handleList(); return; }
@@ -659,19 +757,7 @@ async function main() {
 	}
 
 	if (cmd === 'tunnel') {
-		const token = readToken();
-		if (!token) {
-			console.error('Not logged in. Run `npx lifo-sh login` first.');
-			process.exit(1);
-		}
-		const portArg = args[1];
-		const tunnelPort = portArg ? parseInt(portArg, 10) : NaN;
-		if (!portArg || isNaN(tunnelPort) || tunnelPort < 1 || tunnelPort > 65535) {
-			console.error('Usage: npx lifo-sh tunnel <port>');
-			console.error('Example: npx lifo-sh tunnel 5173');
-			process.exit(1);
-		}
-		await handleTunnel(tunnelPort, token);
+		await handleTunnel(args.slice(1));
 		return;
 	}
 

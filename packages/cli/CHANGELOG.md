@@ -1,5 +1,11 @@
 # lifo-sh
 
+## 0.10.36
+
+### Patch Changes
+
+- `lifo-sh cloud`: Lifo Cloud from a normal terminal. `push` uploads the current directory as a cloud box, `pull` saves one as a .tar.gz (`--with-data` adds its database), `shell` connects to a shell in it, and every other `lifo cloud` command runs with the host's login. Needs @lifo-sh/core 0.10.36.
+
 ## 0.10.15
 
 ### Patch Changes

@@ -137,3 +137,14 @@ describe('Sandbox', () => {
     });
   });
 });
+
+describe('Sandbox env', () => {
+	it('box.env is what commands see, and a snapshot restores it', async () => {
+		const a = await Sandbox.create({ env: { GREETING: 'hello' } });
+		a.env.EXTRA = 'set later';
+		expect((await a.commands.run('echo "$GREETING $EXTRA"')).stdout).toBe('hello set later\n');
+		const b = await Sandbox.create();
+		await b.importSnapshot(await a.exportSnapshot());
+		expect((await b.commands.run('echo "$GREETING $EXTRA"')).stdout).toBe('hello set later\n');
+	});
+});

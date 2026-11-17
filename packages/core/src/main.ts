@@ -57,7 +57,7 @@ async function boot(): Promise<void> {
 	};
 	registry.register('npm', createNpmCommand(registry, npmShellExecute, kernel));
 	registry.register('npx', createNpxCommand(registry, npmShellExecute));
-	registry.register('lifo', createLifoPkgCommand(registry, npmShellExecute));
+	registry.register('lifo', createLifoPkgCommand(registry, npmShellExecute, kernel));
 
 	// 5d. Service manager & systemctl
 	kernel.initServiceManager(registry, env);

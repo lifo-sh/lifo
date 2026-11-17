@@ -38,27 +38,27 @@ function configure(monaco: Monaco) {
   }
   if (!themesDefined) {
     themesDefined = true;
-    // Tokyo Night (dark)
-    monaco.editor.defineTheme('tokyo-night', {
+    // Horizon (dark) — the lifo.sh palette
+    monaco.editor.defineTheme('horizon', {
       base: 'vs-dark',
       inherit: true,
       rules: [
-        { token: 'comment', foreground: '565f89', fontStyle: 'italic' },
-        { token: 'keyword', foreground: 'bb9af7' },
-        { token: 'string', foreground: '9ece6a' },
-        { token: 'number', foreground: 'ff9e64' },
-        { token: 'type', foreground: '2ac3de' },
-        { token: 'identifier', foreground: 'c0caf5' },
-        { token: 'delimiter', foreground: '89ddff' },
+        { token: 'comment', foreground: '5b5d75', fontStyle: 'italic' },
+        { token: 'keyword', foreground: 'b9a6ff' },
+        { token: 'string', foreground: 'ffc79a' },
+        { token: 'number', foreground: 'ff9a7a' },
+        { token: 'type', foreground: 'a9b8ff' },
+        { token: 'identifier', foreground: 'e6e6ef' },
+        { token: 'delimiter', foreground: '9a9cb3' },
       ],
       colors: {
-        'editor.background': '#1a1b26',
-        'editor.foreground': '#a9b1d6',
-        'editor.selectionBackground': '#33467c',
-        'editor.lineHighlightBackground': '#1e2030',
-        'editorCursor.foreground': '#c0caf5',
-        'editorLineNumber.foreground': '#3b4261',
-        'editorLineNumber.activeForeground': '#737aa2',
+        'editor.background': '#05060f',
+        'editor.foreground': '#d6d7e3',
+        'editor.selectionBackground': '#8b5cf655',
+        'editor.lineHighlightBackground': '#0d0e1b',
+        'editorCursor.foreground': '#ffffff',
+        'editorLineNumber.foreground': '#2f3046',
+        'editorLineNumber.activeForeground': '#8d8fa6',
       },
     });
     // Tokyo Night Day (light)
@@ -87,7 +87,7 @@ function configure(monaco: Monaco) {
   }
 }
 
-const themeName = (mode: ThemeMode) => (mode === 'light' ? 'tokyo-day' : 'tokyo-night');
+const themeName = (mode: ThemeMode) => (mode === 'light' ? 'tokyo-day' : 'horizon');
 
 /** Switch every Monaco editor to the light/dark theme. Safe to call anytime. */
 export function setMonacoTheme(mode: ThemeMode): void {
@@ -115,7 +115,7 @@ export function createMonacoProvider(): EditorProvider {
           language,
           theme: themeName(currentMode),
           fontSize: 13,
-          fontFamily: '"Cascadia Code", "Fira Code", "JetBrains Mono", Menlo, monospace',
+          fontFamily: '"Geist Mono", ui-monospace, "JetBrains Mono", Menlo, monospace',
           lineHeight: 20,
           minimap: { enabled: false },
           scrollBeyondLastLine: false,

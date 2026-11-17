@@ -1,88 +1,149 @@
+// TextEdit: edit text files in the box. Save with ⌘S, Save As to any path, open from Finder or
+// by path. The title shows the file name and "Edited" while there are unsaved changes; closing
+// asks to save. If the file changes on disk (say, from a Terminal) and you haven't edited it,
+// the new contents load by themselves.
+
 import type { AppDefinition, AppContext, AppInstance, MenuCategory } from '../../types';
+import type { DesktopWindow } from '../../core/Window';
+import { APP_ICONS } from '../../icons';
+import { h, promptDialog, choiceDialog } from '../../core/ui';
+import { HOME, basename, dirname } from '../../core/box';
 
 class TextEditInstance implements AppInstance {
   readonly appId = 'textedit';
-  private textarea: HTMLTextAreaElement | null = null;
-  private filePath: string | null = null;
+  private win!: DesktopWindow;
+  private area!: HTMLTextAreaElement;
+  private status!: HTMLElement;
   private dirty = false;
+  private saved = '';
+  private unwatch: (() => void) | null = null;
+  private wrap = true;
+  private mono = true;
+  private size = 14;
 
-  constructor(private ctx: AppContext, filePath?: string) {
-    this.filePath = filePath ?? null;
+  constructor(private ctx: AppContext, private path: string | null = null) {
+    // A folder can't be edited; a path that doesn't exist yet is a new file saved there.
+    if (path && ctx.box.vfs.exists(path) && ctx.box.vfs.stat(path).type === 'directory') this.path = null;
   }
 
-  mount(container: HTMLElement): void {
-    const wrapper = document.createElement('div');
-    wrapper.style.cssText = `
-      width: 100%; height: 100%; display: flex; flex-direction: column;
-      background: #1e1f30;
-    `;
+  mount(container: HTMLElement, win: DesktopWindow): void {
+    this.win = win;
+    this.area = h('textarea', { class: 'lf-textedit-area', spellcheck: 'false', 'aria-label': 'Document' }) as HTMLTextAreaElement;
+    this.status = h('div', { class: 'lf-statusbar' });
+    container.append(h('div', { class: 'lf-textedit' }, this.area, this.status));
+    this.load();
+    this.applyStyle();
 
-    // Toolbar
-    const toolbar = document.createElement('div');
-    toolbar.style.cssText = `
-      display: flex; align-items: center; gap: 8px;
-      padding: 6px 12px; border-bottom: 1px solid rgba(255,255,255,0.08);
-      font-size: 12px; color: #a9b1d6;
-    `;
-
-    const openBtn = document.createElement('button');
-    openBtn.textContent = 'Open...';
-    openBtn.style.cssText = this.buttonStyle();
-    openBtn.addEventListener('click', () => this.promptOpen());
-
-    const saveBtn = document.createElement('button');
-    saveBtn.textContent = 'Save';
-    saveBtn.style.cssText = this.buttonStyle();
-    saveBtn.addEventListener('click', () => this.save());
-
-    const pathLabel = document.createElement('span');
-    pathLabel.style.cssText = 'flex:1; text-align:right; opacity:0.5; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
-    pathLabel.textContent = this.filePath ?? 'Untitled';
-
-    toolbar.append(openBtn, saveBtn, pathLabel);
-
-    // Editor
-    this.textarea = document.createElement('textarea');
-    this.textarea.style.cssText = `
-      flex: 1; width: 100%; border: none; outline: none; resize: none;
-      background: #1a1b26; color: #a9b1d6; padding: 12px; font-size: 14px;
-      font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", Menlo, monospace;
-      line-height: 1.6; tab-size: 4;
-    `;
-    this.textarea.spellcheck = false;
-
-    this.textarea.addEventListener('input', () => {
-      this.dirty = true;
-    });
-
-    // Cmd+S to save
-    this.textarea.addEventListener('keydown', (e) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === 's') {
+    this.area.addEventListener('input', () => this.setDirty(this.area.value !== this.saved));
+    this.area.addEventListener('keyup', () => this.updateStatus());
+    this.area.addEventListener('click', () => this.updateStatus());
+    this.area.addEventListener('keydown', (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
         e.preventDefault();
-        this.save();
+        void (e.shiftKey ? this.saveAs() : this.save());
+      } else if (e.key === 'Tab' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        document.execCommand('insertText', false, '  ');
       }
     });
+  }
 
-    wrapper.append(toolbar, this.textarea);
-    container.appendChild(wrapper);
+  private load(): void {
+    const vfs = this.ctx.box.vfs;
+    this.unwatch?.();
+    this.unwatch = null;
+    if (this.path && vfs.exists(this.path)) {
+      try {
+        this.saved = vfs.readFileString(this.path);
+      } catch {
+        this.saved = '';
+      }
+      this.unwatch = vfs.watch(this.path, () => {
+        if (this.dirty || !this.path || !vfs.exists(this.path)) return;
+        const now = vfs.readFileString(this.path);
+        if (now !== this.area.value) {
+          this.saved = now;
+          this.area.value = now;
+          this.updateStatus();
+        }
+      });
+    } else this.saved = '';
+    this.area.value = this.saved;
+    this.setDirty(false);
+  }
 
-    // Load file if path provided
-    if (this.filePath) {
-      this.loadFile(this.filePath, pathLabel);
-    }
+  private setDirty(d: boolean): void {
+    this.dirty = d;
+    this.win.el.classList.toggle('edited', d);
+    this.ctx.windowManager.setTitle(this.win.state.id, this.getTitle());
+    this.updateStatus();
+  }
+
+  private updateStatus(): void {
+    const v = this.area.value;
+    const before = v.slice(0, this.area.selectionStart);
+    const line = before.split('\n').length;
+    const col = before.length - before.lastIndexOf('\n');
+    this.status.textContent = `${this.path ? this.path.replace(HOME, '~') : 'Not saved'} · Ln ${line}, Col ${col} · ${v.length} characters`;
+  }
+
+  private applyStyle(): void {
+    this.area.style.whiteSpace = this.wrap ? 'pre-wrap' : 'pre';
+    this.area.style.fontSize = `${this.size}px`;
+    this.area.classList.toggle('mono', this.mono);
+  }
+
+  async save(): Promise<boolean> {
+    if (!this.path) return this.saveAs();
+    const vfs = this.ctx.box.vfs;
+    const dir = dirname(this.path);
+    if (!vfs.exists(dir)) vfs.mkdir(dir, { recursive: true });
+    vfs.writeFile(this.path, this.area.value);
+    this.saved = this.area.value;
+    this.setDirty(false);
+    if (!this.unwatch) this.load();
+    return true;
+  }
+
+  async saveAs(): Promise<boolean> {
+    const suggestion = this.path ?? `${HOME}/Documents/Untitled.txt`;
+    const p = await promptDialog('Save As', 'Path in the box', suggestion.replace(HOME, '~'), 'Save');
+    if (!p) return false;
+    this.path = p.replace(/^~/, HOME);
+    return this.save();
+  }
+
+  private async open(): Promise<void> {
+    if (!(await this.canClose())) return;
+    const p = await promptDialog('Open', 'Path of a file in the box', '~/', 'Open');
+    if (!p) return;
+    this.path = p.replace(/^~/, HOME);
+    this.load();
+  }
+
+  async canClose(): Promise<boolean> {
+    if (!this.dirty) return true;
+    const choice = await choiceDialog(
+      `Save changes to “${this.path ? basename(this.path) : 'Untitled'}”?`,
+      "Your changes will be lost if you don't save them.",
+      [{ label: "Don't Save", danger: true }, { label: 'Cancel' }, { label: 'Save', primary: true }],
+    );
+    if (choice === 0) return true;
+    if (choice === 2) return this.save();
+    return false;
   }
 
   unmount(): void {
-    this.textarea = null;
+    this.unwatch?.();
   }
 
   focus(): void {
-    this.textarea?.focus();
+    this.area?.focus({ preventScroll: true });
   }
 
   getTitle(): string {
-    const name = this.filePath ? this.filePath.split('/').pop() : 'Untitled';
-    return `${this.dirty ? '\u2022 ' : ''}${name} — TextEdit`;
+    const name = this.path ? basename(this.path) : 'Untitled';
+    return this.dirty ? `${name} — Edited` : name;
   }
 
   getMenus(): MenuCategory[] {
@@ -90,81 +151,37 @@ class TextEditInstance implements AppInstance {
       {
         label: 'File',
         items: [
-          { label: 'New', shortcut: '\u2318N', action: () => {
-            this.ctx.appRegistry.launch('textedit', this.ctx, this.ctx.windowManager);
-          }},
-          { label: 'Open...', shortcut: '\u2318O', action: () => this.promptOpen() },
-          { label: 'Save', shortcut: '\u2318S', action: () => this.save() },
+          { label: 'New', shortcut: '⌥N', action: () => this.ctx.launch('textedit') },
+          { label: 'Open…', action: () => void this.open() },
           { separator: true, label: '' },
-          { label: 'Save As...', shortcut: '\u21E7\u2318S', action: () => this.promptSaveAs() },
+          { label: 'Save', shortcut: '⌘S', action: () => void this.save() },
+          { label: 'Save As…', shortcut: '⇧⌘S', action: () => void this.saveAs() },
+          { label: 'Revert to Saved', disabled: !this.dirty, action: () => this.load() },
+          { separator: true, label: '' },
+          { label: 'Show in Finder', disabled: !this.path, action: () => this.path && this.ctx.launch('finder', this.path) },
+          { label: 'Open in Terminal', disabled: !this.path, action: () => this.path && this.ctx.launch('terminal', dirname(this.path)) },
         ],
       },
       {
-        label: 'Edit',
+        label: 'Format',
         items: [
-          { label: 'Select All', shortcut: '\u2318A', action: () => this.textarea?.select() },
+          { label: 'Wrap Lines', checked: this.wrap, action: () => ((this.wrap = !this.wrap), this.applyStyle()) },
+          { label: 'Monospaced Font', checked: this.mono, action: () => ((this.mono = !this.mono), this.applyStyle()) },
+          { separator: true, label: '' },
+          { label: 'Bigger', action: () => ((this.size = Math.min(28, this.size + 1)), this.applyStyle()) },
+          { label: 'Smaller', action: () => ((this.size = Math.max(10, this.size - 1)), this.applyStyle()) },
         ],
       },
     ];
-  }
-
-  private async loadFile(path: string, pathLabel: HTMLElement): Promise<void> {
-    try {
-      const content = await this.ctx.kernel.vfs.readFile(path);
-      if (this.textarea) {
-        this.textarea.value = typeof content === 'string' ? content : new TextDecoder().decode(content);
-      }
-      this.filePath = path;
-      this.dirty = false;
-      pathLabel.textContent = path;
-    } catch {
-      if (this.textarea) this.textarea.value = '';
-    }
-  }
-
-  private async save(): Promise<void> {
-    if (!this.filePath || !this.textarea) {
-      this.promptSaveAs();
-      return;
-    }
-    try {
-      await this.ctx.kernel.vfs.writeFile(this.filePath, this.textarea.value);
-      this.dirty = false;
-    } catch (e) {
-      console.error('Save failed:', e);
-    }
-  }
-
-  private promptOpen(): void {
-    const path = prompt('Enter file path to open:', '/home/user/');
-    if (path) {
-      this.filePath = path;
-      const pathLabel = this.textarea?.parentElement?.querySelector('span');
-      if (pathLabel) this.loadFile(path, pathLabel as HTMLElement);
-    }
-  }
-
-  private promptSaveAs(): void {
-    const path = prompt('Save as:', this.filePath ?? '/home/user/untitled.txt');
-    if (path) {
-      this.filePath = path;
-      this.save();
-    }
-  }
-
-  private buttonStyle(): string {
-    return `
-      background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.12);
-      color: #a9b1d6; padding: 3px 10px; border-radius: 4px; cursor: pointer;
-      font-size: 12px;
-    `;
   }
 }
 
 export const textEditDefinition: AppDefinition = {
   id: 'textedit',
   name: 'TextEdit',
-  icon: '\uD83D\uDCDD',
-  extensions: ['.txt', '.md', '.json', '.js', '.ts', '.py', '.sh', '.css', '.html'],
-  createInstance: (ctx, filePath) => new TextEditInstance(ctx, filePath),
+  icon: APP_ICONS.textedit,
+  extensions: ['.txt', '.md', '.json', '.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx', '.css', '.html', '.py', '.sh', '.yml', '.yaml', '.toml', '.env', '.csv', '.xml', '.svg', '.liforc', '.bashrc'],
+  size: { width: 680, height: 480 },
+  minSize: { width: 320, height: 200 },
+  createInstance: (ctx, arg) => new TextEditInstance(ctx, arg ?? null),
 };

@@ -118,7 +118,7 @@ export default function Todos() {
   async function refresh() {
     const { data, error } = await supabase.from('todos').select('*').order('id');
     if (error) {
-      setStatus('Cannot reach backend: ' + error.message + ' — did you run "npx tinbase --engine pgmem &"?');
+      setStatus('Cannot reach backend: ' + error.message + ' — did you run "supabase start &"?');
       return;
     }
     setTodos(data ?? []);
@@ -289,7 +289,7 @@ cloud, nothing outside your browser.
 Getting started
 ---------------
   npm install
-  npx tinbase --engine pgmem &   # backend on :54321 (like \`supabase start\`)
+  supabase start &               # backend on :54321 (runs tinbase, Supabase-compatible)
   npm start                      # Expo/Metro dev server on :8083
 
 Then open the preview tabs:

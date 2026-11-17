@@ -24,7 +24,8 @@ const command: Command = async (ctx) => {
   for (const arg of positional) {
     const path = resolve(ctx.cwd, arg);
     try {
-      const stat = ctx.vfs.stat(path);
+      // lstat: removing a symlink removes the link, never what it points to.
+      const stat = ctx.vfs.lstat(path);
       if (stat.type === 'directory') {
         if (!recursive) {
           ctx.stderr.write(`rm: cannot remove '${arg}': Is a directory\n`);

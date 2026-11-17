@@ -106,7 +106,7 @@ export function App() {
   async function refresh() {
     const { data, error } = await supabase.from('todos').select('*').order('id')
     if (error) {
-      setStatus('Cannot reach backend: ' + error.message + ' — did you run "npx tinbase --engine pgmem &"?')
+      setStatus('Cannot reach backend: ' + error.message + ' — did you run "supabase start &"?')
       return
     }
     setTodos((data ?? []) as Todo[])
@@ -210,7 +210,7 @@ A Vite + React + TypeScript app talking to a real Supabase-compatible backend
 Getting started
 ---------------
   npm install
-  npx tinbase --engine pgmem &   # backend on :54321 (like \`supabase start\`)
+  supabase start &               # backend on :54321 (runs tinbase, Supabase-compatible)
   npm run dev                    # Vite app on :5173
 
 Then open the preview tabs:

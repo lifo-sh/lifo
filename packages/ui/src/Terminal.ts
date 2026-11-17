@@ -34,6 +34,7 @@ export class Terminal implements ITerminal {
   private container: HTMLElement;
   private fitRaf = 0;
   private webglAddon: WebglAddon | null = null;
+  private resizeObserver: ResizeObserver;
 
   constructor(container: HTMLElement, options?: { fontSize?: number; webgl?: boolean; theme?: ITheme }) {
     this.container = container;
@@ -59,10 +60,19 @@ export class Terminal implements ITerminal {
     this.setWebgl(options?.webgl !== false);
     this.scheduleFit();
 
-    const resizeObserver = new ResizeObserver(() => {
+    this.resizeObserver = new ResizeObserver(() => {
       this.scheduleFit();
     });
-    resizeObserver.observe(container);
+    this.resizeObserver.observe(container);
+  }
+
+  /** Remove the terminal from its container and free it (WebGL context, observers). */
+  dispose(): void {
+    if (this.fitRaf) cancelAnimationFrame(this.fitRaf);
+    this.resizeObserver.disconnect();
+    this.webglAddon?.dispose();
+    this.webglAddon = null;
+    this.xterm.dispose();
   }
 
   /**

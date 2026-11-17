@@ -33,6 +33,15 @@ export function TerminalView({ className, onReady }: TerminalViewProps) {
       theme: xtermTheme(mode),
     });
     termRef.current = term;
+    // Horizon type: @lifo-sh/ui hard-codes Cascadia/Fira; switch the live xterm to
+    // Geist Mono once the webfont is loaded, then refit to the new cell size.
+    const xterm = (term as unknown as { xterm?: { options: { fontFamily?: string } } }).xterm;
+    if (xterm && document.fonts?.load) {
+      void document.fonts.load('14px "Geist Mono"').then(() => {
+        xterm.options.fontFamily = '"Geist Mono", ui-monospace, "JetBrains Mono", Menlo, monospace';
+        term.refit();
+      }).catch(() => {});
+    }
     // Focus the terminal once its shell is wired up so you can type immediately.
     // Desktop only — auto-focusing on a phone would pop the on-screen keyboard.
     void Promise.resolve(onReady?.(term)).then(() => {

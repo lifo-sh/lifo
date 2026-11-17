@@ -25,6 +25,8 @@ const MOTD = `\x1b[1;36m
 
 const DEFAULT_PROFILE = `export PATH=/usr/bin:/bin
 export EDITOR=nano
+# tinbase (and \`supabase start\`, which runs it): pg-mem, the light in-memory engine. For a database on disk: supabase start --engine wasm
+export TINBASE_ENGINE=pgmem
 `;
 
 const DEFAULT_LIFORC = `# ~/.liforc - Lifo shell configuration

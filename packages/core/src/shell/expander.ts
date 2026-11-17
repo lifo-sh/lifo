@@ -8,6 +8,10 @@ export interface ExpandContext {
   cwd: string;
   vfs: VFS;
   executeCapture?: (input: string) => Promise<string>;
+  /** `$$`: the shell's process id. */
+  pid?: number;
+  /** `$!`: the process id of the last background job. */
+  lastBackgroundPid?: number;
 }
 
 /**
@@ -17,7 +21,7 @@ export interface ExpandContext {
 export async function expandWords(words: WordPart[][], ctx: ExpandContext): Promise<string[]> {
   const results: string[] = [];
 
-  for (const word of words) {
+  for (const word of words.flatMap(braceExpand)) {
     const expanded = await expandWordParts(word, ctx);
 
     // An unquoted word that expands to nothing (`$UNSET`, `$(true)`) is removed, as in POSIX sh.
@@ -34,6 +38,129 @@ export async function expandWords(words: WordPart[][], ctx: ExpandContext): Prom
   }
 
   return results;
+}
+
+// ─── Brace expansion ───
+
+type QChar = { c: string; q: WordPart['quoted'] };
+
+/**
+ * Brace expansion, done first as in bash: `a{b,c}d` → `abd acd`, `{1..5}`, `{a..e}`,
+ * `{01..10..3}`, nested `{a,b{c,d}}`. Only unquoted braces and commas count, and `${…}` / `$(…)`
+ * are left alone. A brace with no comma and no valid range (`{}`, `{x}`) stays literal.
+ */
+export function braceExpand(word: WordPart[]): WordPart[][] {
+  if (!word.some((p) => p.quoted === 'none' && p.text.includes('{'))) return [word];
+  const chars: QChar[] = [];
+  for (const part of word) for (const c of part.text) chars.push({ c, q: part.quoted });
+  return expandChars(chars, 0).map(toParts);
+}
+
+function toParts(chars: QChar[]): WordPart[] {
+  const parts: WordPart[] = [];
+  for (const { c, q } of chars) {
+    const last = parts[parts.length - 1];
+    if (last && last.quoted === q) last.text += c;
+    else parts.push({ text: c, quoted: q });
+  }
+  return parts.length > 0 ? parts : [{ text: '', quoted: 'none' }];
+}
+
+const isOpen = (ch: QChar | undefined, c: string) => ch !== undefined && ch.q === 'none' && ch.c === c;
+
+/** Skips a `${…}` or `$(…)` starting at the `$` at index i; returns the index after it. */
+function skipDollar(chars: QChar[], i: number): number {
+  const open = chars[i + 1].c;
+  const close = open === '{' ? '}' : ')';
+  let depth = 0;
+  for (let j = i + 1; j < chars.length; j++) {
+    if (chars[j].c === open) depth++;
+    else if (chars[j].c === close && --depth === 0) return j + 1;
+  }
+  return chars.length;
+}
+
+function expandChars(chars: QChar[], from: number): QChar[][] {
+  for (let i = from; i < chars.length; i++) {
+    if (isOpen(chars[i], '$') && (isOpen(chars[i + 1], '{') || isOpen(chars[i + 1], '('))) {
+      i = skipDollar(chars, i) - 1;
+      continue;
+    }
+    if (!isOpen(chars[i], '{')) continue;
+
+    // Find the matching close brace and the top-level commas.
+    let depth = 0;
+    let close = -1;
+    const commas: number[] = [];
+    for (let j = i; j < chars.length; j++) {
+      if (isOpen(chars[j], '$') && (isOpen(chars[j + 1], '{') || isOpen(chars[j + 1], '('))) {
+        j = skipDollar(chars, j) - 1;
+        continue;
+      }
+      if (isOpen(chars[j], '{')) depth++;
+      else if (isOpen(chars[j], '}') && --depth === 0) {
+        close = j;
+        break;
+      } else if (depth === 1 && isOpen(chars[j], ',')) commas.push(j);
+    }
+    if (close === -1) return [chars];
+
+    const prefix = chars.slice(0, i);
+    const suffix = chars.slice(close + 1);
+    let alternatives: QChar[][] | null = null;
+    if (commas.length > 0) {
+      alternatives = [];
+      let start = i + 1;
+      for (const comma of [...commas, close]) {
+        alternatives.push(chars.slice(start, comma));
+        start = comma + 1;
+      }
+    } else {
+      const inner = chars.slice(i + 1, close);
+      if (inner.every((ch) => ch.q === 'none')) {
+        const seq = braceSequence(inner.map((ch) => ch.c).join(''));
+        if (seq) alternatives = seq.map((text) => [...text].map((c) => ({ c, q: 'none' as const })));
+      }
+    }
+    if (!alternatives) continue; // not an expansion: keep the '{' literal and look further on
+
+    const out: QChar[][] = [];
+    for (const alt of alternatives) {
+      // The prefix has no expansions left, so rescanning can start after it.
+      out.push(...expandChars([...prefix, ...alt, ...suffix], prefix.length));
+    }
+    return out;
+  }
+  return [chars];
+}
+
+/** `1..5`, `5..1`, `1..10..3`, `01..10` (zero-padded) and `a..e`; null if it isn't a range. */
+function braceSequence(text: string): string[] | null {
+  const num = text.match(/^(-?\d+)\.\.(-?\d+)(?:\.\.(-?\d+))?$/);
+  if (num) {
+    const a = parseInt(num[1], 10);
+    const b = parseInt(num[2], 10);
+    const step = Math.abs(parseInt(num[3] ?? '1', 10)) || 1;
+    const padded = /^-?0\d/.test(num[1]) || /^-?0\d/.test(num[2]);
+    const width = padded ? Math.max(num[1].length, num[2].length) : 0;
+    const out: string[] = [];
+    for (let n = a; a <= b ? n <= b : n >= b; n += a <= b ? step : -step) {
+      const s = String(Math.abs(n)).padStart(width - (n < 0 ? 1 : 0), '0');
+      out.push(n < 0 ? '-' + s : s);
+      if (out.length > 100_000) break;
+    }
+    return out;
+  }
+  const alpha = text.match(/^([a-zA-Z])\.\.([a-zA-Z])(?:\.\.(-?\d+))?$/);
+  if (alpha) {
+    const a = alpha[1].charCodeAt(0);
+    const b = alpha[2].charCodeAt(0);
+    const step = Math.abs(parseInt(alpha[3] ?? '1', 10)) || 1;
+    const out: string[] = [];
+    for (let n = a; a <= b ? n <= b : n >= b; n += a <= b ? step : -step) out.push(String.fromCharCode(n));
+    return out;
+  }
+  return null;
 }
 
 /**
@@ -120,6 +247,14 @@ async function expandDollar(
     return { value: ctx.env['#'] ?? '0', end: pos + 2 };
   }
 
+  // $$ -- the shell's pid; $! -- the last background job's pid
+  if (next === '$') {
+    return { value: String(ctx.pid ?? 1), end: pos + 2 };
+  }
+  if (next === '!') {
+    return { value: ctx.lastBackgroundPid !== undefined ? String(ctx.lastBackgroundPid) : '', end: pos + 2 };
+  }
+
   // $@ -- all positional parameters
   if (next === '@') {
     return { value: ctx.env['@'] ?? '', end: pos + 2 };
@@ -195,6 +330,9 @@ async function expandDollar(
       j++;
     }
     const name = text.slice(pos + 1, j);
+    if (name === 'RANDOM' && ctx.env[name] === undefined) {
+      return { value: String(Math.floor(Math.random() * 32768)), end: j };
+    }
     return { value: ctx.env[name] ?? '', end: j };
   }
 

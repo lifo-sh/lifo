@@ -10,8 +10,8 @@ const spec = {
   one: { type: 'boolean' as const, short: '1' },
 };
 
-function formatMode(mode: number, isDir: boolean): string {
-  const d = isDir ? 'd' : '-';
+function formatMode(mode: number, type: LsEntry['type']): string {
+  const d = type === 'directory' ? 'd' : type === 'symlink' ? 'l' : '-';
   const perms = [
     (mode & 0o400) ? 'r' : '-',
     (mode & 0o200) ? 'w' : '-',
@@ -38,22 +38,25 @@ function formatDate(ts: number): string {
 
 interface LsEntry {
   name: string;
-  type: 'file' | 'directory';
+  type: 'file' | 'directory' | 'symlink';
+  /** For a symlink in a long listing: shown as `name -> target`. */
+  target?: string;
   size: number;
   mtime: number;
   mode: number;
 }
 
-function formatEntry(entry: LsEntry, long: boolean): string {
-  const displayName = entry.type === 'directory'
+function formatEntry(entry: LsEntry, long: boolean, color = true): string {
+  const displayName = color && entry.type === 'directory'
     ? `${BOLD}${BLUE}${entry.name}${RESET}`
     : entry.name;
 
   if (long) {
-    const mode = formatMode(entry.mode, entry.type === 'directory');
+    const mode = formatMode(entry.mode, entry.type);
     const size = String(entry.size).padStart(6, ' ');
     const date = formatDate(entry.mtime);
-    return `${mode}  1 user user ${size} ${date} ${displayName}\n`;
+    const link = entry.type === 'symlink' && entry.target !== undefined ? ` -> ${entry.target}` : '';
+    return `${mode}  1 user user ${size} ${date} ${displayName}${link}\n`;
   }
   return displayName;
 }
@@ -66,12 +69,25 @@ function listDirectory(
     ? entries
     : entries.filter((e) => !e.name.startsWith('.'));
   filtered.sort((a, b) => a.name.localeCompare(b.name));
+  for (const e of filtered as LsEntry[]) {
+    if (e.type !== 'symlink') continue;
+    try {
+      e.target = ctx.vfs.readlink(path === '/' ? `/${e.name}` : `${path}/${e.name}`);
+    } catch {
+      // gone between the listing and now
+    }
+  }
   return filtered;
 }
 
 const command: Command = async (ctx) => {
   const { flags, positional } = parseArgs(ctx.args, spec);
   const targets = positional.length > 0 ? positional : [ctx.cwd];
+  // Like GNU ls: colours and the multi-column layout only on a terminal; into a pipe, a file
+  // or a capture (`ls | wc -l`, `$(ls)`, commands.run) it writes one plain name per line.
+  const tty = ctx.stdout.isTTY === true;
+  const one = !!flags.one || !tty;
+  const fmt = (entry: LsEntry, long: boolean) => formatEntry(entry, long, tty);
 
   let exitCode = 0;
   const fileEntries: LsEntry[] = [];
@@ -107,14 +123,14 @@ const command: Command = async (ctx) => {
   if (fileEntries.length > 0) {
     if (flags.long) {
       for (const entry of fileEntries) {
-        ctx.stdout.write(formatEntry(entry, true));
+        ctx.stdout.write(fmt(entry, true));
       }
-    } else if (flags.one) {
+    } else if (one) {
       for (const entry of fileEntries) {
-        ctx.stdout.write(formatEntry(entry, false) + '\n');
+        ctx.stdout.write(fmt(entry, false) + '\n');
       }
     } else {
-      const names = fileEntries.map((e) => formatEntry(e, false));
+      const names = fileEntries.map((e) => fmt(e, false));
       ctx.stdout.write(names.join('  ') + '\n');
     }
   }
@@ -135,14 +151,14 @@ const command: Command = async (ctx) => {
 
       if (flags.long) {
         for (const entry of entries) {
-          ctx.stdout.write(formatEntry(entry, true));
+          ctx.stdout.write(fmt(entry, true));
         }
-      } else if (flags.one) {
+      } else if (one) {
         for (const entry of entries) {
-          ctx.stdout.write(formatEntry(entry, false) + '\n');
+          ctx.stdout.write(fmt(entry, false) + '\n');
         }
       } else {
-        const names = entries.map((e) => formatEntry(e, false));
+        const names = entries.map((e) => fmt(e, false));
         if (names.length > 0) {
           ctx.stdout.write(names.join('  ') + '\n');
         }

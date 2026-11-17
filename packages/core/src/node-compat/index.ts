@@ -1,7 +1,7 @@
 import type { VFS } from '../kernel/vfs/index.js';
 import type { CommandOutputStream } from '../commands/types.js';
 import { createFs } from './fs.js';
-import pathModule from './path.js';
+import { createPathModule } from './path.js';
 import { createOs } from './os.js';
 import { createProcess } from './process.js';
 import { EventEmitter } from './events.js';
@@ -11,8 +11,11 @@ import { createHttp } from './http.js';
 import type { VirtualRequestHandler } from '../kernel/index.js';
 import { createChildProcess } from './child_process.js';
 import * as streamModule from './stream.js';
+import { createNet, getBoxNet } from './net.js';
 import * as urlModule from './url.js';
 import * as timersModule from './timers.js';
+import type { NodeTimers } from './timers.js';
+import type { ActivityTracker } from './activity.js';
 import * as cryptoModule from './crypto.js';
 import * as zlibModule from './zlib.js';
 import * as stringDecoderModule from './string_decoder.js';
@@ -58,6 +61,15 @@ function applyFakeServer(s: EventEmitter): void {
   rec.ref = () => s;
 }
 
+/** Swaps the outbound half of the net/tls stubs for real sockets when the box's host provides TCP. */
+function withRealNet(ctx: { vfs: VFS; activity?: ActivityTracker }, kind: 'net' | 'tls', stub: Record<string, unknown>): Record<string, unknown> {
+  const host = getBoxNet(ctx.vfs);
+  if (!host) return stub;
+  const real = createNet(host, ctx.activity);
+  if (kind === 'net') return { ...stub, Socket: real.Socket, connect: real.connect, createConnection: real.connect };
+  return { ...stub, TLSSocket: real.TLSSocket, connect: real.tlsConnect };
+}
+
 export interface NodeContext {
   vfs: VFS;
   cwd: string;
@@ -77,13 +89,17 @@ export interface NodeContext {
    * by require-from-string, e.g. @expo/config evaluating app.config.js).
    */
   executeCjs?: (code: string, filename: string) => unknown;
+  /** This run's pending-work tracker (activity.ts): HTTP requests and timers report to it. */
+  activity?: ActivityTracker;
+  /** This run's timers, counted in `activity`. `require('timers')` returns these. */
+  timers?: NodeTimers;
 }
 
 export function createModuleMap(ctx: NodeContext): Record<string, () => unknown> {
   const map: Record<string, () => unknown> = {
     fs: () => createFs(ctx.vfs, ctx.cwd),
     'fs/promises': () => createFs(ctx.vfs, ctx.cwd).promises,
-    path: () => pathModule,
+    path: () => createPathModule(() => ctx.cwd),
     os: () => createOs(ctx.env),
     process: () => createProcess({
       argv: ctx.argv,
@@ -116,8 +132,8 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
       };
     },
     util: () => utilModule,
-    http: () => createHttp(ctx.portRegistry, 'http:', ctx.env),
-    https: () => createHttp(ctx.portRegistry, 'https:', ctx.env),
+    http: () => createHttp(ctx.portRegistry, 'http:', ctx.env, ctx.activity),
+    https: () => createHttp(ctx.portRegistry, 'https:', ctx.env, ctx.activity),
     child_process: () => createChildProcess(ctx.executeCapture, ctx.executeCaptureResult),
     stream: () => {
       // Node.js CJS: require('stream') returns the Stream base class with
@@ -247,7 +263,7 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
       };
     },
     url: () => urlModule,
-    timers: () => timersModule,
+    timers: () => ctx.timers ?? timersModule,
     crypto: () => cryptoModule,
     zlib: () => zlibModule,
     string_decoder: () => stringDecoderModule,
@@ -406,8 +422,10 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
       performance: globalThis.performance,
       PerformanceObserver: globalThis.PerformanceObserver ?? class PerformanceObserver { observe() {} disconnect() {} },
     }),
-    // net — stub (vite imports it but only uses it for actual TCP in server mode)
-    net: () => ({
+    // net — a stub in a tab (no TCP there; vite imports it but only uses it for real TCP in
+    // server mode). With a host connector (Sandbox.create({ net }), see net.ts) outbound
+    // connections are real.
+    net: () => withRealNet(ctx, 'net', {
       createServer: (...cargs: unknown[]) => {
         const s = new EventEmitter() as unknown as Record<string, unknown>;
         const connCb = cargs.find((a) => typeof a === 'function') as (() => void) | undefined;
@@ -461,8 +479,8 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
       isIPv4: (s: string) => /^\d+\.\d+\.\d+\.\d+$/.test(s),
       isIPv6: (s: string) => /^[0-9a-f:]+$/i.test(s),
     }),
-    // tls — stub
-    tls: () => ({
+    // tls — stub, or real outbound connections with a host connector (net.ts)
+    tls: () => withRealNet(ctx, 'tls', {
       createServer: (...cargs: unknown[]) => {
         const s = new EventEmitter() as unknown as Record<string, unknown>;
         const connCb = cargs.find((a) => typeof a === 'function') as (() => void) | undefined;

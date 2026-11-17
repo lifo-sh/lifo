@@ -4,7 +4,7 @@ import type { VFS } from '../../kernel/vfs/index.js';
 import type { Kernel } from '../../kernel/index.js';
 import { resolve, join } from '../../utils/path.js';
 import { decompressGzip, parseTar } from '../../utils/archive.js';
-import { suggestForPackage, npxRedirect } from '../../shell/command-suggestions.js';
+import { suggestForPackage, npxRedirect, npxCommand } from '../../shell/command-suggestions.js';
 
 const GLOBAL_MODULES = '/usr/lib/node_modules';
 const GLOBAL_BIN = '/usr/bin';
@@ -886,20 +886,50 @@ async function npmRun(ctx: CommandContext, shellExecute?: ShellExecuteFn, regist
 		return 1;
 	}
 
-	const script = pkg.scripts[scriptName];
-	ctx.stdout.write(`\n> ${pkg.name || ''}@${pkg.version || '1.0.0'} ${scriptName}\n`);
-	ctx.stdout.write(`> ${script}\n\n`);
-
 	// Register local bin scripts from node_modules so they're available in scripts
 	if (registry) {
 		registerLocalBins(ctx.vfs, ctx.cwd, registry, kernel);
 	}
 
+	// Arguments after the script name go to the script itself (npm 7+), minus a leading `--`.
+	let extra = args.slice(1);
+	if (extra[0] === '--') extra = extra.slice(1);
+	const quoted = extra.map((a) => (/^[\w@%+=:,./-]+$/.test(a) ? a : `'${a.replace(/'/g, `'\\''`)}'`));
+
+	// Like npm, `pre<name>` runs first and `post<name>` after, each only if the one before succeeded.
+	const scripts = pkg.scripts;
+	const pre = scripts[`pre${scriptName}`];
+	if (pre !== undefined && !scriptName.startsWith('pre')) {
+		const code = await runPackageScript(ctx, pkg, `pre${scriptName}`, pre, [], shellExecute, registry);
+		if (code !== 0) return code;
+	}
+	const code = await runPackageScript(ctx, pkg, scriptName, scripts[scriptName], quoted, shellExecute, registry);
+	if (code !== 0) return code;
+	const post = scripts[`post${scriptName}`];
+	if (post !== undefined && !scriptName.startsWith('post')) {
+		return runPackageScript(ctx, pkg, `post${scriptName}`, post, [], shellExecute, registry);
+	}
+	return 0;
+}
+
+async function runPackageScript(
+	ctx: CommandContext,
+	pkg: PackageJson,
+	name: string,
+	body: string,
+	extraArgs: string[],
+	shellExecute?: ShellExecuteFn,
+	registry?: CommandRegistry,
+): Promise<number> {
+	const script = extraArgs.length > 0 ? `${body} ${extraArgs.join(' ')}` : body;
+	ctx.stdout.write(`\n> ${pkg.name || ''}@${pkg.version || '1.0.0'} ${name}\n`);
+	ctx.stdout.write(`> ${script}\n\n`);
+
 	// For simple scripts (single command, no shell operators), invoke directly
 	// to avoid extra stack frames from shell.execute → interpreter chain
 	if (registry) {
 		const trimmed = script.trim();
-		const hasShellSyntax = /[;&|`$(){}]/.test(trimmed);
+		const hasShellSyntax = /[;&|`$(){}'"\\<>*?]/.test(trimmed);
 		if (!hasShellSyntax) {
 			const parts = trimmed.split(/\s+/);
 			const cmdName = parts[0];
@@ -1192,6 +1222,11 @@ export function createNpmCommand(registry: CommandRegistry, shellExecute?: Shell
 // ─── npx ───
 
 const NPX_CACHE = '/tmp/.npx-cache/node_modules';
+// Optional dependencies a tool needs to run in a box, installed next to it in the npx cache.
+// tinbase (what `supabase start` runs here) can't use native Postgres, and its PGlite engine
+// fails on Lifo's filesystem, so the box uses its pg-mem engine (TINBASE_ENGINE=pgmem).
+// pg-mem here is tinbase's fork, under the name tinbase imports (as its docs install it).
+const NPX_COMPANIONS: Record<string, [name: string, spec: string][]> = { tinbase: [['pg-mem', 'npm:@tinbase/pg-mem@^3.2.0']] };
 
 function findBinScript(
 	vfs: VFS,
@@ -1269,6 +1304,12 @@ export function createNpxCommand(
 
 		let { name: parsedName, version } = parsePackageSpec(explicitPkg || spec);
 		// npx <tool Lifo can't run> → the in-VM equivalent (e.g. supabase → tinbase).
+		// npx <tool Lifo has a built-in for> → that command (e.g. npx expo start → expo start).
+		const builtin = !explicitPkg ? npxCommand(parsedName) : null;
+		if (builtin && registry.has(builtin)) {
+			const cmd = await registry.resolve(builtin);
+			if (cmd) return cmd({ ...ctx, args: passthrough });
+		}
 		const nr = npxRedirect(parsedName);
 		if (nr) { ctx.stderr.write(nr.message + '\n'); parsedName = nr.to; version = null; }
 		// The bin name to look for: if --package was used, spec is the bin name; otherwise derive from package name
@@ -1298,6 +1339,19 @@ export function createNpxCommand(
 				} catch (e) {
 					ctx.stderr.write(`npx: could not install ${parsedName}: ${e instanceof Error ? e.message : String(e)}\n`);
 					return 1;
+				}
+			}
+			// Packages a tool needs in a box beyond its own dependencies (see NPX_COMPANIONS).
+			for (const [companion, spec] of NPX_COMPANIONS[parsedName] ?? []) {
+				if (ctx.vfs.exists(join(NPX_CACHE, companion, 'package.json'))) continue;
+				try {
+					const state = createInstallState(
+						NPX_CACHE, ctx.vfs, getRegistry(ctx.env), ctx.signal, ctx.stdout, ctx.stderr,
+						false, registry, createLimiter(INSTALL_CONCURRENCY),
+					);
+					await installDep(state, companion, spec, NPX_CACHE);
+				} catch (e) {
+					ctx.stderr.write(`npx: could not install ${companion} for ${parsedName}: ${e instanceof Error ? e.message : String(e)}\n`);
 				}
 			}
 			scriptPath = findBinScript(ctx.vfs, cacheDir, binName);

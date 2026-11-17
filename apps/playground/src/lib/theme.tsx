@@ -2,29 +2,29 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from '
 
 export type ThemeMode = 'light' | 'dark';
 
-/** xterm color themes matching the CSS palettes (Tokyo Night / Tokyo Night Day). */
+/** xterm color themes: Horizon (dark, the lifo.sh palette) and Tokyo Night Day (light). */
 const XTERM_DARK = {
-  background: '#1a1b26',
-  foreground: '#a9b1d6',
-  cursor: '#c0caf5',
-  cursorAccent: '#1a1b26',
-  selectionBackground: '#33467c',
-  black: '#15161e',
-  red: '#f7768e',
-  green: '#9ece6a',
-  yellow: '#e0af68',
-  blue: '#7aa2f7',
-  magenta: '#bb9af7',
-  cyan: '#7dcfff',
-  white: '#a9b1d6',
-  brightBlack: '#414868',
-  brightRed: '#f7768e',
-  brightGreen: '#9ece6a',
-  brightYellow: '#e0af68',
-  brightBlue: '#7aa2f7',
-  brightMagenta: '#bb9af7',
-  brightCyan: '#7dcfff',
-  brightWhite: '#c0caf5',
+  background: '#05060f',
+  foreground: '#d6d7e3',
+  cursor: '#ffffff',
+  cursorAccent: '#05060f',
+  selectionBackground: '#8b5cf655',
+  black: '#1a1b2a',
+  red: '#ff6a4a',
+  green: '#34d399',
+  yellow: '#ffc79a',
+  blue: '#6f86ff',
+  magenta: '#a78bfa',
+  cyan: '#7dd3fc',
+  white: '#c4c6d6',
+  brightBlack: '#5b5d75',
+  brightRed: '#ff9a7a',
+  brightGreen: '#6ee7b7',
+  brightYellow: '#ffdcbc',
+  brightBlue: '#a9b8ff',
+  brightMagenta: '#c4b5fd',
+  brightCyan: '#bae6fd',
+  brightWhite: '#ffffff',
 };
 
 const XTERM_LIGHT = {

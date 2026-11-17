@@ -1,6 +1,6 @@
 {
   "name": "@lifo-sh/core",
-  "version": "0.10.35",
+  "version": "0.10.36",
   "description": "A tiny Linux-like OS in TypeScript for browsers, Node and serverless -- kernel, shell, VFS, and 60+ commands",
   "license": "MIT",
   "repository": {
@@ -27,10 +27,17 @@
     ".": {
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
-    }
+    },
+    "./client": {
+      "import": "./dist/client.js",
+      "types": "./dist/client.d.ts"
+    },
+    "./sw.js": "./sw.js",
+    "./package.json": "./package.json"
   },
   "files": [
-    "dist"
+    "dist",
+    "sw.js"
   ],
   "publishConfig": {
     "access": "public"

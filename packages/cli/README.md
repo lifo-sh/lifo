@@ -39,6 +39,20 @@ user@lifo:~$ node -e "console.log(2 + 2)"
 4
 ```
 
+## Your account: login, tunnels and the cloud
+
+```bash
+lifo-sh login                       # approve in the browser; saved to ~/.lifo/auth.json
+lifo-sh tunnel 3000 --name my-app   # localhost:3000 at https://my-app-tunnel.lifo.sh
+lifo-sh cloud push my-api --port 3000 --start "node server.js"   # keep this folder running
+lifo-sh cloud ls | exec | logs | save | pull | restart | rm
+```
+
+`cloud push` puts the current folder into a box at `/home/user/app` (without `.git`) and uploads
+it to Lifo Cloud, which is in preview. See [Tunnels](https://lifo.sh/docs/cloud/tunnels) and
+[Cloud boxes](https://lifo.sh/docs/cloud/boxes). Add `--local` to `login` to use a website
+running on localhost:3000.
+
 ## Packages
 
 | Package | Description |

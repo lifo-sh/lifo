@@ -1,27 +1,36 @@
+/** Node's util.format: top-level strings print as-is; everything else is inspected. */
+const formatArg = (a: unknown): string => (typeof a === 'string' ? a : inspect(a));
+
 export function format(fmt: string, ...args: unknown[]): string {
   if (typeof fmt !== 'string') {
-    return [fmt, ...args].map((a) => inspect(a)).join(' ');
+    return [fmt, ...args].map(formatArg).join(' ');
   }
 
   let i = 0;
-  let result = fmt.replace(/%([sdjoO%])/g, (match, type) => {
+  let result = fmt.replace(/%([sdifjoOc%])/g, (match, type) => {
     if (type === '%') return '%';
     if (i >= args.length) return match;
     const arg = args[i++];
     switch (type) {
-      case 's': return String(arg);
-      case 'd': return String(Number(arg));
+      case 's':
+        return typeof arg === 'object' && arg !== null && !(arg instanceof Error) && (arg as object).toString === Object.prototype.toString
+          ? inspect(arg, { depth: 1 })
+          : String(arg);
+      case 'd': return typeof arg === 'bigint' ? `${arg}n` : String(Number(arg));
+      case 'i': return String(parseInt(String(arg), 10));
+      case 'f': return String(parseFloat(String(arg)));
       case 'j':
         try { return JSON.stringify(arg); }
         catch { return '[Circular]'; }
       case 'o': case 'O': return inspect(arg);
+      case 'c': return ''; // CSS styling: ignored, as in Node
       default: return match;
     }
   });
 
   // Append remaining args
   while (i < args.length) {
-    result += ' ' + inspect(args[i++]);
+    result += ' ' + formatArg(args[i++]);
   }
 
   return result;

@@ -207,9 +207,25 @@ Commands:
 // ─── Subcommands ───
 
 async function gitInit(git: Git, ctx: CommandContext, fs: GitFs): Promise<number> {
-  const dir = ctx.args[0] ? resolve(ctx.cwd, ctx.args[0]) : ctx.cwd;
-  await git.init({ fs, dir });
-  ctx.stdout.write(`Initialized empty Git repository in ${dir}/.git/\n`);
+  let quiet = false;
+  let bare = false;
+  let defaultBranch: string | undefined;
+  let target: string | undefined;
+  for (let i = 0; i < ctx.args.length; i++) {
+    const a = ctx.args[i];
+    if (a === '-q' || a === '--quiet') quiet = true;
+    else if (a === '--bare') bare = true;
+    else if (a === '-b' || a === '--initial-branch') defaultBranch = ctx.args[++i];
+    else if (a.startsWith('--initial-branch=')) defaultBranch = a.slice('--initial-branch='.length);
+    else if (a.startsWith('-')) {
+      ctx.stderr.write(`git init: unsupported option '${a}'\n`);
+      return 129;
+    } else target = a;
+  }
+  const dir = target ? resolve(ctx.cwd, target) : ctx.cwd;
+  if (!ctx.vfs.exists(dir)) ctx.vfs.mkdir(dir, { recursive: true });
+  await git.init({ fs, dir, bare, defaultBranch });
+  if (!quiet) ctx.stdout.write(`Initialized empty Git repository in ${bare ? dir : `${dir}/.git`}/\n`);
   return 0;
 }
 
@@ -849,6 +865,11 @@ const gitCommand: Command = async (ctx) => {
   }
 
   const git = await loadGit();
+
+  if (subcmd === '--version' || subcmd === 'version') {
+    ctx.stdout.write(`git version 2.0.0 (isomorphic-git ${git.version()})\n`);
+    return 0;
+  }
 
   const subCtx: CommandContext = {
     ...ctx,

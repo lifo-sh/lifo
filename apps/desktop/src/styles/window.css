@@ -1,135 +1,417 @@
-.lf-window {
+/* Windows: frame, traffic lights, title bar, unified toolbars, resize handles. */
+
+.lf-win {
+  /* The window's corner radius right now (maximized and narrow screens change it). */
+  --win-r: var(--radius-win);
   position: absolute;
-  background: var(--dt-window-bg);
-  border: 1px solid var(--dt-window-border);
-  border-radius: var(--dt-window-radius);
-  box-shadow: var(--dt-window-shadow);
   display: flex;
   flex-direction: column;
+  border-radius: var(--win-r);
+  background: var(--win-bg);
+  box-shadow: var(--shadow-win-inactive);
   overflow: hidden;
-  min-width: 200px;
-  min-height: 150px;
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
+  min-width: 0;
+  min-height: 0;
+  contain: layout;
+  transition: box-shadow 160ms ease;
 }
-
-.lf-window.focused {
-  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.6), 0 4px 12px rgba(0, 0, 0, 0.4);
+.lf-win.focused {
+  box-shadow: var(--shadow-win);
 }
-
-.lf-window.maximized {
-  border-radius: 0;
-  border: none;
+.lf-win::before {
+  /* hairline highlight on the top edge */
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.14);
+  pointer-events: none;
+  z-index: 5;
 }
-
-.lf-window.minimized {
-  display: none;
+.lf-win.animating {
+  transition: left 240ms cubic-bezier(0.2, 0.8, 0.2, 1), top 240ms cubic-bezier(0.2, 0.8, 0.2, 1), width 240ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    height 240ms cubic-bezier(0.2, 0.8, 0.2, 1), border-radius 240ms ease;
 }
-
-/* ── Titlebar ── */
-
-.lf-window-titlebar {
-  display: flex;
-  align-items: center;
-  height: var(--dt-titlebar-height);
-  padding: 0 12px;
-  background: rgba(40, 42, 60, 0.6);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-  flex-shrink: 0;
-  cursor: default;
+.lf-win.minimized {
+  visibility: hidden;
+  pointer-events: none;
 }
-
-.lf-window-traffic {
-  display: flex;
-  gap: 8px;
-  margin-right: 12px;
-  flex-shrink: 0;
+.lf-win.maximized {
+  --win-r: 10px;
 }
-
-.lf-window-traffic-btn {
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  border: none;
-  cursor: pointer;
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
+.lf-win.dragging,
+.lf-win.resizing {
+  user-select: none;
 }
-
-.lf-window-traffic-btn.close {
-  background: var(--dt-close);
-}
-
-.lf-window-traffic-btn.minimize {
-  background: var(--dt-minimize);
-}
-
-.lf-window-traffic-btn.maximize {
-  background: var(--dt-maximize);
-}
-
-/* Show glyphs on hover */
-.lf-window-traffic:hover .lf-window-traffic-btn::after {
-  font-size: 8px;
-  font-weight: bold;
-  color: rgba(0, 0, 0, 0.6);
-}
-
-.lf-window-traffic:hover .close::after {
-  content: '\00d7';
-  font-size: 11px;
-}
-
-.lf-window-traffic:hover .minimize::after {
-  content: '\2013';
-  font-size: 10px;
-}
-
-.lf-window-traffic:hover .maximize::after {
-  content: '\002B';
-  font-size: 10px;
-}
-
-/* Inactive window: grey dots */
-.lf-window:not(.focused) .lf-window-traffic-btn {
-  background: var(--dt-traffic-inactive);
-}
-
-.lf-window-title {
-  flex: 1;
-  text-align: center;
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--dt-text);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.lf-win.dragging iframe,
+.lf-win.resizing iframe {
   pointer-events: none;
 }
 
-/* ── Content ── */
-
-.lf-window-content {
-  flex: 1;
-  overflow: hidden;
+.lf-win-titlebar {
   position: relative;
+  flex: none;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--win-bg-2);
+  border-bottom: 0.5px solid var(--border);
+}
+.lf-win-title {
+  max-width: calc(100% - 160px);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.lf-win.focused .lf-win-title {
+  color: var(--text);
+}
+.lf-win-content {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--content-bg);
+}
+.lf-win-content > * {
+  flex: 1;
+  min-height: 0;
+}
+.lf-win.unified .lf-win-content {
+  background: var(--win-bg);
+}
+/* Clip the content to the window's rounded corners with clip-path as well: Chrome's rounded
+   overflow clip doesn't reliably apply to children with backdrop-filter (toolbars, sidebars),
+   which then paint square corners. clip-path does, and it leaves the window's shadow alone. */
+.lf-win-content {
+  clip-path: inset(0 round 0 0 var(--win-r) var(--win-r));
+}
+.lf-win.unified .lf-win-content {
+  clip-path: inset(0 round var(--win-r));
 }
 
-/* ── Resize Handles ── */
-
-.lf-window-resize {
+/* Traffic lights */
+.lf-traffic {
   position: absolute;
-  z-index: 1;
+  left: 13px;
+  top: 9px;
+  display: flex;
+  gap: 8px;
+  z-index: 6;
+}
+.lf-win.standard .lf-traffic {
+  top: 9px;
+}
+.lf-win.unified .lf-traffic {
+  top: 18px;
+  left: 18px;
+}
+.lf-traffic-btn {
+  width: 12px;
+  height: 12px;
+  padding: 0;
+  border-radius: 50%;
+  border: 0.5px solid rgba(0, 0, 0, 0.22);
+  background: rgba(128, 128, 140, 0.45);
+  position: relative;
+  cursor: default;
+}
+.lf-win.focused .lf-traffic-btn.close,
+.lf-traffic:hover .lf-traffic-btn.close {
+  background: #ff5f57;
+}
+.lf-win.focused .lf-traffic-btn.minimize,
+.lf-traffic:hover .lf-traffic-btn.minimize {
+  background: #febc2e;
+}
+.lf-win.focused .lf-traffic-btn.zoom,
+.lf-traffic:hover .lf-traffic-btn.zoom {
+  background: #28c840;
+}
+.lf-traffic-btn::after {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font: 700 9px/1 var(--font);
+  color: rgba(0, 0, 0, 0.6);
+  opacity: 0;
+}
+.lf-traffic:hover .lf-traffic-btn::after {
+  opacity: 1;
+}
+.lf-traffic-btn.close::after {
+  content: '×';
+  font-size: 11px;
+}
+.lf-traffic-btn.minimize::after {
+  content: '−';
+  font-size: 11px;
+}
+.lf-traffic-btn.zoom::after {
+  content: '+';
+  font-size: 10px;
+}
+.lf-win.edited .lf-traffic-btn.close::before {
+  content: '';
+  position: absolute;
+  inset: 3px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.45);
+}
+.lf-win.edited .lf-traffic:hover .lf-traffic-btn.close::before {
+  display: none;
 }
 
-.lf-window-resize.n  { top: -3px; left: 10px; right: 10px; height: 6px; cursor: n-resize; }
-.lf-window-resize.s  { bottom: -3px; left: 10px; right: 10px; height: 6px; cursor: s-resize; }
-.lf-window-resize.e  { right: -3px; top: 10px; bottom: 10px; width: 6px; cursor: e-resize; }
-.lf-window-resize.w  { left: -3px; top: 10px; bottom: 10px; width: 6px; cursor: w-resize; }
-.lf-window-resize.nw { top: -3px; left: -3px; width: 12px; height: 12px; cursor: nw-resize; }
-.lf-window-resize.ne { top: -3px; right: -3px; width: 12px; height: 12px; cursor: ne-resize; }
-.lf-window-resize.sw { bottom: -3px; left: -3px; width: 12px; height: 12px; cursor: sw-resize; }
-.lf-window-resize.se { bottom: -3px; right: -3px; width: 12px; height: 12px; cursor: se-resize; }
+/* Resize handles */
+.lf-resize {
+  position: absolute;
+  z-index: 10;
+}
+.lf-resize.n,
+.lf-resize.s {
+  left: 8px;
+  right: 8px;
+  height: 6px;
+  cursor: ns-resize;
+}
+.lf-resize.e,
+.lf-resize.w {
+  top: 8px;
+  bottom: 8px;
+  width: 6px;
+  cursor: ew-resize;
+}
+.lf-resize.n {
+  top: -3px;
+}
+.lf-resize.s {
+  bottom: -3px;
+}
+.lf-resize.e {
+  right: -3px;
+}
+.lf-resize.w {
+  left: -3px;
+}
+.lf-resize.nw,
+.lf-resize.ne,
+.lf-resize.sw,
+.lf-resize.se {
+  width: 14px;
+  height: 14px;
+}
+.lf-resize.nw {
+  top: -4px;
+  left: -4px;
+  cursor: nwse-resize;
+}
+.lf-resize.se {
+  bottom: -4px;
+  right: -4px;
+  cursor: nwse-resize;
+}
+.lf-resize.ne {
+  top: -4px;
+  right: -4px;
+  cursor: nesw-resize;
+}
+.lf-resize.sw {
+  bottom: -4px;
+  left: -4px;
+  cursor: nesw-resize;
+}
+.lf-win.maximized .lf-resize {
+  display: none;
+}
+
+/* Unified toolbars (Finder, Browser, Activity Monitor, Settings) */
+.lf-toolbar {
+  flex: none;
+  height: 52px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  background: var(--material);
+  backdrop-filter: blur(30px) saturate(1.6);
+  -webkit-backdrop-filter: blur(30px) saturate(1.6);
+  border-bottom: 0.5px solid var(--border);
+}
+/* Leave room for the floating traffic lights when the toolbar starts at the window's left edge. */
+.lf-win.unified .lf-win-content > * > .lf-toolbar:first-child {
+  padding-left: 88px;
+}
+.lf-toolbar-title {
+  flex: 0 1 auto;
+  min-width: 48px;
+  font-size: 15px;
+  font-weight: 650;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.lf-tb-spacer {
+  flex: 1;
+}
+.lf-tb-group {
+  display: flex;
+}
+.lf-tb-btn {
+  width: 30px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-2);
+}
+.lf-tb-btn:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--text);
+}
+.lf-tb-btn:disabled {
+  opacity: 0.35;
+}
+.lf-tb-btn .lf-glyph {
+  width: 17px;
+  height: 17px;
+}
+.lf-segmented {
+  display: flex;
+  padding: 2px;
+  gap: 2px;
+  border-radius: 7px;
+  background: var(--input-bg);
+}
+.lf-segmented > button {
+  border: none;
+  background: transparent;
+  border-radius: 5px;
+  color: var(--text-2);
+  height: 24px;
+}
+.lf-segmented .lf-tb-btn {
+  width: 30px;
+}
+.lf-segmented.text > button {
+  padding: 0 12px;
+  font-size: 12px;
+}
+.lf-segmented > button.active {
+  background: var(--win-bg-2);
+  color: var(--text);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+:root[data-theme='light'] .lf-segmented > button.active {
+  background: #fff;
+}
+.lf-search-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 0 1 150px;
+  min-width: 64px;
+}
+.lf-search-wrap .lf-glyph {
+  position: absolute;
+  left: 8px;
+  width: 13px;
+  height: 13px;
+  color: var(--text-3);
+}
+.lf-search {
+  width: 100%;
+  height: 26px;
+  padding: 0 8px 0 26px;
+  border-radius: 7px;
+  border: none;
+  background: var(--input-bg);
+  color: var(--text);
+  font: inherit;
+  outline: none;
+}
+.lf-search:focus {
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.lf-statusbar {
+  flex: none;
+  height: 24px;
+  padding: 0 12px;
+  display: flex;
+  align-items: center;
+  font-size: 11.5px;
+  color: var(--text-2);
+  border-top: 0.5px solid var(--border);
+  background: var(--win-bg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Sidebars with vibrancy (Finder, Settings) */
+.lf-sidebar {
+  width: 190px;
+  flex: none;
+  padding: 0 10px 12px;
+  background: var(--sidebar);
+  backdrop-filter: blur(40px) saturate(1.7);
+  -webkit-backdrop-filter: blur(40px) saturate(1.7);
+  border-right: 0.5px solid var(--border);
+  overflow-y: auto;
+}
+.lf-sidebar-spacer {
+  height: 46px;
+}
+.lf-sidebar-heading {
+  margin: 12px 8px 4px;
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--text-3);
+}
+.lf-sidebar-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 6px;
+  color: var(--text);
+}
+.lf-sidebar-item .lf-glyph {
+  color: var(--accent);
+}
+.lf-sidebar-item:hover {
+  background: var(--hover);
+}
+.lf-sidebar-item.active {
+  background: var(--selection-inactive);
+}
+.lf-win.focused .lf-sidebar-item.active {
+  background: rgba(128, 128, 140, 0.22);
+}
+.lf-sidebar-item.drop {
+  background: var(--accent);
+  color: #fff;
+}
+
+@media (max-width: 719px) {
+  .lf-win {
+    --win-r: 0px;
+  }
+  .lf-resize {
+    display: none;
+  }
+  .lf-sidebar {
+    width: 140px;
+  }
+  .lf-search-wrap {
+    flex-basis: 100px;
+  }
+}

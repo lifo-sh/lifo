@@ -6,7 +6,7 @@ export interface SerializedChunkRef {
 }
 
 export interface SerializedNode {
-  t: 'f' | 'd';
+  t: 'f' | 'd' | 'l';      // file, directory, symlink
   n: string;
   d?: string;              // base64 data (small files only)
   c?: SerializedNode[];     // children (dirs only)
@@ -17,6 +17,7 @@ export interface SerializedNode {
   br?: string;             // blob store ref (content hash)
   ch?: SerializedChunkRef[]; // chunk manifest (large files)
   sz?: number;             // stored size (when chunked)
+  tg?: string;             // symlink target
 }
 
 const EXCLUDED_PREFIXES = ['proc', 'dev', 'mnt'];
@@ -53,6 +54,9 @@ export function serialize(root: INode): SerializedNode {
 }
 
 function serializeNode(node: INode, isRoot: boolean): SerializedNode {
+  if (node.type === 'symlink') {
+    return { t: 'l', n: node.name, ct: node.ctime, mt: node.mtime, m: node.mode, tg: node.target ?? '' };
+  }
   if (node.type === 'file') {
     const s: SerializedNode = {
       t: 'f',
@@ -115,7 +119,7 @@ function deserializeNode(data: SerializedNode): INode {
   }
 
   const node: INode = {
-    type: data.t === 'f' ? 'file' : 'directory',
+    type: data.t === 'f' ? 'file' : data.t === 'l' ? 'symlink' : 'directory',
     name: data.n,
     data: data.d ? fromBase64(data.d) : new Uint8Array(0),
     children,
@@ -134,6 +138,9 @@ function deserializeNode(data: SerializedNode): INode {
   }
   if (data.sz !== undefined) {
     node.storedSize = data.sz;
+  }
+  if (data.t === 'l') {
+    node.target = data.tg ?? '';
   }
   return node;
 }

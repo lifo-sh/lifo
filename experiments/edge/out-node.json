@@ -1,0 +1,60 @@
+  "setTimeout": true,
+  "sharedArrayBuffer": true,
+  "worker": false,
+  "compressionStream": true,
+  "cryptoRandom": true,
+  "fetch": true,
+  "processGlobal": true
+ },
+ "bootMs": 3.8,
+ "results": [
+  {
+   "label": "echo + pipes",
+   "exit": 0,
+   "ms": 1,
+   "out": "HELLO LIFO"
+  },
+  {
+   "label": "files",
+   "exit": 0,
+   "ms": 6,
+   "out": "a\nb\n       3 x.txt"
+  },
+  {
+   "label": "grep + awk",
+   "exit": 0,
+   "ms": 1,
+   "out": "s\n1"
+  },
+  {
+   "label": "ls + cat",
+   "exit": 0,
+   "ms": 0,
+   "out": "x.txt\nb"
+  },
+  {
+   "label": "tar + gzip",
+   "exit": 1,
+   "ms": 0,
+   "out": "tar: must specify one of -c, -x, -t"
+  },
+  {
+   "label": "node -e",
+   "exit": 0,
+   "ms": 73,
+   "out": "42"
+  },
+  {
+   "label": "curl",
+   "exit": 0,
+   "ms": 166,
+   "out": "<!doctype html><html lang=en><head><meta charset=utf-8><link rel=icon href=data:,><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>Exampl"
+  }
+ ],
+ "snapshot": {
+  "ok": true,
+  "bytes": 8705,
+  "ms": 6
+ },
+ "totalMs": 264
+}

@@ -1,5 +1,11 @@
 # @lifo-sh/ui
 
+## 0.10.4
+
+### Patch Changes
+
+- `Terminal.dispose()`: remove a terminal from its container and free it (WebGL context, resize observer).
+
 ## 0.10.3
 
 ### Patch Changes

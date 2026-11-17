@@ -27,6 +27,26 @@ describe('git', () => {
     vfs.mkdir('/home/user', { recursive: true });
   });
 
+  describe('version and init flags', () => {
+    it('prints a version', async () => {
+      const ctx = makeCtx(vfs, ['--version']);
+      expect(await gitCommand(ctx)).toBe(0);
+      expect(ctx.out).toMatch(/^git version .*isomorphic-git \d/);
+    });
+
+    it('init -q is quiet, -b sets the branch, a missing dir is created', async () => {
+      const q = makeCtx(vfs, ['init', '-q']);
+      expect(await gitCommand(q)).toBe(0);
+      expect(q.out).toBe('');
+      expect(vfs.exists('/repo/.git')).toBe(true);
+
+      const b = makeCtx(vfs, ['init', '-b', 'trunk', 'newdir']);
+      expect(await gitCommand(b)).toBe(0);
+      expect(b.out).toContain('/repo/newdir/.git');
+      expect(vfs.readFileString('/repo/newdir/.git/HEAD')).toContain('refs/heads/trunk');
+    });
+  });
+
   describe('help', () => {
     it('shows usage with --help', async () => {
       const ctx = makeCtx(vfs, ['--help']);

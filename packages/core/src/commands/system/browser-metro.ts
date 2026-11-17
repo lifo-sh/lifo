@@ -399,7 +399,7 @@ export function upsertExternalAsset(bvfs: VirtualFS, rel: string): FileChange['t
 
 export function createBrowserMetroCommand(kernel: Kernel): Command {
   return async (ctx) => {
-    const rest = ctx.args.slice(1);
+    const rest = ctx.args; // args exclude the command name (slice(1) used to drop the project dir)
     if (rest.includes('--help') || rest.includes('-h')) {
       ctx.stdout.write('Usage: browser-metro [projectDir] [--port <n>] [--editor] [--inject-head <file>]\n\nBundle an Expo web app with browser-metro (light Metro replacement) and serve it.\n\nOptions:\n  --port <n>          Port to serve on (default: 8081)\n  --editor            Enable editor scripts (console intercept, error handlers,\n                      layer selection, pinch zoom, env vars, Tailwind config)\n  --inject-head <f>   Inject contents of <f> into the HTML <head>\n');
       return 0;

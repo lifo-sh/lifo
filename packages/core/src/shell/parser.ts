@@ -15,7 +15,9 @@ import {
   type CaseNode,
   type FunctionDefNode,
   type GroupNode,
+  type SubshellNode,
 } from './types.js';
+import { lexDetailed } from './lexer.js';
 
 export class ParseError extends Error {
   constructor(message: string, public pos: number) {
@@ -27,6 +29,26 @@ export class ParseError extends Error {
 export function parse(tokens: Token[]): ScriptNode {
   const parser = new Parser(tokens);
   return parser.parseScript();
+}
+
+/**
+ * True when `input` is an unfinished command that more lines would complete: an open quote or
+ * here-document, a trailing `\`, `|`, `&&` or `||`, or a compound command (`if`, `for`, `{`,
+ * `(` …) that hasn't been closed. The interactive shell shows a `> ` prompt for the rest.
+ */
+export function needsMoreInput(input: string): boolean {
+  const { tokens, incomplete } = lexDetailed(input);
+  if (incomplete) return true;
+  const last = [...tokens].reverse().find((t) => t.kind !== TokenKind.EOF && t.kind !== TokenKind.Newline);
+  if (last && (last.kind === TokenKind.Pipe || last.kind === TokenKind.And || last.kind === TokenKind.Or)) return true;
+  try {
+    parse(tokens);
+    return false;
+  } catch (e) {
+    if (!(e instanceof ParseError)) return false;
+    const eof = tokens[tokens.length - 1];
+    return e.pos === eof.pos || e.pos === -1;
+  }
 }
 
 const KEYWORDS = new Set([
@@ -203,6 +225,11 @@ class Parser {
       return this.parseGroup();
     }
 
+    // ( ... ) subshell
+    if (token.kind === TokenKind.LParen) {
+      return this.parseSubshell();
+    }
+
     return this.parseSimpleCommand();
   }
 
@@ -218,6 +245,7 @@ class Parser {
         break;
       }
       if (t.kind === TokenKind.EOF) break;
+      if (t.kind === TokenKind.RParen) break; // end of a ( ... ) subshell
 
       lists.push(this.parseList());
       this.skipSeparators();
@@ -400,20 +428,20 @@ class Parser {
     return { type: 'group', body, redirections };
   }
 
+  private parseSubshell(): SubshellNode {
+    this.expect(TokenKind.LParen);
+    const body = this.parseCompoundList([]);
+    this.expect(TokenKind.RParen);
+
+    const redirections = this.parseTrailingRedirections();
+
+    return { type: 'subshell', body, redirections };
+  }
+
   private parseTrailingRedirections(): RedirectionNode[] {
     const redirections: RedirectionNode[] = [];
     while (this.isRedirectOperator(this.peek().kind)) {
-      const dup = this.peek().kind === TokenKind.RedirectDup;
-      const operator = this.advance().value as RedirectionNode['operator'];
-      if (dup) {
-        redirections.push({ operator, target: [] });
-        continue;
-      }
-      const targetToken = this.expect(TokenKind.Word);
-      redirections.push({
-        operator,
-        target: targetToken.parts ?? [{ text: targetToken.value, quoted: 'none' }],
-      });
+      redirections.push(this.parseRedirection());
     }
     return redirections;
   }
@@ -428,17 +456,7 @@ class Parser {
 
       // Check for redirections
       if (this.isRedirectOperator(token.kind)) {
-        const dup = token.kind === TokenKind.RedirectDup;
-        const operator = this.advance().value as RedirectionNode['operator'];
-        if (dup) {
-          redirections.push({ operator, target: [] });
-          continue;
-        }
-        const targetToken = this.expect(TokenKind.Word);
-        redirections.push({
-          operator,
-          target: targetToken.parts ?? [{ text: targetToken.value, quoted: 'none' }],
-        });
+        redirections.push(this.parseRedirection());
         continue;
       }
 
@@ -496,10 +514,23 @@ class Parser {
     return { type: 'simple_command', assignments, words, redirections };
   }
 
+  private parseRedirection(): RedirectionNode {
+    const token = this.advance();
+    if (token.kind === TokenKind.RedirectDup) {
+      return { operator: token.value as RedirectionNode['operator'], target: [] };
+    }
+    // `<<` and `<<-` both become '<<': the lexer already stripped the tabs into the body.
+    const operator = (token.kind === TokenKind.HereDoc ? '<<' : token.value) as RedirectionNode['operator'];
+    const targetToken = this.expect(TokenKind.Word);
+    return { operator, target: targetToken.parts ?? [{ text: targetToken.value, quoted: 'none' }] };
+  }
+
   private isRedirectOperator(kind: TokenKind): boolean {
     return kind === TokenKind.RedirectOut
       || kind === TokenKind.RedirectAppend
       || kind === TokenKind.RedirectIn
+      || kind === TokenKind.HereDoc
+      || kind === TokenKind.HereString
       || kind === TokenKind.RedirectErr
       || kind === TokenKind.RedirectErrAppend
       || kind === TokenKind.RedirectAll
