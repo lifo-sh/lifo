@@ -367,6 +367,8 @@ interface InstallState {
 	pendingTop: Map<string, Promise<string | null>>;
 	/** In-flight installs keyed by absolute target dir → resolves to count. */
 	inFlight: Map<string, Promise<number>>;
+	/** Packages that could not be installed. A non-empty list makes `npm install` exit non-zero. */
+	failures: string[];
 }
 
 function createInstallState(
@@ -386,6 +388,7 @@ function createInstallState(
 		topVersions: new Map(),
 		pendingTop: new Map(),
 		inFlight: new Map(),
+		failures: [],
 	};
 }
 
@@ -495,7 +498,9 @@ async function installInto(state: InstallState, name: string, range: string, tar
 			const results = await Promise.all(
 				Object.entries(info.dependencies).map(([dn, dr]) =>
 					installDep(state, dn, dr, childModules).catch((e) => {
-						state.stderr.write(`  warn: could not install ${dn}: ${e instanceof Error ? e.message : String(e)}\n`);
+						const reason = e instanceof Error ? e.message : String(e);
+						state.stderr.write(`  warn: could not install ${dn}: ${reason}\n`);
+						state.failures.push(`${dn}@${dr}: ${reason}`);
 						return 0;
 					}),
 				),
@@ -526,7 +531,9 @@ async function ensureTop(state: InstallState, name: string, range: string): Prom
 			state.topVersions.set(name, meta.version);
 			return meta.version;
 		} catch (e) {
-			state.stderr.write(`  warn: could not install ${name}: ${e instanceof Error ? e.message : String(e)}\n`);
+			const reason = e instanceof Error ? e.message : String(e);
+			state.stderr.write(`  warn: could not install ${name}: ${reason}\n`);
+			state.failures.push(`${name}@${range}: ${reason}`);
 			return null;
 		}
 	})();
@@ -635,6 +642,7 @@ async function npmInstall(ctx: CommandContext, registry: CommandRegistry, kernel
 	const npmRegistry = getRegistry(ctx.env);
 	const startTime = Date.now();
 	let installed = 0;
+	let failures: string[] = [];
 
 	const targetBase = isGlobal ? GLOBAL_MODULES : join(ctx.cwd, 'node_modules');
 
@@ -673,12 +681,15 @@ async function npmInstall(ctx: CommandContext, registry: CommandRegistry, kernel
 		const results = await Promise.all(
 			Object.entries(allDeps).map(([name, range]) =>
 				installDep(state, name, range, targetBase).catch((e) => {
-					ctx.stderr.write(`npm ERR! ${name}: ${e instanceof Error ? e.message : String(e)}\n`);
+					const reason = e instanceof Error ? e.message : String(e);
+					ctx.stderr.write(`npm ERR! ${name}: ${reason}\n`);
+					state.failures.push(`${name}@${range}: ${reason}`);
 					return 0;
 				}),
 			),
 		);
 		for (const n of results) installed += n;
+		failures = state.failures;
 	} else {
 		// Install specified packages
 		ctx.stdout.write('Installing packages...\n');
@@ -686,10 +697,14 @@ async function npmInstall(ctx: CommandContext, registry: CommandRegistry, kernel
 			targetBase, ctx.vfs, npmRegistry, ctx.signal, ctx.stdout, ctx.stderr,
 			isGlobal, registry, createLimiter(INSTALL_CONCURRENCY),
 		);
+		failures = state.failures;
 		for (const spec of packages) {
 			const { name, version } = parsePackageSpec(spec);
 			try {
+				const failuresBefore = state.failures.length;
 				installed += await installDep(state, name, version || 'latest', targetBase);
+				// The install recorded failures instead of throwing: don't save this package.
+				if (state.failures.length > failuresBefore) continue;
 
 				// Update package.json for local installs
 				if (!isGlobal) {
@@ -723,6 +738,14 @@ async function npmInstall(ctx: CommandContext, registry: CommandRegistry, kernel
 				return 1;
 			}
 		}
+	}
+
+	// A failed install must not look like a success: `npm install && npm start`
+	// would otherwise carry on with missing dependencies.
+	if (failures.length > 0) {
+		ctx.stderr.write(`\nnpm ERR! ${failures.length} package${failures.length !== 1 ? 's' : ''} could not be installed:\n`);
+		for (const f of failures) ctx.stderr.write(`npm ERR!   ${f}\n`);
+		return 1;
 	}
 
 	const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
