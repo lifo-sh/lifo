@@ -1,3 +1,9 @@
+## 0.10.37
+
+### Patch Changes
+
+- browser-metro 1.5.23 (exact pin): `rebuild()` skips a changed source file nothing imports (RapidNative/reactnative-run#174). Saving a node script under `scripts/` compiled it into the app bundle, and its errors broke the preview. New routes still arrive through the route context, and new imports through the dependency walk.
+
 ## 0.10.36
 
 ### Patch Changes
