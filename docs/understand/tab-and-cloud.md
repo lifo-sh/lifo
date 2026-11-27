@@ -25,8 +25,9 @@ Cloud is put together. The pages it links to have the commands and limits.
 ```
 
 It's the same `@lifo-sh/core` everywhere, so a command that works in the tab works in the
-cloud. Nothing is rebuilt or containerized when a box moves: [`lifo cloud push`](../cloud/boxes.md)
-uploads the box's files and starts the same command there.
+cloud. [`lifo cloud push`](../cloud/boxes.md) uploads the box's files and runs the same
+[project plan](../build/projects.md) there: for production it builds the project in the cloud first,
+with the same steps `lifo build` runs in the tab.
 
 ## What swaps when a box moves to the cloud
 

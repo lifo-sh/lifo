@@ -546,7 +546,7 @@ class Server extends EventEmitter {
     }
   }
 
-  listen(port: number, ...rest: unknown[]): this {
+  listen(portArg: number | string | { port?: number | string }, ...rest: unknown[]): this {
     let callback: (() => void) | undefined;
     for (const arg of rest) {
       if (typeof arg === 'function') {
@@ -555,6 +555,9 @@ class Server extends EventEmitter {
       }
     }
 
+    // As Node takes it: a number, a numeric string (`listen(process.env.PORT)`) or { port }.
+    const raw = portArg && typeof portArg === 'object' ? portArg.port : portArg;
+    const port = typeof raw === 'string' && /^\d+$/.test(raw.trim()) ? Number(raw) : (raw as number);
     this._port = port;
 
     // Create a promise that resolves when server.close() is called

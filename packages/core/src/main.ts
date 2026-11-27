@@ -46,12 +46,14 @@ async function boot(): Promise<void> {
 	registry.register('help', createHelpCommand(registry));
 
 	// 5c. Register npm with shell execution support
-	const npmShellExecute = async (cmd: string, cmdCtx: { cwd: string; env: Record<string, string>; stdout: { write: (s: string) => void }; stderr: { write: (s: string) => void } }) => {
+	const npmShellExecute = async (cmd: string, cmdCtx: { cwd: string; env: Record<string, string>; stdout: { write: (s: string) => void }; stderr: { write: (s: string) => void }; signal?: AbortSignal }) => {
 		const result = await shell.execute(cmd, {
 			cwd: cmdCtx.cwd,
 			env: cmdCtx.env,
 			onStdout: (data: string) => cmdCtx.stdout.write(data),
 			onStderr: (data: string) => cmdCtx.stderr.write(data),
+			// Ctrl+C on the calling command (npm run, lifo dev) stops what it runs.
+			signal: cmdCtx.signal,
 		});
 		return result.exitCode;
 	};

@@ -16,6 +16,18 @@ Every box has a `lifo` command, in the browser, in Node.js and in `lifo-sh`.
 
 See [Packages](../build/packages.md).
 
+## Projects
+
+| | |
+|---|---|
+| `lifo plan [dir] [--prod] [--json]` | what `lifo dev` (or with `--prod`, `lifo build` and `lifo start`) would run, and why |
+| `lifo dev [dir] [--install] [--port N]` | install if needed, then the dev command |
+| `lifo build [dir] [--install]` | install if needed, then the production build |
+| `lifo start [dir] [--port N]` | the production start |
+
+`-n` (`--dry-run`) prints the commands instead of running them. The plan comes from
+`package.json`, a `Dockerfile` and `lifo.json`: see [Projects](../build/projects.md).
+
 ## lifo.sh
 
 | | |
@@ -24,7 +36,7 @@ See [Packages](../build/packages.md).
 | `lifo whoami` | who's logged in, and to which site |
 | `lifo logout` | forget the login and revoke its key |
 | `lifo tunnel <port> [--name <name>]` | share a server in this box on a public URL |
-| `lifo cloud push <name> [--port N] [--start cmd] [--sleep-after 10m]` | run this box on Lifo Cloud; also `ls`, `status`, `stats`, `config`, `usage`, `exec`, `shell`, `logs`, `save`, `pull`, `restart`, `rm` ([Cloud boxes](../cloud/boxes.md), preview) |
+| `lifo cloud push <name> [--dev] [--port N] [--start cmd] [--sleep-after 10m]` | run this project on Lifo Cloud, built for production (or `--dev`); also `ls`, `status`, `stats`, `config`, `usage`, `exec`, `shell`, `logs`, `save`, `pull`, `restart`, `rm` ([Cloud boxes](../cloud/boxes.md), preview) |
 | `lifo services [allow\|deny <tool> [--always] \| usage]` | tools that run on Lifo's servers (`ffmpeg`, `ffprobe`): list them, and choose which may upload this box's files without asking ([Services](../cloud/services.md), preview) |
 
 The login is stored in the box at `~/.lifo/auth.json`. A box started by `lifo-sh` uses the

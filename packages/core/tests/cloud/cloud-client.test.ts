@@ -125,3 +125,65 @@ describe('lifo cloud (in a box)', () => {
 		box.destroy();
 	});
 });
+
+describe('lifo cloud push: modes and builds', () => {
+	it('sends the production plan, follows the build and reports the release', async () => {
+		let polls = 0;
+		const build = { id: 'b1', status: 'building', steps: ['npm install', 'npm run build'], runner: 'workerd', startedAt: new Date().toISOString() };
+		const calls = stubFetch({
+			'PUT /v1/boxes/web': () => new Response(JSON.stringify({ box: { ...BOX, name: 'web', mode: 'prod', release: null }, build }), { status: 202 }),
+			'GET /v1/boxes/web/builds/b1': () => {
+				polls++;
+				return polls === 1
+					? { build, log: '$ npm install\n', offset: 14 }
+					: { build: { ...build, status: 'ready', ms: 1200, boot: { bootMs: 40, listening: true } }, log: '$ npm run build\nok\n', offset: 33 };
+			},
+			'GET /v1/boxes/web': () => ({ box: { ...BOX, name: 'web', url: 'https://web-tunnel.lifo.sh', mode: 'prod', release: { build: 'b1', builtAt: new Date().toISOString() } }, status: { awake: true, listening: true, exitCode: null } }),
+		});
+		const box = await Sandbox.create({ env: { LIFO_AUTH_TOKEN: 'lifo_x', LIFO_CLOUD_URL: 'https://cloud.test' } });
+		await box.fs.writeFile('/home/user/package.json', JSON.stringify({ scripts: { build: 'vite build', start: 'node server.js' }, dependencies: { vite: '7' } }));
+
+		const push = await box.commands.run('lifo cloud push web --port 3000');
+		expect(push.stderr).toBe('');
+		expect(push.exitCode).toBe(0);
+		const meta = JSON.parse(calls[0].headers.get('x-lifo-box')!);
+		expect(meta).toMatchObject({ mode: 'prod', start: 'npm start', port: 3000, install: 'npm install', build: ['npm run build'], needs: ['node'] });
+		expect(push.stdout).toContain('$ npm install');
+		expect(push.stdout).toContain('$ npm run build');
+		expect(push.stdout).toContain('production (built)');
+		expect(push.stdout).toContain('https://web-tunnel.lifo.sh');
+		box.destroy();
+	});
+
+	it('pushes a dev box with its dev command and no build', async () => {
+		const calls = stubFetch({ 'PUT /v1/boxes/web-dev': () => ({ box: { ...BOX, name: 'web-dev' }, boot: { bootMs: 5, listening: true } }) });
+		const box = await Sandbox.create({ env: { LIFO_AUTH_TOKEN: 'lifo_x', LIFO_CLOUD_URL: 'https://cloud.test' } });
+		await box.fs.writeFile('/home/user/package.json', JSON.stringify({ scripts: { dev: 'vite', build: 'vite build' }, devDependencies: { vite: '7' } }));
+		const push = await box.commands.run('lifo cloud push web-dev --dev');
+		expect(push.exitCode).toBe(0);
+		const meta = JSON.parse(calls[0].headers.get('x-lifo-box')!);
+		expect(meta).toMatchObject({ mode: 'dev', start: '{ test -e node_modules || npm install; npm run dev; }', port: 5173 });
+		expect(meta.build).toBeUndefined();
+		box.destroy();
+	});
+
+	it("says when a build failed and the box keeps its last release, and won't push what the cloud can't run", async () => {
+		stubFetch({
+			'PUT /v1/boxes/web': () => new Response(JSON.stringify({ box: { ...BOX, name: 'web' }, build: { id: 'b2', status: 'building', steps: ['npm run build'], startedAt: '' } }), { status: 202 }),
+			'GET /v1/boxes/web/builds/b2': () => ({ build: { id: 'b2', status: 'failed', steps: [], startedAt: '', error: 'npm run build exited 1' }, log: 'boom\n', offset: 5 }),
+			'GET /v1/boxes/web': () => ({ box: { ...BOX, name: 'web', release: { build: 'b1', builtAt: new Date().toISOString() } }, status: { awake: true, listening: true, exitCode: null } }),
+		});
+		const box = await Sandbox.create({ env: { LIFO_AUTH_TOKEN: 'lifo_x', LIFO_CLOUD_URL: 'https://cloud.test' } });
+		await box.fs.writeFile('/home/user/package.json', JSON.stringify({ scripts: { build: 'x', start: 'node s.js' } }));
+		const r = await box.commands.run('lifo cloud push web');
+		expect(r.exitCode).toBe(1);
+		expect(r.stderr).toContain('build failed: npm run build exited 1');
+		expect(r.stderr).toContain('keeps serving its last release');
+
+		await box.fs.writeFile('/home/user/Dockerfile', 'FROM rust:1.80\nRUN cargo build --release\nCMD ["./target/release/app"]\n');
+		const r2 = await box.commands.run('lifo cloud push web');
+		expect(r2.exitCode).toBe(1);
+		expect(r2.stderr).toContain("needs rust 1.80 (FROM rust:1.80 in Dockerfile), which Lifo Cloud doesn't run yet");
+		box.destroy();
+	});
+});

@@ -27,6 +27,7 @@ Where Lifo runs and how to start it in each place.
 ## 3. Build with it
 
 - [Files, persistence and snapshots](build/files.md): the filesystem, keeping files, moving a box
+- [Projects: dev, build and start](build/projects.md): one plan from package.json, a Dockerfile and lifo.json, run the same way in a tab, on your machine and in the cloud
 - [Servers and previews](build/previews.md): servers in a box, and showing them in your page
 - [Packages](build/packages.md): `npm`, `lifo install`, writing a Lifo package
 - [Python](build/python.md): `python3` and `pip` in a box (CPython on WebAssembly)

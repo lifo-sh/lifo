@@ -144,14 +144,16 @@ Heavy VM work (npm install, bundling, snapshot dumps) runs synchronously on the 
 - [ ] Flip transport to a real module Worker; validate ffmpeg.wasm (COOP/COEP unknown).
 - [ ] `createBrowserBox()` bootstrap helper hiding SW + worker setup behind one call.
 
-### 11. Dockerfile & Compose provisioning — *exploring*
+### 11. Dockerfile & Compose provisioning — *in progress*
 
 Boot a Lifo box from a `Dockerfile`, and orchestrate several boxes from a `docker-compose.yml`. This is **not** OCI/Docker compatibility (running arbitrary base images and native ELF binaries stays out of scope — see Scope above). Instead, treat these files as a familiar **declarative provisioning format** for boxes: interpret the subset of instructions Lifo can honor, and clearly reject the rest. The payoff is a zero-friction on-ramp — point Lifo at an existing repo's Dockerfile and it just boots.
 
-- [ ] Dockerfile subset interpreter: `WORKDIR`, `COPY`/`ADD`, `ENV`, `ARG`, `EXPOSE` (→ port forward), `RUN` (for shell/npm steps the VM already supports), `CMD`/`ENTRYPOINT`. `FROM node:*`/`FROM alpine` maps to the base VM environment rather than a pulled image.
-- [ ] Honest capability boundary: statically detect and clearly report instructions/base images Lifo can't run (native package installs, non-JS runtimes) instead of failing opaquely.
+- [x] Dockerfile as a recipe (`packages/core/src/project/dockerfile.ts`, [docs/build/projects.md](docs/build/projects.md)): `FROM` → toolchain needs, `WORKDIR`, `COPY --from` (cp steps, or the app's directory for Next.js standalone), `ADD <url>`, `ENV`/`ARG`, `EXPOSE`, `RUN` → build steps (yarn/pnpm as npm), `CMD`/`ENTRYPOINT` → start. It is one input to the project plan that `lifo plan/dev/build/start` and `lifo cloud push` run.
+- [x] Honest capability boundary: `lifo plan` lists what it leaves out and why (system package installs, `USER`, heredoc `RUN`), and `lifo dev/build/start` and `lifo cloud push` refuse a project whose toolchain (go, rust, ...) Lifo doesn't have yet, naming it.
+- [ ] Go, Rust and Python readers (`registerProjectReader`) once those toolchains run in a box.
 - [ ] `docker-compose.yml` → multiple boxes wired over the virtual network, with `ports`/`depends_on`/`environment` mapped to Lifo's ports + network + env.
-- [ ] Surface it in the CLI (`lifo up`, `lifo build -f Dockerfile`) and as a browser provisioning input.
+- [x] Surface it in the CLI: `lifo plan`, `lifo dev`, `lifo build`, `lifo start`; Lifo Cloud builds a pushed project in a builder box and swaps the release in when it's ready.
+- [ ] As a browser provisioning input (the playground's "open a repo").
 - [ ] Interop with WASM runtimes (phase 8): as more binaries run in-VM, more `RUN` steps become honorable.
 
 ### 12. Lighter browser bundling for mobile — *exploring*

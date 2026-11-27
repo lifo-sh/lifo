@@ -38,6 +38,32 @@ export interface CloudBoxInfo {
 	runtime?: CloudRuntime;
 	/** Why it runs there (the push's choice, or what `auto` found: a Dockerfile, native npm packages, ...). */
 	runtimeReason?: string | null;
+	/** `prod` (built, then its production start) or `dev` (its dev command, no build). */
+	mode?: CloudMode;
+	/** The build it runs now (prod), or null before its first build succeeds. */
+	release?: { build: string; builtAt: string } | null;
+	/** Its latest build, if it has had one. */
+	lastBuild?: CloudBuild | null;
+}
+
+/** How a cloud box runs its project: built for production (the default), or its dev server. */
+export type CloudMode = 'dev' | 'prod';
+
+/** A build in Lifo Cloud: the pushed files, installed and built in a box of their own, then started. */
+export interface CloudBuild {
+	id: string;
+	status: 'building' | 'ready' | 'failed' | 'canceled';
+	/** The commands it runs, in order. */
+	steps: string[];
+	/** Where it runs: `workerd` (a Lifo box) or `container`. */
+	runner?: CloudRuntime;
+	startedAt: string;
+	endedAt?: string | null;
+	ms?: number | null;
+	/** Why it failed or was canceled. */
+	error?: string | null;
+	/** The boot of the release it made, once it's ready. */
+	boot?: { bootMs: number; listening: boolean } | null;
 }
 
 /** Where a cloud box runs: a Lifo box on workerd, or a real Linux container (when it needs native code). */
@@ -127,6 +153,16 @@ export interface CloudPushOptions {
 	 * container when the box needs one (a Dockerfile, native npm packages, binaries Lifo lacks).
 	 */
 	runtime?: CloudRuntime | 'auto';
+	/** `prod` (default when `build` is set): build in the cloud, then start; `dev`: start as is. */
+	mode?: CloudMode;
+	/** Installs dependencies before the build (`npm install`). */
+	install?: string | null;
+	/** Build steps, run in the cloud in a box of their own; the box keeps serving its last release until they succeed. */
+	build?: string[];
+	/** Environment for the build steps only. */
+	buildEnv?: Record<string, string>;
+	/** Toolchains the project needs (`node`, `python`, ...), from its plan. */
+	needs?: string[];
 }
 
 /** Anything that can produce a snapshot: a Sandbox, or the bytes themselves. */
@@ -224,7 +260,11 @@ export class LifoCloud {
 	}
 
 	/** Upload a box (or snapshot bytes) as the cloud box `name`, replacing any previous push. */
-	async push(name: string, source: SnapshotSource, opts: CloudPushOptions = {}): Promise<{ box: CloudBoxInfo; boot: { bootMs: number; listening: boolean } }> {
+	/**
+	 * Upload a box and start it. With `build` steps the cloud answers before building: `build` is
+	 * then set (and `boot` isn't): follow it with `followBuild`. Without, it has started (`boot`).
+	 */
+	async push(name: string, source: SnapshotSource, opts: CloudPushOptions = {}): Promise<{ box: CloudBoxInfo; boot?: { bootMs: number; listening: boolean }; build?: CloudBuild | null }> {
 		const snapshot =
 			source instanceof Uint8Array
 				? source
@@ -240,6 +280,11 @@ export class LifoCloud {
 			env: opts.env ? cloudSafeEnv(opts.env) : undefined,
 			...(opts.sleepAfter !== undefined ? { sleepAfter: opts.sleepAfter } : {}),
 			...(opts.runtime ? { runtime: opts.runtime } : {}),
+			...(opts.mode ? { mode: opts.mode } : {}),
+			...(opts.install ? { install: opts.install } : {}),
+			...(opts.build?.length ? { build: opts.build } : {}),
+			...(opts.buildEnv && Object.keys(opts.buildEnv).length ? { buildEnv: cloudSafeEnv(opts.buildEnv) } : {}),
+			...(opts.needs?.length ? { needs: opts.needs } : {}),
 		};
 		return this.json(`/${encodeURIComponent(name)}`, {
 			method: 'PUT',
@@ -288,6 +333,29 @@ export class LifoCloud {
 		}
 		if (!res.ok) throw new Error(((await res.json().catch(() => ({}))) as { error?: string }).error || `HTTP ${res.status}`);
 		return res.text();
+	}
+
+	/** The box's builds, newest first. */
+	async builds(name: string): Promise<CloudBuild[]> {
+		return (await this.json<{ builds: CloudBuild[] }>(`/${encodeURIComponent(name)}/builds`)).builds;
+	}
+
+	/** One build, and its log from `offset` (characters already read). */
+	async build(name: string, id: string, offset = 0): Promise<{ build: CloudBuild; log: string; offset: number }> {
+		return this.json(`/${encodeURIComponent(name)}/builds/${encodeURIComponent(id)}?offset=${offset}`);
+	}
+
+	/** Follows a build until it ends, passing its log on as it grows; resolves with how it ended. */
+	async followBuild(name: string, id: string, onLog: (text: string) => void = () => {}, opts: { intervalMs?: number; signal?: AbortSignal } = {}): Promise<CloudBuild> {
+		let offset = 0;
+		for (;;) {
+			const r = await this.build(name, id, offset);
+			if (r.log) onLog(r.log);
+			offset = r.offset;
+			if (r.build.status !== 'building') return r.build;
+			if (opts.signal?.aborted) throw new Error('stopped following the build (it goes on in the cloud)');
+			await new Promise((res) => setTimeout(res, opts.intervalMs ?? 1000));
+		}
 	}
 
 	/** Output of the start command. */
