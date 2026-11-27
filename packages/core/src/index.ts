@@ -266,4 +266,23 @@ export type {
 	CloudEvent,
 	CloudUsage,
 	CloudUsageTotals,
+	CloudBuild,
+	CloudMode,
 } from './cloud/cloud-client.js';
+
+// Projects: one plan (install, build, start, port, needs) from package.json, a Dockerfile and lifo.json
+export {
+	planProject,
+	resolvePlan,
+	registerProjectReader,
+	projectReaders,
+	vfsProjectFiles,
+	formatPlan,
+	missingNeeds,
+	describeNeeds,
+	startWithInstall,
+	dockerfileLayer,
+	parseDockerfile,
+	NEED_COMMANDS,
+} from './project/index.js';
+export type { ProjectPlan, ProjectMode, ProjectNeed, ProjectFiles, ProjectReader, PlanLayer, ReaderContext, LifoJson } from './project/index.js';

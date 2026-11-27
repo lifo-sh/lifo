@@ -98,8 +98,14 @@ own boxes: `npm install lifo-pkg-git` and `box.commands.register('git', (await i
 Pyodide-built packages (numpy, pandas: loaded on import) work; no native extensions, subprocesses
 or threads; first run downloads ~6 MB; it runs on the box's thread. Docs: /docs/build/python.md
 
-**Lifo Cloud (preview):** `lifo cloud push <name> --port 3000 --start "node server.js"` moves a box
-(as a snapshot) to the cloud, where it keeps running with a URL at `https://<name>-tunnel.lifo.sh`;
+**Projects:** `lifo plan` shows how a project runs (install, build, start, port, toolchains), read
+from package.json and its framework, a Dockerfile (as a recipe, not an image) and lifo.json;
+`lifo dev`, `lifo build` and `lifo start` run it, the same in a tab, in lifo-sh and in the cloud.
+Docs: /docs/build/projects.md
+
+**Lifo Cloud (preview):** `lifo cloud push <name>` moves a project (as a snapshot) to the cloud: it's
+built there in a builder box (`lifo plan --prod`; the last release serves until the new one is up),
+or run with its dev command with `--dev`; `--start`/`--port` override. It keeps running with a URL at `https://<name>-tunnel.lifo.sh`;
 it sleeps after `sleepAfter` idle seconds (default 300; `--sleep-after 30m`, `lifo cloud config <name>
 --sleep-after 2h`) and wakes on the next request; its files are saved as they change (files kept, memory not).
 `lifo cloud stats <name>` / `cloud.metrics(name, '24h')` show CPU, requests, memory and uptime;

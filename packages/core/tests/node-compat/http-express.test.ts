@@ -120,3 +120,19 @@ describe('fs compat — ReadStream / WriteStream constructors (Express send/dest
     expect(stream instanceof fs.ReadStream).toBe(true);
   });
 });
+
+describe('http compat — listen takes the port as Node does', () => {
+  it('a numeric string (listen(process.env.PORT)) and { port } register the number', () => {
+    const portRegistry = new Map<number, VirtualRequestHandler>();
+    const http = createHttp(portRegistry);
+    const a = http.createServer(() => {});
+    a.listen('3200' as unknown as number);
+    const b = http.createServer(() => {});
+    b.listen({ port: 3201 } as unknown as number);
+    expect(portRegistry.has(3200)).toBe(true);
+    expect(portRegistry.has(3201)).toBe(true);
+    expect([...portRegistry.keys()].every((k) => typeof k === 'number')).toBe(true);
+    a.close();
+    b.close();
+  });
+});

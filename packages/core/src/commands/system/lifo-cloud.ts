@@ -34,6 +34,10 @@ import { createShellEscape } from '../../cloud/shell-escape.js';
 import { exportVfsSnapshot, importVfsSnapshot } from '../../kernel/vfs/snapshot.js';
 import { createVmForwarder } from '../../cloud/vm-forwarder.js';
 import { boxAuthBaseUrl, clearBoxAuthToken, getBoxAuthToken } from '../../cloud/box-auth.js';
+import { describeNeeds, planProject, startWithInstall, type ProjectMode } from '../../project/index.js';
+
+/** Toolchains a Lifo Cloud box has, on either runtime. Others (go, rust, ...) can't be pushed yet. */
+const CLOUD_TOOLCHAINS = new Set(['node', 'python']);
 
 function boxStore(vfs: VFS, home: string): AuthStore {
 	const dir = `${home}/.lifo`;
@@ -292,10 +296,11 @@ const CLOUD_USAGE = `Usage: lifo cloud <command> [--base-url <url>]
 
 Run this box on Lifo Cloud: it keeps running after this tab or process closes, with a public URL.
 
-  lifo cloud push <name> [--start "<cmd>"] [--port <n>] [--exclude a,b] [--sleep-after 10m]
-                   [--runtime auto|workerd|container]
-                               upload this box and start it (start defaults to \`npm start\`
-                               when ./package.json has a start script)
+  lifo cloud push <name> [--dev] [--start "<cmd>"] [--port <n>] [--exclude a,b] [--sleep-after 10m]
+                   [--runtime auto|workerd|container] [--no-build]
+                               upload this project and run it. By default it's built in the cloud
+                               and started for production (lifo plan --prod shows how); --dev runs
+                               its dev command instead. --start and --port override the plan
   lifo cloud ls                your cloud boxes
   lifo cloud status <name>     awake or asleep, its URL
   lifo cloud stats <name> [--range 1h|6h|24h|7d|30d]
@@ -306,7 +311,7 @@ Run this box on Lifo Cloud: it keeps running after this tab or process closes, w
                                this account's usage (default: this month)
   lifo cloud exec <name> <cmd> run a command there
   lifo cloud shell <name>      an interactive shell there (~. on a new line disconnects)
-  lifo cloud logs <name>       output of the start command
+  lifo cloud logs <name> [--build]   output of the start command (or of the last build)
   lifo cloud save <name>       keep a checkpoint copy (files are saved as they change)
   lifo cloud pull <name> [--with-data]   bring its files back into this box (and its database's data as SQL)
   lifo cloud restart <name>    restart its processes (same files)
@@ -448,6 +453,9 @@ export async function lifoCloudCommand(ctx: CommandContext): Promise<number> {
 				let exclude: string[] = [];
 				let sleepAfter: number | null | undefined;
 				let runtime: 'auto' | 'workerd' | 'container' | undefined;
+				// prod: built in the cloud, then its production start (as on Vercel). dev: its dev command.
+				let mode: ProjectMode = 'prod';
+				let noBuild = false;
 				for (let i = 1; i < args.length; i++) {
 					const a = args[i];
 					if (a === '--runtime' || a.startsWith('--runtime=')) {
@@ -470,6 +478,16 @@ export async function lifoCloudCommand(ctx: CommandContext): Promise<number> {
 					else if (a.startsWith('--port=')) port = Number(a.slice(7));
 					else if (a === '--exclude' && args[i + 1]) exclude = args[++i].split(',').filter(Boolean);
 					else if (a.startsWith('--exclude=')) exclude = a.slice(10).split(',').filter(Boolean);
+					else if (a === '--dev') mode = 'dev';
+					else if (a === '--prod' || a === '--production') mode = 'prod';
+					else if (a === '--mode' || a.startsWith('--mode=')) {
+						const v = a === '--mode' ? args[++i] : a.slice('--mode='.length);
+						if (v !== 'dev' && v !== 'prod') {
+							ctx.stderr.write('lifo cloud push: --mode is dev or prod\n');
+							return 1;
+						}
+						mode = v;
+					} else if (a === '--no-build') noBuild = true;
 					else {
 						ctx.stderr.write(`lifo cloud push: unknown option ${a}\n`);
 						return 1;
@@ -479,26 +497,63 @@ export async function lifoCloudCommand(ctx: CommandContext): Promise<number> {
 					ctx.stderr.write('lifo cloud push: --port must be 1-65535\n');
 					return 1;
 				}
-				if (start === undefined) {
-					const pkg = `${ctx.cwd}/package.json`;
-					try {
-						if (ctx.vfs.exists(pkg) && JSON.parse(ctx.vfs.readFileString(pkg))?.scripts?.start) start = 'npm start';
-					} catch {
-						/* not JSON */
-					}
+				// The project's plan (package.json, Dockerfile, lifo.json), as lifo dev and lifo build read it.
+				const plan = planProject(ctx.vfs, ctx.cwd, { mode });
+				const missing = plan.needs.filter((n) => !CLOUD_TOOLCHAINS.has(n.name));
+				if (missing.length) {
+					ctx.stderr.write(`lifo cloud push: this project needs ${describeNeeds(missing)}, which Lifo Cloud doesn't run yet.\n`);
+					return 1;
 				}
+				if (start === undefined) start = (mode === 'dev' ? startWithInstall(plan) : plan.start) ?? undefined;
+				if (port === undefined && plan.port) port = plan.port;
+				const build = mode === 'prod' && !noBuild ? plan.build : [];
+				const install = mode === 'prod' && !noBuild && build.length ? plan.install : null;
+				const env: Record<string, string> = { ...plan.env };
+				for (const sk of plan.skipped) ctx.stderr.write(`\x1b[2mleft out ${sk.what}: ${sk.why}\x1b[0m\n`);
 				ctx.stdout.write(`Snapshotting this box...\n`);
 				const snapshot = await exportVfsSnapshot(ctx.vfs, {
 					exclude: [...CLOUD_ALWAYS_EXCLUDE, ...exclude],
 					metadata: { cwd: ctx.cwd, env: cloudSafeEnv(ctx.env) },
 				});
 				ctx.stdout.write(`Uploading ${fmtBytes(snapshot.length)} to ${cloud.url}...\n`);
-				const { box, boot } = await cloud.push(name, snapshot, { start, port, cwd: ctx.cwd, ...(sleepAfter !== undefined ? { sleepAfter } : {}), ...(runtime ? { runtime } : {}) });
-				ctx.stdout.write(`\n  \x1b[32m●\x1b[0m ${box.name} is running in Lifo Cloud (booted in ${boot.bootMs} ms)\n`);
+				const pushed = await cloud.push(name, snapshot, {
+					start,
+					port,
+					cwd: ctx.cwd,
+					...(Object.keys(env).length ? { env } : {}),
+					mode,
+					...(install ? { install } : {}),
+					...(build.length ? { build, buildEnv: plan.buildEnv } : {}),
+					needs: plan.needs.map((n) => n.name),
+					...(sleepAfter !== undefined ? { sleepAfter } : {}),
+					...(runtime ? { runtime } : {}),
+				});
+				let box = pushed.box;
+				let boot = pushed.boot;
+				if (pushed.build) {
+					ctx.stdout.write(`\nBuilding in Lifo Cloud${pushed.build.runner === 'container' ? ' (in a container)' : ''}: ${pushed.build.steps.join(' && ')}\n\n`);
+					const done = await cloud.followBuild(name, pushed.build.id, (t) => ctx.stdout.write(t), { signal: ctx.signal });
+					if (done.status !== 'ready') {
+						ctx.stderr.write(`\n  \x1b[31m✗\x1b[0m build ${done.status}${done.error ? `: ${done.error}` : ''}\n`);
+						const after = await cloud.get(name).catch(() => null);
+						ctx.stderr.write(
+							after?.box.release
+								? `    ${name} keeps serving its last release (built ${ago(after.box.release.builtAt)}).\n`
+								: `    ${name} has no release yet. Log: lifo cloud logs ${name} --build\n`,
+						);
+						return 1;
+					}
+					box = (await cloud.get(name)).box;
+					boot = done.boot ?? undefined;
+				} else if (build.length) {
+					ctx.stderr.write(`\x1b[33mThis cloud doesn't build yet, so it started without: ${build.join(' && ')}. Build here and push, or push with --dev.\x1b[0m\n`);
+				}
+				ctx.stdout.write(`\n  \x1b[32m●\x1b[0m ${box.name} is running in Lifo Cloud${boot ? ` (booted in ${boot.bootMs} ms)` : ''}\n`);
 				if (box.runtime) ctx.stdout.write(`    runs:  ${box.runtime === 'container' ? 'in a container' : 'as a Lifo box (workerd)'}${box.runtimeReason ? ` \x1b[2m(${box.runtimeReason})\x1b[0m` : ''}\n`);
+				ctx.stdout.write(`    mode:  ${mode === 'prod' ? (build.length ? 'production (built)' : 'production') : 'dev'}\n`);
 				if (start) ctx.stdout.write(`    start: ${start}\n`);
 				if (box.sleepAfter !== undefined) ctx.stdout.write(`    sleeps after ${fmtDuration(box.sleepAfter)} idle\n`);
-				if (box.url) ctx.stdout.write(`    url:   ${box.url}${boot.listening ? '' : '  (nothing is listening yet: lifo cloud logs ' + box.name + ')'}\n`);
+				if (box.url) ctx.stdout.write(`    url:   ${box.url}${!boot || boot.listening ? '' : '  (nothing is listening yet: lifo cloud logs ' + box.name + ')'}\n`);
 				else if (port) ctx.stdout.write(`    url:   not ready yet; lifo cloud status ${box.name}\n`);
 				ctx.stdout.write('\n');
 				return 0;
@@ -527,6 +582,8 @@ export async function lifoCloudCommand(ctx: CommandContext): Promise<number> {
 				if (box.since) ctx.stdout.write(`  awake: since ${ago(new Date(box.since).toISOString())}\n`);
 				if (box.sleepAfter !== undefined) ctx.stdout.write(`  sleep: after ${fmtDuration(box.sleepAfter)} idle\n`);
 				if (box.runtime) ctx.stdout.write(`  runs:  ${box.runtime === 'container' ? 'in a container' : 'as a Lifo box (workerd)'}${box.runtimeReason ? ` (${box.runtimeReason})` : ''}\n`);
+				if (box.mode) ctx.stdout.write(`  mode:  ${box.mode === 'prod' ? 'production' : 'dev'}${box.release ? `, release built ${ago(box.release.builtAt)}` : ''}\n`);
+				if (box.lastBuild && box.lastBuild.status !== 'ready') ctx.stdout.write(`  build: ${box.lastBuild.status}${box.lastBuild.error ? ` (${box.lastBuild.error})` : ''}: lifo cloud logs ${box.name} --build\n`);
 				return 0;
 			}
 			case 'stats': {
@@ -632,6 +689,17 @@ export async function lifoCloudCommand(ctx: CommandContext): Promise<number> {
 			}
 			case 'logs': {
 				if (!needName()) return 1;
+				if (args.includes('--build')) {
+					const [last] = await cloud.builds(name);
+					if (!last) {
+						ctx.stdout.write(`${name} hasn't been built in the cloud (push it without --dev, with a build step).\n`);
+						return 0;
+					}
+					const r = await cloud.build(name, last.id);
+					ctx.stdout.write(`\x1b[2mbuild ${last.id}: ${last.status}, started ${ago(last.startedAt)}${last.ms ? `, took ${(last.ms / 1000).toFixed(1)} s` : ''}${last.error ? ` (${last.error})` : ''}\x1b[0m\n`);
+					ctx.stdout.write(r.log);
+					return 0;
+				}
 				ctx.stdout.write(await cloud.logs(name));
 				return 0;
 			}

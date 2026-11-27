@@ -51,7 +51,7 @@ await box.importSnapshot(await cloud.pull('hello'));      // and back into this 
 
 | | |
 |---|---|
-| `lifo cloud push <name> [--port N] [--start "cmd"] [--exclude a,b] [--sleep-after 10m]` | upload this box and start it. Pushing the same name again replaces it. Without `--start`, a `package.json` with a `start` script means `npm start` |
+| `lifo cloud push <name> [--dev] [--port N] [--start "cmd"] [--exclude a,b] [--sleep-after 10m] [--no-build]` | upload this project and run it. Pushing the same name again replaces it. It's built in the cloud and started for production, from its [plan](../build/projects.md) (`lifo plan --prod` shows it); `--dev` runs its dev command instead, with no build ([Builds](#builds-and-releases)). `--start` and `--port` override the plan |
 | `lifo cloud ls` | your cloud boxes: awake or asleep, URLs, storage, sleep setting |
 | `lifo cloud status <name>` | awake or asleep, since when |
 | `lifo cloud stats <name> [--range 1h\|6h\|24h\|7d\|30d]` | requests, CPU, memory, awake time and traffic over time ([Usage](#usage-and-sleep-settings)) |
@@ -59,7 +59,7 @@ await box.importSnapshot(await cloud.pull('hello'));      // and back into this 
 | `lifo cloud usage [--from date] [--to date]` | your account's usage per box (default: this month) |
 | `lifo cloud exec <name> <command>` | run a command there; quote it if it has `;`, `|` or `&&`, or your local shell runs that part |
 | `lifo cloud shell <name>` | an interactive shell there, like ssh ([Shell](#shell)) |
-| `lifo cloud logs <name>` | output of the start command |
+| `lifo cloud logs <name> [--build]` | output of the start command, or of its last build |
 | `lifo cloud save <name>` | keep a checkpoint: a `tar.gz` copy of its files (they're always saved as they change; this is a backup) |
 | `lifo cloud pull <name> [--with-data]` | bring its files into this box (and its database's data as `<name>.data.sql`). On your machine, `lifo-sh cloud pull <name>` saves `<name>.tar.gz` |
 | `lifo cloud restart <name>` | start its processes again, on the same files |
@@ -265,6 +265,44 @@ cloud refuses it.
 - **Credentials stay behind**: `~/.lifo` (your login) and the keys `lifo-sh` passes into a box
   are left out of every push.
 
+## Builds and releases
+
+`lifo cloud push` reads the project the way `lifo build` does ([Projects](../build/projects.md))
+and sends its production plan. When the plan has install or build steps, the cloud runs them
+in a **builder**: a box of its own, on the same runtime the box runs on, with the pushed files.
+
+```bash
+lifo cloud push web
+#   Building in Lifo Cloud: npm install && npm run build
+#   $ npm install
+#   ...
+#   $ npm run build
+#   ...
+#   [built in 41.2 s; starting the new release]
+#
+#   ● web is running in Lifo Cloud (booted in 180 ms)
+#     mode:  production (built)
+#     start: npm start
+```
+
+- **The box keeps serving its last release** while the build runs. The new release (the
+  builder's files after the build) replaces it only once the build succeeds.
+- **A failed build changes nothing.** `lifo cloud push` says why and exits 1; `lifo cloud logs
+  web --build` shows the whole log. A box whose first build failed has nothing to run yet, and
+  answers 503 until a push builds.
+- **Waking never builds.** A release is built once, at its push; a wake starts it.
+- **A newer push cancels a build still running** for the same box.
+- **A dev box** (`lifo cloud push web-dev --dev`) skips the build and runs the dev command, with
+  live reload over WebSockets. It installs on its first start when `node_modules` wasn't pushed.
+  To have both, push the same project twice: `web` and `web-dev`.
+- Build steps get the plan's build env (a Dockerfile's builder stages); the start gets its
+  `env`, and `PORT` set to the box's port unless the project sets its own.
+- A build may take up to 30 minutes. For now builders run on the same servers as the boxes, so
+  a build counts toward your boxes' memory and CPU while it runs.
+
+A project whose plan needs a toolchain Lifo Cloud doesn't have (`go`, `rust`, ...) isn't pushed:
+`lifo cloud push` says which one.
+
 ## Runtimes: a Lifo box, or a real container
 
 Most boxes run as Lifo boxes (on workerd): the same `@lifo-sh/core` as in your tab, about 9 MB
@@ -285,7 +323,9 @@ lifo cloud config my-api --runtime container            # move a box later; its 
 `auto` (the default) picks a container when, in this order:
 
 1. a `lifo.json` in the project says `{ "runtime": "container" }` (or `"workerd"`, which wins too);
-2. the project has a `Dockerfile`;
+2. the project has a `Dockerfile` that needs more than Node.js (`FROM python`, `FROM golang`, ...).
+   A `FROM node` Dockerfile is read as a recipe ([Projects](../build/projects.md#dockerfile-a-recipe-not-an-image))
+   and runs in a Lifo box like any Node.js project;
 3. it uses a native npm package (`bcrypt`, `sharp`, `canvas`, `better-sqlite3`, `argon2`, `prisma`,
    ...), or `node_modules` has compiled code (`binding.gyp`, `*.node`);
 4. its start command runs a binary a Lifo box doesn't have (`go`, `cargo`, `gcc`, `make`, `java`,
@@ -354,7 +394,9 @@ server's `/api/cli/config` (`cloudUrl`), or `LIFO_CLOUD_URL`.
 
 | | |
 |---|---|
-| `PUT /v1/boxes/:name` | body: the snapshot (`tar.gz`); header `x-lifo-box`: JSON `{ port, start, cwd, env, sleepAfter, runtime }` (`runtime`: `auto`, `workerd` or `container`) |
+| `PUT /v1/boxes/:name` | body: the snapshot (`tar.gz`); header `x-lifo-box`: JSON `{ port, start, cwd, env, sleepAfter, runtime, mode, install, build, buildEnv, needs }` (`runtime`: `auto`, `workerd` or `container`; `mode`: `prod` or `dev`; `build`: a list of commands). Without install or build steps: `{ box, boot }` once it has started. With them: `202 { box, build }` at once, and the build runs ([Builds](#builds-and-releases)) |
+| `GET /v1/boxes/:name/builds` | `{ builds: [{ id, status, steps, runner, startedAt, endedAt, ms, error, boot }] }`, newest first; `status` is `building`, `ready`, `failed` or `canceled` |
+| `GET /v1/boxes/:name/builds/:id?offset=N` | `{ build, log, offset }`: the log from `offset` characters on; pass the `offset` you got back to read what's new |
 | `GET /v1/boxes` | `{ boxes: [...] }`; each box has `sleepAfter`, `awake` and `since` |
 | `GET /v1/boxes/:name` | `{ box, status: { awake, listening } }` |
 | `PATCH /v1/boxes/:name` | `{ sleepAfter }` (seconds, 60 to 86400) and/or `{ runtime }` (`workerd` or `container`: moves the box and its files) returns `{ box }`; `box.runtime` and `box.runtimeReason` say where it runs and why |

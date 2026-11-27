@@ -32,6 +32,7 @@ import {
 import type { VirtualRequestHandler } from '../../kernel/index.js';
 import { lifoCloudCommand, lifoLogin, lifoLogout, lifoTunnel, lifoWhoami } from './lifo-cloud.js';
 import { lifoServicesCommand, registerOrLocal } from './remote-tool.js';
+import { lifoProjectCommand } from './lifo-project.js';
 
 const GLOBAL_MODULES = '/usr/lib/node_modules';
 
@@ -47,6 +48,11 @@ function printHelp(stdout: CommandOutputStream): void {
   stdout.write('  init <name>            scaffold a new lifo package\n');
   stdout.write('  link [path]            dev-link a local package\n');
   stdout.write('  unlink <name>          remove a dev link\n');
+  stdout.write('\nProjects (package.json, Dockerfile, lifo.json):\n');
+  stdout.write('  plan [dir] [--prod]     what dev or build would run, and why\n');
+  stdout.write('  dev [dir]               install if needed, then the dev command\n');
+  stdout.write('  build [dir]             install if needed, then the production build\n');
+  stdout.write('  start [dir]             the production start\n');
   stdout.write('\nAccount:\n');
   stdout.write('  login [--base-url URL] log in to lifo.sh in your browser\n');
   stdout.write('  logout                 log out and revoke this login\'s key\n');
@@ -439,7 +445,7 @@ function lifoUnlink(ctx: CommandContext): number {
 
 export function createLifoPkgCommand(
   registry: CommandRegistry,
-  _shellExecute?: ShellExecuteFn,
+  shellExecute?: ShellExecuteFn,
   kernel?: { portRegistry: Map<number, VirtualRequestHandler> },
 ): Command {
   return async (ctx) => {
@@ -482,6 +488,11 @@ export function createLifoPkgCommand(
         return lifoCloudCommand(ctx);
       case 'services':
         return lifoServicesCommand(ctx);
+      case 'plan':
+      case 'dev':
+      case 'build':
+      case 'start':
+        return lifoProjectCommand(subcommand, ctx, registry, shellExecute);
       default:
         ctx.stderr.write(`lifo: unknown command '${subcommand}'\n`);
         ctx.stderr.write('Run lifo --help for usage\n');

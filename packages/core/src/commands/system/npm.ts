@@ -1178,6 +1178,9 @@ export function createNpmCommand(registry: CommandRegistry, shellExecute?: Shell
 			case 'i':
 			case 'add':
 				return npmInstall(ctx, registry, kernel);
+			case 'ci':
+				// A clean install from the lockfile, as Dockerfiles run it: Lifo installs from package.json.
+				return npmInstall({ ...ctx, args: ['install', ...ctx.args.slice(1).filter((a) => a.startsWith('-'))] }, registry, kernel);
 			case 'uninstall':
 			case 'remove':
 			case 'rm':
