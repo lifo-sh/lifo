@@ -240,6 +240,9 @@ importers:
       browser-metro:
         specifier: 1.5.23
         version: 1.5.23
+      sucrase:
+        specifier: ^3.35.1
+        version: 3.35.1
       ws:
         specifier: ^8.19.0
         version: 8.19.0(bufferutil@4.2.0)

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parsePackageSpec, boxOptionalDependencies, unlistedWasiBinding, initializerPackage, satisfiesRange, compareFull } from '../../src/commands/system/npm.js';
+import { parsePackageSpec, boxOptionalDependencies, requiredDependencies, unlistedWasiBinding, initializerPackage, satisfiesRange, compareFull } from '../../src/commands/system/npm.js';
 
 describe('parsePackageSpec', () => {
   it('parses plain names', () => {
@@ -42,6 +42,14 @@ describe('optional dependencies in a box (napi-rs wasm builds)', () => {
 		[`${prefix}-linux-x64-gnu`]: '1.2.3',
 		[`${prefix}-linux-arm-gnueabihf`]: '1.2.3',
 		[`${prefix}-win32-x64-msvc`]: '1.2.3',
+	});
+
+	it('leaves out optional dependencies a package also lists as dependencies (TypeScript 7)', () => {
+		const natives = { '@typescript/typescript-linux-x64': '7.0.2', '@typescript/typescript-darwin-arm64': '7.0.2' };
+		const ts7 = { name: 'typescript', dependencies: { ...natives, 'some-js-helper': '^1.0.0' }, optionalDependencies: natives };
+		expect(requiredDependencies(ts7)).toEqual([['some-js-helper', '^1.0.0']]);
+		expect(requiredDependencies({ dependencies: { a: '1' } })).toEqual([['a', '1']]);
+		expect(requiredDependencies({})).toEqual([]);
 	});
 
 	it('installs only the listed wasm32-wasi build', () => {

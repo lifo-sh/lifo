@@ -35,6 +35,7 @@ Runs in the browser and in Node today — the same VM, client-side or server-sid
 - [x] 60+ coreutils (ls, grep, sed, awk, find, tar, curl, …) and Git in every shell.
 - [x] Node.js compatibility layer (http, fs, net, child_process, streams, crypto, readline, …).
 - [x] Real npm & npx from the registry.
+- [x] `bun` and `bunx`: Bun's CLI (install, add, run, x, create, init) mapped onto Lifo's npm and node, with TypeScript and JSX files running directly (also in `node`, as in Node 22.18+). create-* tools see Bun's user agent and use bun. Bun's own APIs (`Bun.serve`, `bun:sqlite`), `bun test` and `bun build` are not there yet.
 - [x] Real stacks unmodified: create-expo-app (SDK 54 & 57), Vite + React (Vite 7, and Vite 8 on Rolldown's wasm build in Node-hosted boxes and in browser boxes running in a Web Worker), Next.js (create-next-app, App Router, Fast Refresh), TanStack Start (the TanStack CLI's scaffold, server functions, HMR), Expo Router, Supabase (tinbase).
 - [x] Live previews — in-VM ports served over a service worker with HMR.
 - [x] Snapshot & restore a box's disk state.

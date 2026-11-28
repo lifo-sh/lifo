@@ -67,6 +67,7 @@ import { makeProxyingFetch } from '../../node-compat/proxy-fetch.js';
 import { makeLoopbackFetch } from '../../kernel/network/loopback-fetch.js';
 import { createOxideScanner } from '../../node-compat/tailwind-oxide.js';
 import { adaptPackageSource } from './package-adapters.js';
+import { needsTypeScript, loadTypeScript, stripTypes, jsxOptionsFromTsconfig, type JsxOptions } from '../../node-compat/typescript.js';
 import { createSwcCore } from '../../node-compat/swc.js';
 import { createEsbuild } from '../../node-compat/esbuild.js';
 import * as nodeTimers from '../../node-compat/timers.js';
@@ -133,6 +134,8 @@ import { ACTIVE_SERVERS } from '../../node-compat/http.js';
 import type { VirtualRequestHandler, Kernel } from '../../kernel/index.js';
 
 const NODE_VERSION = 'v20.0.0';
+// Extensions a relative import tries in a TypeScript run, in Bun's order.
+const TS_RUN_EXTENSIONS = ['.tsx', '.jsx', '.ts', '.mjs', '.js', '.mts', '.cjs', '.cts', '.json'];
 
 // Node 21+ exposes a global `navigator` whose userAgent is "Node.js/<ver>".
 // Executed modules must see THAT, not the browser's — expo-constants'
@@ -211,10 +214,10 @@ function isEsmSource(source: string): boolean {
 /** Determine if source should be treated as ESM based on filename, content, and package.json type */
 function shouldTreatAsEsm(source: string, filename: string, vfs?: { exists(p: string): boolean; readFileString(p: string): string }): boolean {
 	const ext = extname(filename);
-	if (ext === '.mjs') return true;
-	if (ext === '.cjs') return false;
-	// Check nearest package.json "type" field (Node.js semantics)
-	if (vfs && ext === '.js') {
+	if (ext === '.mjs' || ext === '.mts') return true;
+	if (ext === '.cjs' || ext === '.cts') return false;
+	// Check nearest package.json "type" field (Node.js semantics; .ts follows it like .js)
+	if (vfs && (ext === '.js' || ext === '.ts' || ext === '.tsx' || ext === '.jsx')) {
 		let dir = dirname(filename);
 		for (; ;) {
 			const pkgPath = join(dir, 'package.json');
@@ -1073,6 +1076,11 @@ function createNodeRun(
 			}
 			filename = scriptPath;
 			scriptArgs = ctx.args.slice(1);
+			// TypeScript and JSX entries (node 22.18+ strips types; bun runs .tsx/.jsx too).
+			if (needsTypeScript(filename) && !(await loadTypeScript())) {
+				ctx.stderr.write(`node: ${ctx.args[0]}: couldn't load the TypeScript transform (Sucrase)\n`);
+				return 1;
+			}
 		} else {
 			// No args -- print usage hint
 			ctx.stderr.write('Usage: node [-e code] [script.js] [args...]\n');
@@ -1101,6 +1109,32 @@ function createNodeRun(
 		/** A copy of a node context whose cwd stays live (a spread would freeze the getter). */
 		const withLiveCwd = <T extends object>(o: T): T =>
 			Object.defineProperty(o, 'cwd', { get: () => runCwd.value, enumerable: true, configurable: true });
+
+		// A TypeScript run (its entry is .ts/.tsx/.mts/.cts/.jsx): files with those extensions have
+		// their types stripped as they load, and relative imports also find them without an
+		// extension or by their .js name, as TypeScript projects write them (Bun and tsx do too).
+		const tsRun = needsTypeScript(filename);
+		const jsxByDir = new Map<string, JsxOptions>();
+		const jsxOptionsFor = (file: string): JsxOptions => {
+			const start = dirname(file);
+			const seen: string[] = [];
+			let found: JsxOptions = {};
+			for (let d = start; ; d = dirname(d)) {
+				const cached = jsxByDir.get(d);
+				if (cached) { found = cached; break; }
+				seen.push(d);
+				const tsconfig = join(d, 'tsconfig.json');
+				if (ctx.vfs.exists(tsconfig)) {
+					try { found = jsxOptionsFromTsconfig(ctx.vfs.readFileString(tsconfig)); } catch { /* unreadable: defaults */ }
+					break;
+				}
+				if (dirname(d) === d) break;
+			}
+			for (const d of seen) jsxByDir.set(d, found);
+			return found;
+		};
+		const fromTypeScript = (source: string, file: string): string =>
+			needsTypeScript(file) ? stripTypes(source, file, jsxOptionsFor(file)) : source;
 
 		// Extract portRegistry from either Kernel or direct Map
 		const portRegistry = kernelOrPortRegistry instanceof Map
@@ -1802,7 +1836,7 @@ function createNodeRun(
 							}
 						} catch { /* fall through to index */ }
 					}
-					for (const ext of ['.js', '.mjs', '.cjs', '.json']) {
+					for (const ext of tsRun ? TS_RUN_EXTENSIONS : ['.js', '.mjs', '.cjs', '.json']) {
 						const indexPath = join(absPath, 'index' + ext);
 						if (ctx.vfs.exists(indexPath)) return { path: indexPath };
 					}
@@ -1812,8 +1846,18 @@ function createNodeRun(
 			// Append extensions when the exact path doesn't resolve. Node does
 			// this regardless of dots in the specifier, so a require of
 			// './webauthn.errors' must still find 'webauthn.errors.js'.
-			for (const ext of ['.js', '.mjs', '.cjs', '.json']) {
+			for (const ext of tsRun ? TS_RUN_EXTENSIONS : ['.js', '.mjs', '.cjs', '.json']) {
 				if (ctx.vfs.exists(absPath + ext)) return { path: absPath + ext };
+			}
+			// TypeScript imports a sibling by its compiled name: './util.js' is util.ts.
+			if (tsRun) {
+				const m = /\.(m|c)?jsx?$/.exec(absPath);
+				if (m) {
+					const base = absPath.slice(0, m.index);
+					for (const ext of m[0].endsWith('x') ? ['.tsx'] : [`.${m[1] ?? ''}ts`, ...(m[1] ? [] : ['.tsx'])]) {
+						if (ctx.vfs.exists(base + ext)) return { path: base + ext };
+					}
+				}
 			}
 
 			return null;
@@ -2212,7 +2256,7 @@ function createNodeRun(
 			};
 
 			// A few packages' code is adjusted for a box as it loads (package-adapters.ts).
-			let cleanSource = stripShebang(adaptPackageSource(modFilename, modSource));
+			let cleanSource = fromTypeScript(stripShebang(adaptPackageSource(modFilename, modSource)), modFilename);
 			const isEsModule = shouldTreatAsEsm(cleanSource, modFilename, ctx.vfs);
 			if (isEsModule) {
 				cleanSource = transformEsmToCjs(cleanSource);
@@ -2337,7 +2381,7 @@ function createNodeRun(
 		const exports = module.exports;
 		const global = makeNodeGlobal({ process, Buffer, console: nodeConsole, ...timerGlobals });
 
-		let cleanMainSource = stripShebang(source);
+		let cleanMainSource = fromTypeScript(stripShebang(source), filename);
 		const isEsm = shouldTreatAsEsm(cleanMainSource, filename, ctx.vfs);
 		if (isEsm) {
 			cleanMainSource = transformEsmToCjs(cleanMainSource);

@@ -63,6 +63,9 @@ import {
 	createDefaultRegistry,
 	createLifoPkgCommand,
 	createNpmCommand,
+	createNpxCommand,
+	createBunCommand,
+	createBunxCommand,
 	createPsCommand,
 	createTopCommand,
 	createKillCommand,
@@ -439,6 +442,9 @@ async function runDaemon(
 		return result.exitCode;
 	};
 	registry.register('npm', createNpmCommand(registry, npmShellExecute));
+	registry.register('npx', createNpxCommand(registry, npmShellExecute));
+	registry.register('bun', createBunCommand(registry, npmShellExecute, kernel));
+	registry.register('bunx', createBunxCommand(registry, npmShellExecute, kernel));
 	registry.register('lifo', createLifoPkgCommand(registry, npmShellExecute, kernel));
 
 	await shell.sourceFile('/etc/profile');
@@ -629,6 +635,9 @@ async function runInteractive(opts: CliOptions): Promise<void> {
 		return result.exitCode;
 	};
 	registry.register('npm', createNpmCommand(registry, npmShellExecute));
+	registry.register('npx', createNpxCommand(registry, npmShellExecute));
+	registry.register('bun', createBunCommand(registry, npmShellExecute, kernel));
+	registry.register('bunx', createBunxCommand(registry, npmShellExecute, kernel));
 	registry.register('lifo', createLifoPkgCommand(registry, npmShellExecute, kernel));
 
 	await shell.sourceFile('/etc/profile');

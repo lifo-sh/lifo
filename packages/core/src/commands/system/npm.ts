@@ -15,7 +15,7 @@ const INSTALL_CONCURRENCY = 10;
 
 // ─── Types ───
 
-interface PackageJson {
+export interface PackageJson {
 	name?: string;
 	version?: string;
 	description?: string;
@@ -563,6 +563,17 @@ const SHIMMED_NATIVE_PACKAGES = new Set(['@tailwindcss/oxide']);
  * (`<pkg>-wasm32-wasi`, e.g. `@rolldown/binding-wasm32-wasi`), which Lifo runs
  * (node-compat/napi-wasi). Every other optional dependency stays skipped, as before.
  */
+/**
+ * A package's dependencies minus its optional ones. npm lets an optionalDependencies entry
+ * override a dependencies entry of the same name, and some packages list their platform
+ * binaries under both: TypeScript 7 names all twenty of its native compilers (about 550 MB)
+ * in each. The optional ones a box can use come from boxOptionalDependencies.
+ */
+export function requiredDependencies(info: { dependencies?: Record<string, string>; optionalDependencies?: Record<string, string> }): [string, string][] {
+	const optional = info.optionalDependencies ?? {};
+	return Object.entries(info.dependencies ?? {}).filter(([name]) => !Object.hasOwn(optional, name));
+}
+
 export function boxOptionalDependencies(info: { name?: string; optionalDependencies?: Record<string, string> }): [string, string][] {
 	if (!info.optionalDependencies || (info.name && SHIMMED_NATIVE_PACKAGES.has(info.name))) return [];
 	return Object.entries(info.optionalDependencies).filter(([dn]) => dn.endsWith('-wasm32-wasi'));
@@ -635,7 +646,7 @@ async function installInto(state: InstallState, name: string, range: string, tar
 		const optional = boxOptionalDependencies(info);
 		const unlisted = optional.length === 0 ? unlistedWasiBinding(info) : null;
 		if (unlisted && await registryHas(state, unlisted[0], unlisted[1])) optional.push(unlisted);
-		const deps = [...Object.entries(info.dependencies ?? {}), ...optional];
+		const deps = [...requiredDependencies(info), ...optional];
 		const containingModules = targetDir.slice(0, -(name.length + 1));
 		for (const [pn, pr] of Object.entries(info.peerDependencies ?? {})) {
 			if (info.peerDependenciesMeta?.[pn]?.optional || deps.some(([dn]) => dn === pn)) continue;
@@ -1047,28 +1058,51 @@ async function npmRun(ctx: CommandContext, shellExecute?: ShellExecuteFn, regist
 		return 1;
 	}
 
+	// Arguments after the script name go to the script itself (npm 7+), minus a leading `--`.
+	let extra = args.slice(1);
+	if (extra[0] === '--') extra = extra.slice(1);
+	return runScriptWithHooks(ctx, pkg, scriptName, extra, shellExecute, registry, kernel);
+}
+
+/** The line a package manager prints before it runs a script. */
+export type ScriptBanner = (pkg: PackageJson, name: string, script: string, ctx: CommandContext) => void;
+
+const npmBanner: ScriptBanner = (pkg, name, script, ctx) => {
+	ctx.stdout.write(`\n> ${pkg.name || ''}@${pkg.version || '1.0.0'} ${name}\n`);
+	ctx.stdout.write(`> ${script}\n\n`);
+};
+
+/**
+ * Run a package.json script with the project's local commands available, `pre<name>` first and
+ * `post<name>` after (each only if the one before succeeded), as npm and Bun do. `extra` goes
+ * to the script itself.
+ */
+export async function runScriptWithHooks(
+	ctx: CommandContext,
+	pkg: PackageJson,
+	scriptName: string,
+	extra: string[],
+	shellExecute?: ShellExecuteFn,
+	registry?: CommandRegistry,
+	kernel?: Kernel,
+	banner: ScriptBanner = npmBanner,
+): Promise<number> {
 	// Register local bin scripts from node_modules so they're available in scripts
 	if (registry) {
 		registerLocalBins(ctx.vfs, ctx.cwd, registry, kernel);
 	}
-
-	// Arguments after the script name go to the script itself (npm 7+), minus a leading `--`.
-	let extra = args.slice(1);
-	if (extra[0] === '--') extra = extra.slice(1);
 	const quoted = extra.map((a) => (/^[\w@%+=:,./-]+$/.test(a) ? a : `'${a.replace(/'/g, `'\\''`)}'`));
-
-	// Like npm, `pre<name>` runs first and `post<name>` after, each only if the one before succeeded.
-	const scripts = pkg.scripts;
+	const scripts = pkg.scripts ?? {};
 	const pre = scripts[`pre${scriptName}`];
 	if (pre !== undefined && !scriptName.startsWith('pre')) {
-		const code = await runPackageScript(ctx, pkg, `pre${scriptName}`, pre, [], shellExecute, registry);
+		const code = await runPackageScript(ctx, pkg, `pre${scriptName}`, pre, [], shellExecute, registry, banner);
 		if (code !== 0) return code;
 	}
-	const code = await runPackageScript(ctx, pkg, scriptName, scripts[scriptName], quoted, shellExecute, registry);
+	const code = await runPackageScript(ctx, pkg, scriptName, scripts[scriptName], quoted, shellExecute, registry, banner);
 	if (code !== 0) return code;
 	const post = scripts[`post${scriptName}`];
 	if (post !== undefined && !scriptName.startsWith('post')) {
-		return runPackageScript(ctx, pkg, `post${scriptName}`, post, [], shellExecute, registry);
+		return runPackageScript(ctx, pkg, `post${scriptName}`, post, [], shellExecute, registry, banner);
 	}
 	return 0;
 }
@@ -1081,10 +1115,10 @@ async function runPackageScript(
 	extraArgs: string[],
 	shellExecute?: ShellExecuteFn,
 	registry?: CommandRegistry,
+	banner: ScriptBanner = npmBanner,
 ): Promise<number> {
 	const script = extraArgs.length > 0 ? `${body} ${extraArgs.join(' ')}` : body;
-	ctx.stdout.write(`\n> ${pkg.name || ''}@${pkg.version || '1.0.0'} ${name}\n`);
-	ctx.stdout.write(`> ${script}\n\n`);
+	banner(pkg, name, script, ctx);
 
 	// For simple scripts (single command, no shell operators), invoke directly
 	// to avoid extra stack frames from shell.execute → interpreter chain
@@ -1462,7 +1496,7 @@ function findBinScript(
 }
 
 /** The script of a command named `binName` from any package in `cwd`'s node_modules (npm's .bin). */
-function findLocalBinByName(vfs: VFS, cwd: string, binName: string): string | null {
+export function findLocalBinByName(vfs: VFS, cwd: string, binName: string): string | null {
 	const nmDir = join(cwd, 'node_modules');
 	if (!vfs.exists(nmDir)) return null;
 	const dirs: string[] = [];
