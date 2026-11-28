@@ -5,6 +5,7 @@ import {
   createPsCommand,
   createKillCommand,
   type Kernel,
+  type WorkerSandbox,
 } from '@lifo-sh/core';
 
 /** One row of `ps --json` — the VM's real process table. */
@@ -19,11 +20,19 @@ export interface ProcInfo {
   uptimeMs: number;
 }
 
-/** A box the process manager can inspect: any kernel + a base env for the shell. */
-export interface InspectableBox {
+/** A box in the page: its kernel + a base env for the inspector shell. */
+export interface KernelBox {
   kernel: Kernel;
   env: Record<string, string>;
 }
+
+/** A box in a Web Worker: reached only through its WorkerSandbox (ps/kill run in the box). */
+export interface WorkerBox {
+  worker: WorkerSandbox;
+}
+
+/** A box the process manager can inspect. */
+export type InspectableBox = KernelBox | WorkerBox;
 
 /**
  * A dedicated headless shell for reading/killing processes. It shares the
@@ -35,7 +44,7 @@ export interface InspectableBox {
  */
 const shells = new WeakMap<object, Shell>();
 
-function inspectorFor(box: InspectableBox): Shell {
+function inspectorFor(box: KernelBox): Shell {
   const kernel = box.kernel;
   let shell = shells.get(kernel);
   if (shell) return shell;
@@ -51,6 +60,16 @@ function inspectorFor(box: InspectableBox): Shell {
 
 /** Fetch the process table via `ps --json` (falls back to [] on any error). */
 export async function listProcesses(box: InspectableBox): Promise<ProcInfo[]> {
+  if ('worker' in box) {
+    // The worker box's own shell has ps on its process table; commands.run doesn't wait for
+    // the interactive terminal's foreground job (a dev server).
+    try {
+      const { stdout } = await box.worker.commands.run('ps --json');
+      return JSON.parse(stdout.trim() || '[]') as ProcInfo[];
+    } catch {
+      return [];
+    }
+  }
   try {
     // A shell reaps finished/killed processes (zombies) before each prompt;
     // this inspector shell never prompts, so reap here — otherwise a killed
@@ -66,6 +85,13 @@ export async function listProcesses(box: InspectableBox): Promise<ProcInfo[]> {
 
 /** Send SIGTERM to a pid via the `kill` command. */
 export async function killProcess(box: InspectableBox, pid: number): Promise<boolean> {
+  if ('worker' in box) {
+    try {
+      return (await box.worker.commands.run(`kill ${pid}`)).exitCode === 0;
+    } catch {
+      return false;
+    }
+  }
   try {
     const { exitCode } = await inspectorFor(box).execute(`kill ${pid}`);
     return exitCode === 0;

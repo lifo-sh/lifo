@@ -1,7 +1,10 @@
-import type { Command } from '../types.js';
+import type { Command, CommandContext } from '../types.js';
 import { resolve, dirname, join, extname } from '../../utils/path.js';
 import { createModuleMap, ProcessExitError } from '../../node-compat/index.js';
 import type { NodeContext } from '../../node-compat/index.js';
+import type { ForkOptions } from '../../node-compat/child_process.js';
+import { EventEmitter } from '../../node-compat/events.js';
+import { instrumentAwaits } from '../../node-compat/await-context.js';
 import { createProcess, createInteractiveStdin } from '../../node-compat/process.js';
 import { createModuleClass } from '../../node-compat/module.js';
 
@@ -63,10 +66,12 @@ function makeNodeGlobal(overrides: Record<string, unknown>): Record<string, unkn
 import { makeProxyingFetch } from '../../node-compat/proxy-fetch.js';
 import { makeLoopbackFetch } from '../../kernel/network/loopback-fetch.js';
 import { createOxideScanner } from '../../node-compat/tailwind-oxide.js';
+import { adaptPackageSource } from './package-adapters.js';
 import { createSwcCore } from '../../node-compat/swc.js';
 import { createEsbuild } from '../../node-compat/esbuild.js';
 import * as nodeTimers from '../../node-compat/timers.js';
 import { createActivityTracker, pendingWasm, trackWebAssembly } from '../../node-compat/activity.js';
+import { createNapiWasiRuntime, isNapiWasiLoader, isWasmThreadsUnavailable } from '../../node-compat/napi-wasi/index.js';
 
 /**
  * Native-backed stand-in for the `fetch-nodeshim` package. minifetch ships its
@@ -624,10 +629,17 @@ function rewriteDynamicImports(source: string): string {
  * @babel/generator declares `class Buffer`). The module's own declaration
  * then wins; positional arguments are unaffected.
  */
-const SHADOWABLE_WRAPPER_PARAMS = ['console', 'process', 'Buffer', 'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'global', 'window', 'document', 'self', 'navigator', 'fetch'];
+// The realm's setImmediate and clearImmediate before any program runs (node-compat set them up
+// on import): a run follows the global only once a program replaces it.
+const REALM_SET_IMMEDIATE = (globalThis as Record<string, unknown>).setImmediate;
+const REALM_CLEAR_IMMEDIATE = (globalThis as Record<string, unknown>).clearImmediate;
+
+const SHADOWABLE_WRAPPER_PARAMS = ['console', 'process', 'Buffer', 'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'global', 'window', 'document', 'self', 'navigator', 'fetch', 'setImmediate', 'clearImmediate'];
 
 function buildWrapperParams(source: string): string {
-	const params = ['exports', 'require', 'module', '__filename', '__dirname', 'console', 'process', 'Buffer', 'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'global', '__importMetaUrl', '__importMeta', '__importMetaResolve', 'window', 'document', 'self', 'navigator', 'fetch'];
+	// setImmediate/clearImmediate come last (added after the rest): browsers have none, so a
+	// bare `setImmediate(...)` (napi-rs loaders, emnapi) threw outside a Node host.
+	const params = ['exports', 'require', 'module', '__filename', '__dirname', 'console', 'process', 'Buffer', 'setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'global', '__importMetaUrl', '__importMeta', '__importMetaResolve', 'window', 'document', 'self', 'navigator', 'fetch', 'setImmediate', 'clearImmediate'];
 	return params.map((p) => {
 		if (!SHADOWABLE_WRAPPER_PARAMS.includes(p)) return p;
 		// Direct declaration, e.g. `const Buffer = ...` / `class Buffer {}`.
@@ -638,10 +650,15 @@ function buildWrapperParams(source: string): string {
 		// references then hit the browser's real navigator → expo-constants'
 		// getBrowserName saw a Chrome UA and crashed on `'chrome' in window`).
 		// Only a TOP-LEVEL redeclaration is a SyntaxError worth renaming for.
-		const direct = new RegExp(`(?:^|\\n)(?:class|let|const)\\s+${p}\\b`);
+		// (Identifier ends count `$` as part of the name: `const setTimeout$1` is another binding.)
+		const direct = new RegExp(`(?:^|\\n)(?:class|let|const)\\s+${p}(?![\\w$])`);
 		// Destructuring declaration, e.g. `const { Buffer } = require('node:buffer')` (undici).
 		// A const/let re-binding a wrapper param name is a SyntaxError, so rename the param.
-		const destructured = new RegExp(`(?:^|\\n)(?:let|const)\\s*\\{[^{}]*\\b${p}\\b[^{}]*\\}`);
+		// A renamed key isn't a binding: `const { setTimeout: setTimeout$1 } = ...` (Vite 8's
+		// `import { setTimeout as setTimeout$1 } from 'node:timers/promises'`) binds only
+		// setTimeout$1, and renaming the param there left the module's bare setTimeout() on the
+		// browser's, whose number result has no .unref().
+		const destructured = new RegExp(`(?:^|\\n)(?:let|const)\\s*\\{[^{}]*(?<![\\w$])${p}(?![\\w$]|\\s*:)[^{}]*\\}`);
 		return direct.test(source) || destructured.test(source) ? `__lifo_shadowed_${p}` : p;
 	}).join(', ');
 }
@@ -775,6 +792,17 @@ export function transformEsmToCjs(source: string): string {
 	// Strip empty export{} (bundler ESM marker, no-op)
 	result = result.replace(/(?:^|\n)[ \t]*export\s*\{\s*\}[ \t]*;?/g, '');
 
+	// export * as X from 'mod' — the module's namespace under one name (yoctocolors:
+	// `export * as default from './base.js'`). X may also be a string name.
+	result = result.replace(
+		/(?:^|\n)([ \t]*)export\s*\*\s*as\s+([\w$]+|'[^'\n]*'|"[^"\n]*")\s*from\s*(['"][^'"]+['"])[ \t]*;?/g,
+		(_match, indent, name, mod) => {
+			const key = /^['"]/.test(name) ? name.slice(1, -1) : name;
+			const tmpVar = '__ns_' + Math.random().toString(36).slice(2, 8);
+			return `\n${indent}const ${tmpVar} = require(${mod});\n${indent}Object.defineProperty(exports, ${JSON.stringify(key)}, { get: function() { return ${tmpVar}; }, enumerable: true, configurable: true });`;
+		}
+	);
+
 	// export * from 'mod' — use getter-based forwarding for live bindings
 	result = result.replace(
 		/(?:^|\n)([ \t]*)export\s*\*\s*from\s*(['"][^'"]+['"])[ \t]*;?/g,
@@ -792,7 +820,8 @@ export function transformEsmToCjs(source: string): string {
 			// Guard: ${ in captured names means regex matched inside a template literal
 			if (names.includes('${')) return match;
 			const tmpVar = '__re_' + Math.random().toString(36).slice(2, 8);
-			const assignments = names.split(',').map((s: string) => {
+			// filter: a trailing comma (`export {\n  a,\n  b,\n} from …`, oxc-parser) leaves an empty name.
+			const assignments = names.split(',').filter((s: string) => s.trim() !== '').map((s: string) => {
 				const parts = s.trim().split(/\s+as\s+/);
 				const local = parts[0].trim();
 				const exported = parts.length === 2 ? parts[1].trim() : local;
@@ -883,9 +912,18 @@ export function transformEsmToCjs(source: string): string {
 	// Replace const/let declarations of CJS wrapper param names with var.
 	// esbuild bundles often emit `const __dirname = ...` which collides with
 	// the new Function() wrapper parameters. `var` can shadow them safely.
+	// Only module-level ones collide: an indented declaration sits in a nested block or
+	// function, where `let`/`const` legally shadows the parameter, while `var` would hoist to
+	// that function and clash with a like-named `let` there (Vite 8's module-runner has
+	// `let exports` in an `if` inside a method that also declares `exports`).
 	result = result.replace(
 		/\b(const|let)\s+(__dirname|__filename|exports|require|module|console|process|Buffer|global)\b/g,
-		(_match, _kw, name) => `var ${name}`
+		(match, _kw, name, offset: number, str: string) => {
+			const lineStart = str.lastIndexOf('\n', offset - 1) + 1;
+			const before = str.slice(lineStart, offset);
+			if (before.length > 0 && /^[ \t]+$/.test(before)) return match;
+			return `var ${name}`;
+		}
 	);
 
 	// Append trailing exports for exported functions/classes
@@ -911,8 +949,82 @@ export function transformEsmToCjs(source: string): string {
 	return result;
 }
 
+/** Node's error for a require() that resolves to nothing: callers that treat a module as
+ * optional check its code (Next.js loads instrumentation.js this way). */
+function moduleNotFound(name: string): Error {
+	return Object.assign(new Error(`Cannot find module '${name}'`), { code: 'MODULE_NOT_FOUND', requireStack: [] as string[] });
+}
+
+/**
+ * Environment defaults for tools whose default path needs native code a box can't run. Next.js
+ * 16 bundles with Turbopack unless told otherwise, and Turbopack has no WebAssembly build; its
+ * CLI picks webpack when IS_WEBPACK_TEST is set, so a plain `next dev` (as create-next-app
+ * scaffolds it) works. Asking for Turbopack (a flag or TURBOPACK) still gets Turbopack.
+ */
+function nativeFreeDefaults(filename: string, args: string[], env: Record<string, string>): Record<string, string> {
+	const isNextCli = /\/next\/dist\/bin\/next$/.test(filename);
+	const wantsTurbopack = !!env.TURBOPACK || !!env.NEXT_RSPACK || args.some((a) => a === '--turbopack' || a === '--turbo');
+	return isNextCli && !wantsTurbopack ? { IS_WEBPACK_TEST: '1' } : {};
+}
+
+/** A command a program ran with spawnSync and inherited output, to run once it ends. */
+type AfterExitChild = { line: string; cwd: string };
+
+/**
+ * The IPC channel between a run and the run it started with child_process.fork(): the
+ * parent's ChildProcess `send()` reaches the child's `process.on('message')` and the
+ * child's `process.send()` reaches the parent's `child.on('message')`. Messages are
+ * copied through JSON, Node's default serialization.
+ */
+interface NodeIpc {
+	readonly connected: boolean;
+	/** Child to parent. */
+	toParent(msg: unknown): void;
+	/** The child's run takes the parent's messages (queued until it does). */
+	attach(deliver: (msg: unknown) => void): void;
+	onDisconnect(fn: () => void): void;
+	disconnect(): void;
+}
+const NODE_IPC = Symbol('lifo.node.ipc');
+type ForkedContext = CommandContext & { [NODE_IPC]?: NodeIpc };
+const ipcCopy = (msg: unknown): unknown => (msg === undefined ? undefined : JSON.parse(JSON.stringify(msg)));
+
 function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualRequestHandler>): Command {
-	return async (ctx) => {
+	const command: Command = async (ctx) => {
+		const afterExit: AfterExitChild[] = [];
+		const code = await runProgram(ctx, afterExit);
+		return runAfterExit(ctx, afterExit, code);
+	};
+	const runProgram = createNodeRun(kernelOrPortRegistry, command);
+	return command;
+}
+
+/**
+ * Run what the program asked for with spawnSync / execSync and inherited output (see
+ * node-compat/child_process), in order, on this command's terminal, now that the program has
+ * ended. The first failure stops the rest, and its code is the run's, as when the program
+ * would have exited with a failed child's status. A program that failed or was stopped skips
+ * them.
+ */
+async function runAfterExit(ctx: CommandContext, children: AfterExitChild[], code: number): Promise<number> {
+	if (children.length === 0 || !ctx.runInherited || ctx.signal.aborted) return code;
+	if (code !== 0) {
+		const lines = children.map((c) => `"${c.line}"`).join(', ');
+		ctx.stderr.write(`[lifo] skipped ${lines}: a box runs a program's synchronous commands after it ends, and it ended with code ${code}.\n`);
+		return code;
+	}
+	for (const child of children) {
+		const childCode = await ctx.runInherited(child.line, { cwd: child.cwd });
+		if (childCode !== 0 || ctx.signal.aborted) return childCode;
+	}
+	return 0;
+}
+
+function createNodeRun(
+	kernelOrPortRegistry: Kernel | Map<number, VirtualRequestHandler> | undefined,
+	runNode: Command,
+): (ctx: CommandContext, afterExit: AfterExitChild[]) => Promise<number> {
+	return async (ctx, afterExit) => {
 		// Handle -v/--version
 		if (ctx.args.length > 0 && (ctx.args[0] === '-v' || ctx.args[0] === '--version')) {
 			ctx.stdout.write(NODE_VERSION + '\n');
@@ -969,6 +1081,27 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 
 		const dir = filename === '[eval]' ? ctx.cwd : dirname(filename);
 
+		// The run's working directory. process.chdir() moves it for this run only (the shell that
+		// started it stays where it was, as with a real process); fs, path, process.cwd() and
+		// child processes read it at call time.
+		const runCwd = { value: ctx.cwd };
+		const chdirRun = (to: string): void => {
+			const target = String(to);
+			const abs = resolve(runCwd.value, target);
+			const fail = (code: string, errno: number, what: string): never => {
+				throw Object.assign(new Error(`${code}: ${what}, chdir ${runCwd.value} -> '${target}'`), {
+					errno, code, syscall: 'chdir', path: runCwd.value, dest: target,
+				});
+			};
+			let type: string;
+			try { type = ctx.vfs.stat(abs).type; } catch { return fail('ENOENT', -2, 'no such file or directory'); }
+			if (type !== 'directory') fail('ENOTDIR', -20, 'not a directory');
+			runCwd.value = abs;
+		};
+		/** A copy of a node context whose cwd stays live (a spread would freeze the getter). */
+		const withLiveCwd = <T extends object>(o: T): T =>
+			Object.defineProperty(o, 'cwd', { get: () => runCwd.value, enumerable: true, configurable: true });
+
 		// Extract portRegistry from either Kernel or direct Map
 		const portRegistry = kernelOrPortRegistry instanceof Map
 			? kernelOrPortRegistry
@@ -982,6 +1115,125 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 		// before the CLI finishes — its final "your project is ready" then prints
 		// after the shell prompt (seen with Expo SDK 57).
 		let pendingChild = 0;
+		// child_process.fork(): another node run in this box (the module, its args, env and cwd),
+		// with an IPC channel to this one. Its output goes to this run's terminal ('inherit', the
+		// default) or to pipes on the ChildProcess ('pipe' or `silent`). This run stays alive
+		// while it runs, as a Node parent does while its child process is alive.
+		let forkedChildren = 0;
+		let nextForkPid = 1000;
+		const forkNode = (modulePath: string, args: string[], options: ForkOptions): unknown => {
+			const child = new EventEmitter() as EventEmitter & Record<string, unknown>;
+			const abort = new AbortController();
+			const stopWithParent = () => abort.abort();
+			ctx.signal.addEventListener('abort', stopWithParent, { once: true });
+			let connected = true;
+			let deliver: ((msg: unknown) => void) | null = null;
+			const queued: unknown[] = [];
+			const onDisconnect: Array<() => void> = [];
+			const ipc: NodeIpc = {
+				get connected() { return connected; },
+				toParent: (msg) => { const copy = ipcCopy(msg); queueMicrotask(() => child.emit('message', copy)); },
+				attach: (fn) => { deliver = fn; for (const msg of queued.splice(0)) queueMicrotask(() => fn(msg)); },
+				onDisconnect: (fn) => { onDisconnect.push(fn); },
+				disconnect: () => {
+					if (!connected) return;
+					connected = false;
+					queueMicrotask(() => {
+						child.emit('disconnect');
+						for (const fn of onDisconnect) fn();
+					});
+				},
+			};
+			const stdio = options.silent ? 'pipe' : options.stdio ?? 'inherit';
+			const piped = (fd: number) => stdio === 'pipe' || (Array.isArray(stdio) && stdio[fd] === 'pipe');
+			const pipeStream = () => {
+				const s = new EventEmitter() as EventEmitter & Record<string, unknown>;
+				let encoding: string | null = null;
+				s.setEncoding = (enc: string) => { encoding = enc; return s; };
+				s.pipe = (dest: { write(c: unknown): unknown }) => { s.on('data', (c: unknown) => dest.write(c)); return dest; };
+				s.resume = () => s;
+				s.pause = () => s;
+				s.destroy = () => s;
+				s.write = (text: string) => { s.emit('data', encoding ? text : Buffer.from(text)); return true; };
+				return s;
+			};
+			const out = piped(1) ? pipeStream() : null;
+			const err = piped(2) ? pipeStream() : null;
+			const env: Record<string, string> = {};
+			for (const [k, v] of Object.entries(options.env ?? nodeCtx.env)) if (v !== undefined) env[k] = String(v);
+			const childCtx: ForkedContext = {
+				args: [modulePath, ...args],
+				env,
+				cwd: options.cwd ? resolve(runCwd.value, options.cwd) : runCwd.value,
+				vfs: ctx.vfs,
+				stdout: out ? { write: (t: string) => { (out.write as (t: string) => void)(t); } } : ctx.stdout,
+				stderr: err ? { write: (t: string) => { (err.write as (t: string) => void)(t); } } : ctx.stderr,
+				signal: abort.signal,
+				executeCapture: ctx.executeCapture,
+				executeCaptureResult: ctx.executeCaptureResult,
+				runInherited: ctx.runInherited,
+				[NODE_IPC]: ipc,
+			};
+			let killSignal: string | null = null;
+			Object.assign(child, {
+				pid: nextForkPid++,
+				stdin: null,
+				stdout: out,
+				stderr: err,
+				stdio: [null, out, err, null],
+				exitCode: null,
+				signalCode: null,
+				killed: false,
+				channel: { ref() {}, unref() {} },
+				send: (msg: unknown, ...rest: unknown[]) => {
+					const cb = rest.find((r): r is (e: Error | null) => void => typeof r === 'function');
+					if (!connected) {
+						const e = Object.assign(new Error('Channel closed'), { code: 'ERR_IPC_CHANNEL_CLOSED' });
+						queueMicrotask(() => (cb ? cb(e) : child.emit('error', e)));
+						return false;
+					}
+					const copy = ipcCopy(msg);
+					if (deliver) { const fn = deliver; queueMicrotask(() => fn(copy)); } else queued.push(copy);
+					if (cb) queueMicrotask(() => cb(null));
+					return true;
+				},
+				disconnect: () => ipc.disconnect(),
+				kill: (signal: string | number = 'SIGTERM') => {
+					if (child.exitCode !== null || killSignal) return false;
+					killSignal = typeof signal === 'number' ? 'SIGTERM' : signal;
+					child.killed = true;
+					abort.abort();
+					return true;
+				},
+				ref: () => child,
+				unref: () => child,
+			});
+			Object.defineProperty(child, 'connected', { get: () => connected, enumerable: true });
+			forkedChildren++;
+			queueMicrotask(() => child.emit('spawn'));
+			void Promise.resolve()
+				.then(() => runNode(childCtx))
+				.catch((e: unknown) => {
+					// The run itself failed (not the program): say so rather than exit silently.
+					childCtx.stderr.write(`[lifo] ${e instanceof Error ? e.stack ?? e.message : String(e)}\n`);
+					return 1;
+				})
+				.then((code) => {
+					forkedChildren--;
+					ctx.signal.removeEventListener('abort', stopWithParent);
+					ipc.disconnect();
+					child.exitCode = killSignal ? null : code;
+					child.signalCode = killSignal;
+					out?.emit('end');
+					err?.emit('end');
+					queueMicrotask(() => {
+						child.emit('exit', killSignal ? null : code, killSignal);
+						child.emit('close', killSignal ? null : code, killSignal);
+					});
+				});
+			return child;
+		};
+
 		const trackChild = <F extends ((...a: never[]) => Promise<unknown>) | undefined>(run: F): F => {
 			if (!run) return run;
 			return ((...a: Parameters<NonNullable<F>>) => {
@@ -1011,12 +1263,16 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			});
 		const runStdout = gateStream(ctx.stdout);
 		const runStderr = gateStream(ctx.stderr);
-	const nodeCtx: NodeContext = {
+	const nodeCtx: NodeContext = withLiveCwd({
 			vfs: ctx.vfs,
 			cwd: ctx.cwd,
+			chdir: chdirRun,
 			// Copy the shell env once so the node run has its own process.env
 			// (isolated from the shell) that is then shared across all its modules.
-			env: { ...ctx.env },
+			// NAPI_RS_FORCE_WASI: a native addon (.node) can never load in a box, so napi-rs
+			// loaders go straight to their wasm32-wasi build (node-compat/napi-wasi) instead of
+			// probing every platform package first (and shelling out to `ldd` to detect musl).
+			env: { NAPI_RS_FORCE_WASI: 'true', ...nativeFreeDefaults(filename, scriptArgs, ctx.env), ...ctx.env },
 			stdout: runStdout,
 			stderr: runStderr,
 			argv: [filename, ...scriptArgs],
@@ -1028,7 +1284,12 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			// e.g. create-expo-app running `npm pack` / `npm install`.
 			executeCapture: trackChild(ctx.executeCapture),
 			executeCaptureResult: trackChild(ctx.executeCaptureResult),
-		};
+			// spawnSync / execSync with inherited output: run on this terminal once the program ends.
+			runAfterExit: ctx.runInherited
+				? (line, cwd) => { afterExit.push({ line, cwd: cwd ? resolve(runCwd.value, cwd) : runCwd.value }); }
+				: undefined,
+			forkNode,
+		});
 
 		// Back require('module')'s Module#_compile with the real module executor
 		// (require-from-string constructs a Module and compiles source directly —
@@ -1077,6 +1338,21 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 		nodeCtx.activity = activity;
 		nodeCtx.timers = runTimers;
 		trackWebAssembly();
+		// A module's bare `setImmediate` is a lookup of the global in Node, so a program that
+		// replaces globalThis.setImmediate changes it for every module: Next.js does, to run
+		// React's rendering work inside each render stage. Until something replaces it, the
+		// run's own (counted in its tracker) is used.
+		const runSetImmediate = (...a: Parameters<typeof runTimers.setImmediate>) => {
+			const replaced = (globalThis as Record<string, unknown>).setImmediate;
+			return typeof replaced === 'function' && replaced !== REALM_SET_IMMEDIATE
+				? (replaced as (...x: unknown[]) => unknown)(...a)
+				: runTimers.setImmediate(...a);
+		};
+		const runClearImmediate = (t: unknown) => {
+			runTimers.clearImmediate(t as Parameters<typeof runTimers.clearImmediate>[0]);
+			const replaced = (globalThis as Record<string, unknown>).clearImmediate;
+			if (typeof replaced === 'function' && replaced !== REALM_CLEAR_IMMEDIATE) (replaced as (x: unknown) => void)(t);
+		};
 		const timerGlobals = {
 			setTimeout: runTimers.setTimeout,
 			setInterval: runTimers.setInterval,
@@ -1116,8 +1392,119 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			return true;
 		};
 
+		// The run's process: what the main script sees and what `require('process')` /
+		// `import { stdin } from 'node:process'` return, as in Node. The module map's own
+		// entry builds a bare process whose stdin never receives input, so CLIs that import
+		// stdin (create-vite's clack prompts) drew a prompt nobody could answer.
+		const runProcess = createProcess({
+			argv: nodeCtx.argv,
+			env: nodeCtx.env,
+			cwd: () => runCwd.value,
+			chdir: chdirRun,
+			stdout: runStdout,
+			stderr: runStderr,
+			stdin: nodeStdin,
+			interactive,
+			onExit: requestExit,
+		});
+
+		// A run started by child_process.fork(): process.send(), process.on('message'),
+		// process.connected and process.disconnect() over its channel to the parent.
+		const ipc = (ctx as ForkedContext)[NODE_IPC];
+		if (ipc) {
+			const proc = runProcess as unknown as Record<string, unknown> & { emit(event: string, ...a: unknown[]): boolean };
+			Object.assign(proc, {
+				send: (msg: unknown, ...rest: unknown[]) => {
+					const cb = rest.find((r): r is (e: Error | null) => void => typeof r === 'function');
+					if (!ipc.connected) {
+						const e = Object.assign(new Error('Channel closed'), { code: 'ERR_IPC_CHANNEL_CLOSED' });
+						queueMicrotask(() => (cb ? cb(e) : proc.emit('error', e)));
+						return false;
+					}
+					ipc.toParent(msg);
+					if (cb) queueMicrotask(() => cb(null));
+					return true;
+				},
+				disconnect: () => ipc.disconnect(),
+				channel: { ref() {}, unref() {} },
+			});
+			Object.defineProperty(proc, 'connected', { get: () => ipc.connected, enumerable: true, configurable: true });
+			ipc.attach((msg) => proc.emit('message', msg));
+			ipc.onDisconnect(() => proc.emit('disconnect'));
+		}
+		// Node keeps a forked child alive while its channel is open and something listens on it.
+		const ipcHoldsRun = () => !!ipc && ipc.connected &&
+			(runProcess.listenerCount('message') + runProcess.listenerCount('disconnect')) > 0;
+
 		const moduleMap = createModuleMap(nodeCtx);
+		moduleMap.process = () => runProcess;
 		const moduleCache = new Map<string, unknown>();
+
+		// require.cache: a live view of the files in moduleCache, as Node's is of its loaded modules.
+		// `delete require.cache[file]` makes the next require() run the file again, which is how
+		// dev servers reload what they rebuilt (Next.js drops its server bundles and webpack
+		// runtime after every compile; with a detached cache the old runtime kept serving and
+		// never loaded the new chunks). Entries are Module-like records whose `exports` is the
+		// cached value; assigning an entry puts a module in the cache.
+		type CacheRecord = { id: string; filename: string; loaded: boolean; exports: unknown; children: CacheRecord[]; paths: string[]; parent: CacheRecord | null };
+		const cacheRecords = new Map<string, CacheRecord>();
+		const isFileKey = (key: string | symbol): key is string => typeof key === 'string' && key.startsWith('/');
+		const cacheRecord = (file: string): CacheRecord => {
+			let rec = cacheRecords.get(file);
+			if (!rec) {
+				rec = {
+					id: file, filename: file, loaded: true, children: [], paths: [], parent: null,
+					get exports() { return moduleCache.get(file); },
+					set exports(v: unknown) { moduleCache.set(file, v); },
+				};
+				cacheRecords.set(file, rec);
+			}
+			return rec;
+		};
+		const requireCache = new Proxy(Object.create(null) as Record<string, CacheRecord>, {
+			get: (_t, key) => (isFileKey(key) && moduleCache.has(key) ? cacheRecord(key) : undefined),
+			has: (_t, key) => isFileKey(key) && moduleCache.has(key),
+			set: (_t, key, value: { exports?: unknown } | undefined) => {
+				if (!isFileKey(key)) return true;
+				moduleCache.set(key, value?.exports);
+				if (value && typeof value === 'object') cacheRecords.set(key, value as CacheRecord);
+				return true;
+			},
+			deleteProperty: (_t, key) => {
+				if (isFileKey(key)) { moduleCache.delete(key); cacheRecords.delete(key); }
+				return true;
+			},
+			ownKeys: () => [...moduleCache.keys()].filter(isFileKey),
+			getOwnPropertyDescriptor: (_t, key) => (isFileKey(key) && moduleCache.has(key)
+				? { value: cacheRecord(key), writable: true, enumerable: true, configurable: true }
+				: undefined),
+		});
+
+		// napi-rs wasm32-wasi addons (Rolldown, Oxc, ...): their generated loaders get a WASI
+		// on the box's fs and real threads (node-compat/napi-wasi). Threads end with the run.
+		const napiWasi = createNapiWasiRuntime({
+			getFs: () => nodeRequire('fs') as Record<string, unknown>,
+			env: nodeCtx.env,
+			stdout: runStdout,
+			stderr: runStderr,
+			activity,
+			readFile: (p) => ctx.vfs.readFileString(p),
+			exists: (p) => ctx.vfs.exists(p),
+			resolve: (spec, fromDir) => {
+				const bare = spec.startsWith('node:') ? spec.slice(5) : spec;
+				if (moduleMap[bare]) return `builtin:${bare}`;
+				if (spec.startsWith('#')) return resolvePackageImport(spec, fromDir)?.path ?? null;
+				if (spec.startsWith('./') || spec.startsWith('../') || spec.startsWith('/')) return resolveVfsModule(spec, fromDir)?.path ?? null;
+				return resolveNodeModule(spec, fromDir)?.path ?? null;
+			},
+			compile: (source, filename) => {
+				let clean = stripShebang(source);
+				clean = shouldTreatAsEsm(clean, filename, ctx.vfs) ? transformEsmToCjs(clean) : rewriteDynamicImports(clean);
+				return `(function(${buildWrapperParams(clean)}) {\n${clean}\n})`;
+			},
+			// A wasm addon's bundled runtime (napi-wasi embeddedRuntimeSource), run in this box.
+			evaluate: (source, filename) => executeModule(source, filename, filename),
+		});
 
 		// Stub for @rollup/rollup-* native binary packages (platform-specific NAPI addons).
 		// These can't work in a browser environment. Provide shims for the exported functions.
@@ -1173,6 +1560,43 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			composeVisitors: () => ({}),
 			Features: new Proxy({}, { get: () => 0 }),
 		};
+
+		// require.extensions (Module._extensions), one object for the whole run like Node's. Lifo's
+		// loader doesn't dispatch through it, but tools read and wrap its loaders: Next.js keeps
+		// `require.extensions['.js']` and calls it from its own hook when it loads next.config.ts.
+		type ExtensionModule = { exports: unknown; _compile(code: string, filename: string): unknown };
+		const requireExtensions: Record<string, (mod: ExtensionModule, filename: string) => void> = {
+			'.js': (mod, filename) => { mod._compile(ctx.vfs.readFileString(filename), filename); },
+			'.json': (mod, filename) => { mod.exports = JSON.parse(ctx.vfs.readFileString(filename)); },
+			'.node': (_mod, filename) => { throw new Error(`Cannot load native addon ${filename} in a box`); },
+		};
+
+		/**
+		 * module.createRequire(filename): a require that resolves from that file's directory, as in
+		 * Node. Bundles declare their own `const require = createRequire(import.meta.url)` (Prettier
+		 * does), and once their imports are requires too, every import goes through it. Lifo used to
+		 * hand back the require of whichever module first loaded 'module' in the run, so a
+		 * package's relative imports resolved from another package's directory.
+		 */
+		const SHIMMED_MODULES = new Set(['lightningcss', '@tailwindcss/oxide', '@swc/core', 'fetch-nodeshim', '@babel/core', 'rollup/parseAst', 'rollup/parseAst.js']);
+		function createRequireAt(filename: string | URL, base: (name: string) => unknown, builtins: Record<string, unknown>): unknown {
+			let file = typeof filename === 'string' ? filename : filename.href;
+			if (file.startsWith('file://')) file = decodeURIComponent(file.slice('file://'.length));
+			const fromDir = file.endsWith('/') ? file.replace(/\/+$/, '') || '/' : dirname(file);
+			const req = (name: string): unknown => {
+				let n = name.startsWith('node:') ? name.slice(5) : name;
+				if (n.startsWith('file://')) n = decodeURIComponent(n.slice('file://'.length));
+				if (n.startsWith('./') || n.startsWith('../') || n === '.' || n === '..') return base(resolve(fromDir, n));
+				if (n.startsWith('/') || n.startsWith('#') || builtins[n] || SHIMMED_MODULES.has(n) || n.includes('--for-')) return base(n);
+				const found = resolveNodeModule(n, fromDir);
+				return base(found ? found.path : n);
+			};
+			return Object.assign(req, {
+				resolve: Object.assign((id: string) => resolveRequirePath(id, fromDir), { paths: () => null }),
+				cache: requireCache,
+				extensions: requireExtensions,
+			});
+		}
 
 		// Build require function (declared first, module shim overrides below)
 		function nodeRequire(name: string): unknown {
@@ -1239,7 +1663,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 					const modSource = ctx.vfs.readFileString(resolved.path);
 					return executeModule(modSource, resolved.path, resolved.path);
 				}
-				throw new Error(`Cannot find module '${name}'`);
+				throw moduleNotFound(name);
 			}
 
 			// Relative VFS files
@@ -1260,7 +1684,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 					return executeModule(modSource, resolved.path, resolved.path);
 				}
 
-				throw new Error(`Cannot find module '${name}'`);
+				throw moduleNotFound(name);
 			}
 
 			// Node-modules resolution (walk up node_modules, global, legacy)
@@ -1283,7 +1707,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			// Stub for rollup native binary packages
 			if (name.startsWith('@rollup/rollup-')) return rollupNativeStub;
 
-			throw new Error(`Cannot find module '${name}'`);
+			throw moduleNotFound(name);
 		}
 
 		// require.resolve(id) — return the resolved path without loading (used
@@ -1335,7 +1759,8 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			(id: string) => resolveRequirePath(id, dir),
 			{ paths: () => null },
 		);
-		(nodeRequire as unknown as { cache: unknown }).cache = Object.create(null);
+		(nodeRequire as unknown as { cache: unknown }).cache = requireCache;
+		(nodeRequire as unknown as { extensions: unknown }).extensions = requireExtensions;
 
 		// Override module shim so createRequire returns nodeRequire (resolves VFS +
 		// node_modules). Must stay a constructable Module class with a working
@@ -1346,7 +1771,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			return createModuleClass(
 				{ executeCjs: nodeCtx.executeCjs },
 				{
-					createRequire: (_filename: string | URL) => nodeRequire,
+					createRequire: (filename: string | URL) => createRequireAt(filename, nodeRequire, moduleMap),
 					builtinModules: builtinNames,
 					isBuiltin: (s: string) => {
 						const n = s.startsWith('node:') ? s.slice(5) : s;
@@ -1476,35 +1901,46 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			return null;
 		}
 
-		/** Resolve a conditional exports value (string | { require, import, default, ... }) */
-		function resolveExportsCondition(value: unknown): string | null {
+		/**
+		 * Resolve a conditional exports value (string | array | { condition: value }). Node picks the
+		 * first key, in the object's own order, that is one of its conditions for require()
+		 * ("require", "node", "default"), recursing into nested objects: TanStack Router's
+		 * "./isServer" lists development, workerd, worker, browser, deno, node, … and Node takes
+		 * "node" (server: true). Only when nothing matches does Lifo fall back to other
+		 * conditions ("browser", non-standard ones), and to "import" last: a dual package like
+		 * signal-exit lists "import" first, and an ESM file in a CJS require is the worse choice.
+		 */
+		const REQUIRE_CONDITIONS = new Set(['require', 'node', 'default']);
+		function matchExports(value: unknown, strict: boolean): string | null {
 			if (typeof value === 'string') return value;
-			if (value && typeof value === 'object' && !Array.isArray(value)) {
-				const cond = value as Record<string, unknown>;
-				// This is a require() context, so honour Node's require conditions
-				// in priority order and recurse into nested condition objects
-				// (e.g. { require: { types, default } }). Crucially, 'import'
-				// (the ESM build) must be tried LAST — a dual package like
-				// signal-exit lists "import" first, and picking it would load an
-				// ESM file in a CJS require.
-				for (const key of ['require', 'node', 'default', 'browser']) {
-					if (key in cond) {
-						const r = resolveExportsCondition(cond[key]);
-						if (r) return r;
-					}
-				}
-				// Any remaining non-standard condition, then finally import.
-				for (const key of Object.keys(cond)) {
-					if (key === 'types' || key === 'import' || key === 'require' || key === 'node' || key === 'default' || key === 'browser') continue;
-					const r = resolveExportsCondition(cond[key]);
+			if (Array.isArray(value)) {
+				for (const v of value) {
+					const r = matchExports(v, strict);
 					if (r) return r;
 				}
-				if ('import' in cond) {
-					const r = resolveExportsCondition(cond.import);
-					if (r) return r;
-				}
+				return null;
 			}
-			return null;
+			if (!value || typeof value !== 'object') return null;
+			const cond = value as Record<string, unknown>;
+			for (const key of Object.keys(cond)) {
+				if (!REQUIRE_CONDITIONS.has(key)) continue;
+				const r = matchExports(cond[key], strict);
+				if (r) return r;
+			}
+			if (strict) return null;
+			if ('browser' in cond) {
+				const r = matchExports(cond.browser, false);
+				if (r) return r;
+			}
+			for (const key of Object.keys(cond)) {
+				if (key === 'types' || key === 'import' || key === 'browser' || REQUIRE_CONDITIONS.has(key)) continue;
+				const r = matchExports(cond[key], false);
+				if (r) return r;
+			}
+			return 'import' in cond ? matchExports(cond.import, false) : null;
+		}
+		function resolveExportsCondition(value: unknown): string | null {
+			return matchExports(value, true) ?? matchExports(value, false);
 		}
 
 		function resolvePackageEntry(pkgDir: string, subpath: string | null): { path: string } | null {
@@ -1621,23 +2057,27 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 				moduleCache.set(cacheAs, modExports);
 			}
 
-			const modNodeCtx: NodeContext = { ...nodeCtx, filename: modFilename, dirname: modDir };
+			const modNodeCtx: NodeContext = withLiveCwd({ ...nodeCtx, filename: modFilename, dirname: modDir });
 			const modModuleMap = createModuleMap(modNodeCtx);
-			const modProcess = createProcess({
-				argv: nodeCtx.argv,
-				env: nodeCtx.env,
-				cwd: nodeCtx.cwd,
-				stdout: runStdout,
-				stderr: runStderr,
-				stdin: nodeStdin,
-				interactive,
-				onExit: requestExit,
-			});
+			modModuleMap.process = () => runProcess;
+			// One process for the whole program, as in Node: a listener one module adds, or a
+			// method it replaces (Next.js patches process.nextTick), is seen by every module.
+			const modProcess = runProcess;
 			const modConsole = createConsole(runStdout, runStderr);
+
+			// A napi-rs wasm32-wasi loader gets Lifo's `wasi` and `worker_threads` (see
+			// node-compat/napi-wasi). Built on first require, which throws when this host
+			// can't run wasm threads, before the loader allocates its shared memory.
+			const isWasiLoader = isNapiWasiLoader(modSource);
+			let wasiLoaderModules: { wasi: unknown; worker_threads: unknown } | null = null;
 
 			function modRequire(name: string): unknown {
 				// Strip node: prefix
 				if (name.startsWith('node:')) name = name.slice(5);
+				if (isWasiLoader && (name === 'wasi' || name === 'worker_threads')) {
+					wasiLoaderModules ??= napiWasi.modulesFor(modFilename, modRequire);
+					return wasiLoaderModules[name];
+				}
 				// file:// URLs (e.g. vite importing its bundled config) → plain paths
 				if (name.startsWith('file://')) name = decodeURIComponent(name.slice('file://'.length));
 				// Metro appends `--for-<purpose>` to force a distinct module instance
@@ -1699,7 +2139,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 						const childSource = ctx.vfs.readFileString(resolved.path);
 						return executeModule(childSource, resolved.path, resolved.path);
 					}
-					throw new Error(`Cannot find module '${name}'`);
+					throw moduleNotFound(name);
 				}
 
 				if (name.startsWith('./') || name.startsWith('../') || name.startsWith('/')) {
@@ -1718,7 +2158,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 						const childSource = ctx.vfs.readFileString(resolved.path);
 						return executeModule(childSource, resolved.path, resolved.path);
 					}
-					throw new Error(`Cannot find module '${name}'`);
+					throw moduleNotFound(name);
 				}
 
 				// Node-modules resolution from this module's directory
@@ -1741,7 +2181,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 				// Stub for rollup native binary packages
 				if (name.startsWith('@rollup/rollup-')) return rollupNativeStub;
 
-				throw new Error(`Cannot find module '${name}'`);
+				throw moduleNotFound(name);
 			}
 
 			// require.resolve for child modules (resolves relative to this module).
@@ -1749,7 +2189,8 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 				(id: string) => resolveRequirePath(id, modDir),
 				{ paths: () => null },
 			);
-			(modRequire as unknown as { cache: unknown }).cache = Object.create(null);
+			(modRequire as unknown as { cache: unknown }).cache = requireCache;
+			(modRequire as unknown as { extensions: unknown }).extensions = requireExtensions;
 
 			// Override module shim so createRequire returns modRequire (resolves VFS + node_modules too)
 			// Same as the main map's override: a constructable Module class whose
@@ -1759,7 +2200,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 				return createModuleClass(
 					{ executeCjs: nodeCtx.executeCjs },
 					{
-						createRequire: (_filename: string | URL) => modRequire,
+						createRequire: (filename: string | URL) => createRequireAt(filename, modRequire, modModuleMap),
 						builtinModules: builtinNames,
 						isBuiltin: (s: string) => {
 							const n = s.startsWith('node:') ? s.slice(5) : s;
@@ -1770,14 +2211,18 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 				);
 			};
 
-			let cleanSource = stripShebang(modSource);
-			if (shouldTreatAsEsm(cleanSource, modFilename, ctx.vfs)) {
+			// A few packages' code is adjusted for a box as it loads (package-adapters.ts).
+			let cleanSource = stripShebang(adaptPackageSource(modFilename, modSource));
+			const isEsModule = shouldTreatAsEsm(cleanSource, modFilename, ctx.vfs);
+			if (isEsModule) {
 				cleanSource = transformEsmToCjs(cleanSource);
 			} else {
 				// CJS modules skip transformEsmToCjs, but still may use dynamic import()
 				// (e.g. pglite's index.cjs → import('fs/promises')). Rewrite those too.
 				cleanSource = rewriteDynamicImports(cleanSource);
 			}
+			// Carry AsyncLocalStorage's stores across this module's awaits (await-context.ts).
+			cleanSource = instrumentAwaits(cleanSource);
 			const wrapped = `(function(${buildWrapperParams(cleanSource)}) {\n${cleanSource}\n})`;
 			// Give the eval'd module a real filename in stack traces (CallSite.getFileName).
 			// Tools like caller-path/importFresh (used by cosmiconfig) derive paths from the
@@ -1845,6 +2290,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 					// (pglite) doesn't mis-detect the browser and mis-resolve data files.
 					undefined, undefined, undefined, NODE_NAVIGATOR,
 					nodeFetch, // fetch (CORS-proxied for known hosts)
+					runSetImmediate, runClearImmediate,
 				);
 			} catch (e) {
 				if (e instanceof ProcessExitError) throw e;
@@ -1867,20 +2313,24 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 				moduleCache.set(cacheAs, modModule.exports);
 			}
 
+			// The addon's async calls (bundle.generate(), ...) run on its threads, out of the
+			// run's sight: count them so `vite build` isn't ended mid-bundle.
+			if (wasiLoaderModules) napiWasi.trackExports(modModule.exports);
+
+			// require() of an ES module, as Node 22.12+ returns it: marked __esModule when it has a
+			// default export, so bundled CommonJS (esbuild's __toESM, Babel's interop) takes that
+			// default. Tailwind's CJS build does `new (__toESM(require('magic-string')).default)()`
+			// with magic-string 1.x, which is ESM only.
+			const esmExports = modModule.exports as Record<string, unknown> | null;
+			if (isEsModule && esmExports && typeof esmExports === 'object' && 'default' in esmExports && !('__esModule' in esmExports)) {
+				try { Object.defineProperty(esmExports, '__esModule', { value: true, configurable: true }); } catch { /* frozen */ }
+			}
+
 			return modModule.exports;
 		}
 
 		// Execute main script
-		const process = createProcess({
-			argv: nodeCtx.argv,
-			env: nodeCtx.env,
-			cwd: nodeCtx.cwd,
-			stdout: runStdout,
-			stderr: runStderr,
-			stdin: nodeStdin,
-			interactive,
-			onExit: requestExit,
-		});
+		const process = runProcess;
 		const nodeConsole = createConsole(runStdout, runStderr);
 
 		const module = { exports: {} as Record<string, unknown> };
@@ -1892,6 +2342,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 		if (isEsm) {
 			cleanMainSource = transformEsmToCjs(cleanMainSource);
 		}
+		cleanMainSource = instrumentAwaits(cleanMainSource);
 
 		// Use async IIFE for ESM (supports top-level await)
 		const wrapped = isEsm
@@ -1948,7 +2399,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			event.preventDefault(); // prevent browser default logging
 			if (event.reason instanceof ProcessExitError) {
 				signalExit();
-			} else {
+			} else if (!isWasmThreadsUnavailable(event.reason)) {
 				ctx.stderr.write(`[unhandledRejection] ${describeRejection(event.reason)}\n`);
 			}
 		};
@@ -1971,6 +2422,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 				mainImportMetaUrl, mainImportMeta, mainImportMetaResolve,
 				undefined, undefined, undefined, NODE_NAVIGATOR,
 				nodeFetch, // fetch (CORS-proxied for known hosts)
+				runSetImmediate, runClearImmediate,
 			);
 
 			// Await if ESM (async IIFE returns a promise). The synchronous body of
@@ -2010,8 +2462,11 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			//
 			// Interactive input is the exception. A prompt waiting for a keypress looks idle, and
 			// a finished CLI can leave a stray keypress listener behind (create-expo-app), so
-			// "is something reading stdin" can't decide it. While stdin has a consumer, fall back
-			// to waiting for a quiet period (input counts as activity), as before.
+			// "is something reading stdin" can't decide it. A readline interface open on the
+			// terminal can: prompt libraries open one per question and close it once answered,
+			// so wait on it as long as the person takes (create-vite's clack prompts were cut
+			// off after 500 ms). Any other stdin consumer falls back to waiting for a quiet
+			// period (input counts as activity), as before.
 			if (!activeServers || activeServers.length === 0) {
 				const QUICK_GRACE_MS = 60;
 				let prevCacheSize = moduleCache.size;
@@ -2019,7 +2474,7 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 				let lastWorkMs = 0; // ms since the loop started when work last happened
 				let elapsed = 0;
 				const startedAt = Date.now();
-				const hardDeadline = startedAt + 600000; // 10 min cap (long installs)
+				let hardDeadline = startedAt + 600000; // 10 min cap (long installs)
 				while (Date.now() < hardDeadline) {
 					const stdinInUse = nodeStdin.isActive();
 					const tickMs = stdinInUse ? 50 : 15;
@@ -2039,6 +2494,13 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 						lastInputSeq = seq;
 					}
 					if (pending > 0) continue;
+					// A prompt waiting for an answer, a child process started with fork(), or (in
+					// that child) a parent it listens to: wait as long as they take.
+					if (nodeStdin.isPrompting() || forkedChildren > 0 || ipcHoldsRun()) {
+						lastWorkMs = elapsed;
+						hardDeadline = Date.now() + 600000;
+						continue;
+					}
 					const idleMs = elapsed - lastWorkMs;
 					// A reader on stdin: the old quiet-period rule (longer for CJS, which has no
 					// "main finished" signal, so a slow-to-answer prompt isn't cut short).
@@ -2050,25 +2512,28 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			if (asyncExitCode !== null) return asyncExitCode;
 
 			if (activeServers && activeServers.length > 0) {
-				// Collect all server promises
-				const serverPromises = activeServers
-					.map((s) => s.getPromise())
-					.filter((p): p is Promise<void> => p !== null);
+				const abortPromise = new Promise<void>((resolve) => {
+					if (ctx.signal.aborted) {
+						resolve();
+						return;
+					}
+					ctx.signal.addEventListener('abort', () => resolve(), { once: true });
+				});
 
-				if (serverPromises.length > 0) {
-					// Wait for all servers to close OR for abort signal
-					const abortPromise = new Promise<void>((resolve) => {
-						if (ctx.signal.aborted) {
-							resolve();
-							return;
-						}
-						ctx.signal.addEventListener('abort', () => resolve(), { once: true });
-					});
+				// We're now purely event-driven — a process.exit() from here on
+				// (e.g. an interactive keypress handler) should end the run
+				// gracefully rather than throw.
+				interceptExit = true;
 
-					// We're now purely event-driven — a process.exit() from here on
-					// (e.g. an interactive keypress handler) should end the run
-					// gracefully rather than throw.
-					interceptExit = true;
+				// Like Node, the run lasts while any server listens. The list is live: a server
+				// that starts while we wait (Vite opens a short-lived one before its dev server)
+				// joins it, so waiting only for the servers present at first ended the run as soon
+				// as that early one closed, with the dev server still up.
+				for (;;) {
+					const serverPromises = activeServers
+						.map((s) => s.getPromise())
+						.filter((p): p is Promise<void> => p !== null);
+					if (serverPromises.length === 0) break;
 
 					await Promise.race([
 						Promise.all(serverPromises),
@@ -2081,7 +2546,9 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 						for (const server of [...activeServers]) {
 							server.close();
 						}
+						break;
 					}
+					activeServers = getActiveServers() ?? [];
 				}
 			}
 
@@ -2098,6 +2565,8 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 			if (e instanceof ProcessExitError) {
 				return e.exitCode;
 			}
+			// A wasm addon this host can't run: its one-line explanation is already on stderr.
+			if (isWasmThreadsUnavailable(e)) return 1;
 			if (e instanceof Error) {
 				ctx.stderr.write(`${e.stack || e.message}\n`);
 			} else {
@@ -2111,6 +2580,8 @@ function createNodeImpl(kernelOrPortRegistry?: Kernel | Map<number, VirtualReque
 				ga.Buffer = savedBuffer;
 				ga.console = savedConsole;
 			}
+			// Host threads of wasm addons (napi-wasi) don't outlive the run that started them.
+			napiWasi.dispose();
 			// Remove unhandled rejection listener
 			if (typeof globalThis.removeEventListener === 'function') {
 				globalThis.removeEventListener('unhandledrejection', rejectionHandler as EventListener);

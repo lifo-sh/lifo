@@ -33,6 +33,13 @@ const pending = new Map();
 const clientBox = new Map();
 /** connId → clientId, for routing WebSocket messages back to the app client */
 const wsConnClient = new Map();
+/**
+ * An app page's visible URL (prefix stripped, no hash) → its box. A navigation or a worker
+ * script has no requesting client, only a referrer, and that's the page's visible URL, which
+ * a client's url (its creation URL, /_sw/<boxId>/<port>/…) never matches. Pages report it.
+ */
+const urlBox = new Map();
+const withoutHash = (u) => String(u).split('#')[0];
 
 /**
  * Injected into every VM-served HTML page, FIRST. The /_sw/<port>/ prefix is
@@ -47,6 +54,76 @@ const PATH_SHIM = `(function(){
   var m = location.pathname.match(/^\\/_sw\\/([A-Za-z0-9_-]+)\\/(\\d+)(\\/.*)?$/);
   if (!m) return;
   history.replaceState(history.state, '', (m[3] || '/') + location.search + location.hash);
+  // Tell the service worker this page's visible URL (and every change of it), so a link it
+  // follows or a worker it starts, which carry only that URL as referrer, route to its box.
+  var report = function () {
+    try {
+      var sw = navigator.serviceWorker && navigator.serviceWorker.controller;
+      if (sw) sw.postMessage({ type: 'lifo-client-url', url: location.href });
+    } catch (e) {}
+  };
+  report();
+  ['pushState', 'replaceState'].forEach(function (k) {
+    var orig = history[k];
+    history[k] = function () { var r = orig.apply(this, arguments); report(); return r; };
+  });
+  addEventListener('popstate', report);
+  // Keep the page's own navigations and workers in its box. A host may let the service worker
+  // control only /_sw/ (the playground keeps its own pages out of its hands), and a navigation
+  // or a worker script is routed by its URL, not by the page that asked for it: a link to
+  // /about.html, a form, location.href = '/x', a reload or new Worker('/worker.js') would land
+  // on the host's server. Same-origin targets outside /_sw/ get this page's prefix back.
+  var prefix = '/_sw/' + m[1] + '/' + m[2];
+  var boxed = function (u) {
+    try {
+      var x = new URL(String(u), location.href);
+      if (x.origin !== location.origin || x.protocol !== location.protocol || /^\\/_sw\\//.test(x.pathname)) return null;
+      return prefix + x.pathname + x.search + x.hash;
+    } catch (e) { return null; }
+  };
+  // Links, including ones opened in a new tab: the href carries the prefix while it's followed.
+  var onLink = function (e) {
+    if (e.defaultPrevented) return;
+    var a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+    if (!a || a.hasAttribute('download')) return;
+    var href = a.getAttribute('href');
+    var to = boxed(a.href);
+    if (!to) return;
+    a.setAttribute('href', to);
+    setTimeout(function () { a.setAttribute('href', href); }, 0);
+  };
+  addEventListener('click', onLink);
+  addEventListener('auxclick', onLink);
+  // Forms: the action is read after the submit event, so it can still change here.
+  addEventListener('submit', function (e) {
+    if (e.defaultPrevented) return;
+    var s = e.submitter;
+    if (s && s.hasAttribute('formaction')) {
+      var t1 = boxed(s.formAction);
+      if (t1) s.setAttribute('formaction', t1);
+    } else {
+      var t2 = boxed(e.target.action);
+      if (t2) e.target.setAttribute('action', t2);
+    }
+  });
+  // Script navigations and reloads (location.href = '/x', location.reload()).
+  var nav = window.navigation;
+  if (nav && nav.addEventListener) {
+    nav.addEventListener('navigate', function (e) {
+      if (!e.cancelable || e.hashChange || e.formData || e.downloadRequest != null || e.destination.sameDocument) return;
+      var to = boxed(e.destination.url);
+      if (!to) return;
+      e.preventDefault();
+      if (e.navigationType === 'push') location.assign(to); else location.replace(to);
+    });
+  }
+  ['Worker', 'SharedWorker'].forEach(function (name) {
+    var Orig = window[name];
+    if (typeof Orig !== 'function') return;
+    var Boxed = function (url, options) { return new Orig(boxed(url) || url, options); };
+    Boxed.prototype = Orig.prototype;
+    window[name] = Boxed;
+  });
   // Reload persistence: with the prefix stripped, reloading a top-level
   // preview tab would hit "/" and load the playground instead. Save the
   // restore target (with the CURRENT route at unload time, so client-side
@@ -200,6 +277,20 @@ async function routeToClient(connId, msg) {
 self.addEventListener('message', (event) => {
 	const data = event.data || {};
 
+	if (data.type === 'lifo-client-url' && event.source && typeof data.url === 'string') {
+		let box = clientBox.get(event.source.id);
+		if (!box) {
+			const cm = new URL(event.source.url).pathname.match(SW_PREFIX);
+			if (cm) box = { boxId: cm[1], port: parseInt(cm[2], 10) };
+		}
+		if (box) {
+			urlBox.delete(withoutHash(data.url)); // re-insert: the newest page wins, oldest go first
+			urlBox.set(withoutHash(data.url), box);
+			if (urlBox.size > 500) urlBox.delete(urlBox.keys().next().value);
+		}
+		return;
+	}
+
 	if (data.type === 'lifo-connect' && event.ports && event.ports[0] && data.boxId) {
 		const boxId = data.boxId;
 		const prev = hostPorts.get(boxId);
@@ -312,6 +403,29 @@ function vmRequest(boxId, port, path, request, bodyB64) {
 		pending.set(requestId, { resolve, timer });
 		const headers = {};
 		for (const [k, v] of request.headers.entries()) headers[k] = v;
+		// The app believes it's served at http://localhost:<port>, so present the request as a
+		// browser would send it there. A service worker never sees the Origin, Referer and
+		// Sec-Fetch-* headers the browser adds on the way to the network, and same-origin checks
+		// need them (TanStack Start answers a server function call without them with 403).
+		// Every request reaching the box comes from one of its own pages: same-origin.
+		const appOrigin = 'http://localhost:' + port;
+		if (!headers.host) headers.host = 'localhost:' + port;
+		if (!headers['sec-fetch-site']) headers['sec-fetch-site'] = 'same-origin';
+		if (!headers['sec-fetch-mode']) headers['sec-fetch-mode'] = request.mode || 'cors';
+		if (!headers['sec-fetch-dest']) headers['sec-fetch-dest'] = request.destination || 'empty';
+		if (headers.origin === self.location.origin || (!headers.origin && request.method !== 'GET' && request.method !== 'HEAD')) {
+			headers.origin = appOrigin;
+		}
+		const referrer = headers.referer || request.referrer;
+		if (referrer && referrer !== 'about:client') {
+			try {
+				const ref = new URL(referrer);
+				if (ref.origin === self.location.origin) {
+					const m = ref.pathname.match(SW_PREFIX);
+					headers.referer = appOrigin + (m ? (m[3] || '/') : ref.pathname) + ref.search;
+				}
+			} catch { /* not a URL: leave it out */ }
+		}
 		// The browser omits Content-Length from request.headers (a forbidden
 		// header it manages itself), but in-VM body parsers need it — e.g.
 		// body-parser/express.json only parses when hasBody() sees content-length
@@ -379,10 +493,17 @@ async function serveFromVm(event, boxId, port, path) {
 	// is never touched — this is a proxy-level seam, like the relay's byte pipe.
 	if (contentType.includes('text/html') && bodyBuf) {
 		let html = new TextDecoder().decode(bodyBuf);
-		const tag = `<script>${PATH_SHIM}</script><script>${WS_SHIM}</script>`;
-		const headIdx = html.indexOf('<head>');
-		html = headIdx !== -1
-			? html.slice(0, headIdx + 6) + tag + html.slice(headIdx + 6)
+		// Each script removes itself once it has run, so the document is exactly what the server
+		// rendered: React hydrates whole documents (TanStack Start), and an extra <script> in
+		// <head> was a hydration mismatch.
+		const selfRemove = ';(function(){var s=document.currentScript;if(s&&s.parentNode)s.parentNode.removeChild(s);})();';
+		const tag = `<script>${PATH_SHIM}${selfRemove}</script><script>${WS_SHIM}${selfRemove}</script>`;
+		// First thing in <head>, which may carry attributes (<head data-tsd-source=…>); else
+		// right after <html …> or the doctype. Never before the doctype: that put the page in
+		// quirks mode, and the parser then dropped the real <head>'s attributes.
+		const at = /<head(?:\s[^>]*)?>/i.exec(html) || /<html(?:\s[^>]*)?>/i.exec(html) || /<!doctype[^>]*>/i.exec(html);
+		html = at
+			? html.slice(0, at.index + at[0].length) + tag + html.slice(at.index + at[0].length)
 			: tag + html;
 		delete headers['Content-Length'];
 		delete headers['content-length'];
@@ -411,13 +532,17 @@ async function boxForRequest(event) {
 		}
 		return null;
 	}
-	// Navigations carry no clientId — resolve via the referrer.
-	if (event.request.mode === 'navigate' && event.request.referrer) {
+	// Navigations and worker scripts carry no clientId — resolve via the referrer.
+	const dest = event.request.destination;
+	const noClient = event.request.mode === 'navigate' || dest === 'worker' || dest === 'sharedworker';
+	if (noClient && event.request.referrer) {
 		let ref;
 		try { ref = new URL(event.request.referrer); } catch { return null; }
 		if (ref.origin !== self.location.origin) return null;
 		const m = ref.pathname.match(SW_PREFIX);
 		if (m) return { boxId: m[1], port: parseInt(m[2], 10) };
+		const reported = urlBox.get(withoutHash(event.request.referrer));
+		if (reported) return reported;
 		const all = await self.clients.matchAll({ type: 'window' });
 		const refClient = all.find((c) => c.url === event.request.referrer);
 		if (refClient && clientBox.has(refClient.id)) return clientBox.get(refClient.id);
@@ -456,7 +581,10 @@ self.addEventListener('fetch', (event) => {
 	event.respondWith((async () => {
 		const box = await boxForRequest(event);
 		if (!box) return fetch(event.request);
-		if (event.request.mode === 'navigate' && event.resultingClientId) {
+		// A page in the box that opens a document or starts a worker: that new client is in the
+		// box too, so its own requests (a worker's fetch('/data.json')) route the same way.
+		const dest = event.request.destination;
+		if (event.resultingClientId && (event.request.mode === 'navigate' || dest === 'worker' || dest === 'sharedworker')) {
 			clientBox.set(event.resultingClientId, box);
 		}
 		return serveFromVm(event, box.boxId, box.port, url.pathname + url.search);

@@ -10,6 +10,7 @@
  * NDJSON response per job, which works the same from a browser tab, Node.js and a cloud box.
  */
 
+import { platformFetch } from './platform-fetch.js';
 import { DEFAULT_BASE_URL, fetchCliConfig, normalizeBaseUrl } from './auth.js';
 
 export interface ServiceTool {
@@ -120,7 +121,7 @@ export class LifoServices {
 		headers.set('authorization', `Bearer ${this.token}`);
 		let res: Response;
 		try {
-			res = await fetch(`${this.url}${path}`, { ...init, headers });
+			res = await platformFetch(`${this.url}${path}`, { ...init, headers });
 		} catch (err) {
 			if ((err as Error)?.name === 'AbortError') throw err;
 			throw new ServiceError(`Can't reach Lifo services at ${this.url} (${(err as Error).message})`, 0);

@@ -116,6 +116,28 @@ describe('WorkerSandbox over a MessageChannel', () => {
 		expect(box.cwd).toBe('/home/user');
 	});
 
+	it('opens another shell in a second terminal while the first is busy', async () => {
+		const first = new FakeTerminal();
+		const box = await boxPair({ terminal: first });
+		await until(() => /\$ $/.test(first.out));
+		first.type('sleep 30\r'); // the first tab is busy, as with a dev server in the foreground
+
+		const second = new FakeTerminal();
+		let exited: number | null = null;
+		await box.openShell(second, { cwd: '/tmp', onExit: (code) => { exited = code; } });
+		await until(() => /\$ $/.test(second.out));
+		second.type('pwd; echo hi > /tmp/from-tab-2; echo written\r');
+		await until(() => second.out.includes('written\r\n'));
+		expect(second.out).toContain('/tmp\r\n');
+		expect(await box.fs.readFile('/tmp/from-tab-2')).toBe('hi\n');
+		expect(first.out).not.toContain('/tmp\r\n');
+
+		second.type('exit 4\r');
+		await until(() => exited !== null);
+		expect(exited).toBe(4);
+		first.type('\x03');
+	});
+
 	it('aborts a running command', async () => {
 		const box = await boxPair();
 		const ac = new AbortController();

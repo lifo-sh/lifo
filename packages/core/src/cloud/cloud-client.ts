@@ -15,6 +15,7 @@
  *   const sh = await cloud.shell('my-api', { cols: 80, rows: 24 }); // an interactive shell there
  */
 
+import { platformFetch } from './platform-fetch.js';
 import { fetchCliConfig, DEFAULT_BASE_URL, normalizeBaseUrl } from './auth.js';
 
 export interface CloudBoxInfo {
@@ -205,7 +206,7 @@ export class LifoCloud {
 	private async request(path: string, init: RequestInit = {}, prefix = '/v1/boxes'): Promise<Response> {
 		const headers = new Headers(init.headers);
 		headers.set('authorization', `Bearer ${this.token}`);
-		const res = await fetch(`${this.url}${prefix}${path}`, { ...init, headers });
+		const res = await platformFetch(`${this.url}${prefix}${path}`, { ...init, headers });
 		if (!res.ok) {
 			let message = `${res.status} ${res.statusText}`;
 			try {
@@ -280,7 +281,7 @@ export class LifoCloud {
 	 * database yet. Appended to supabase/seed.sql, it loads into tinbase in a tab.
 	 */
 	async dataSql(name: string): Promise<string | null> {
-		const res = await fetch(`${this.url}/v1/boxes/${encodeURIComponent(name)}/data.sql`, { headers: { authorization: `Bearer ${this.token}` } });
+		const res = await platformFetch(`${this.url}/v1/boxes/${encodeURIComponent(name)}/data.sql`, { headers: { authorization: `Bearer ${this.token}` } });
 		if (res.status === 404) {
 			const body = await res.json().catch(() => ({}) as { error?: string });
 			if (/no database yet/.test(String(body.error))) return null;

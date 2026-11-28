@@ -32,6 +32,13 @@ export interface CommandContext {
    * emit an ENOENT `error` for a missing command (exit 127) as Node does.
    */
   executeCaptureResult?: (input: string, opts?: { cwd?: string }) => Promise<{ stdout: string; stderr: string; code: number }>;
+  /**
+   * Run a shell command line as a child that shares this command's terminal: its output goes
+   * where this command's goes, it reads this command's input, and stopping this command stops
+   * it. Resolves with the child's exit code. The node command uses it to run what a program
+   * asked for with spawnSync once the program has ended.
+   */
+  runInherited?: (input: string, opts?: { cwd?: string }) => Promise<number>;
 }
 
 export type Command = (ctx: CommandContext) => Promise<number>;

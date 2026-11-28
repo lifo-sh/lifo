@@ -12,8 +12,11 @@ export interface InterfaceOptions {
     on?: (event: string, cb: (...args: unknown[]) => void) => void;
     removeListener?: (event: string, cb: (...args: unknown[]) => void) => void;
     listenerCount?: (event: string) => number;
+    listeners?: (event: string) => unknown[];
     pause?: () => unknown;
     resume?: () => unknown;
+    isTTY?: boolean;
+    setRawMode?: (enabled: boolean) => unknown;
   };
   output?: { write?: (data: string) => void };
   prompt?: string;
@@ -23,12 +26,37 @@ export interface InterfaceOptions {
   crlfDelay?: number;
 }
 
+/**
+ * How many readline interfaces are open on a stream, kept on the stream itself. An open one
+ * on the terminal means a prompt is waiting for the user, so the node runner keeps the run
+ * alive for it (process.ts `isPrompting`).
+ */
+export const OPEN_READLINE_INTERFACES = Symbol.for('lifo.readline.openInterfaces');
+
+interface Key {
+  name?: string;
+  sequence?: string;
+  ctrl?: boolean;
+  meta?: boolean;
+  shift?: boolean;
+}
+
+type Listener = (...args: unknown[]) => void;
+
 export class Interface extends EventEmitter {
+  /** The line being edited (terminal mode), as Node exposes it. Prompt libraries read it. */
+  line = '';
+  /** Cursor position within `line`. */
+  cursor = 0;
   private _prompt: string;
   private _output: { write?: (data: string) => void } | undefined;
   private _input: InterfaceOptions['input'];
-  private _onData?: (...args: unknown[]) => void;
-  private _onEnd?: (...args: unknown[]) => void;
+  private _onData?: Listener;
+  private _onEnd?: Listener;
+  private _onKeypress?: Listener;
+  private _rawModeSet = false;
+  private _sawReturnAt = 0;
+  private _crlfDelay: number;
   private _closed = false;
   private _lines: string[] = [];
   terminal: boolean;
@@ -39,25 +67,45 @@ export class Interface extends EventEmitter {
     this._output = opts.output;
     this._input = opts.input;
     this.terminal = opts.terminal ?? false;
+    this._crlfDelay = Math.max(opts.crlfDelay ?? 100, 100);
 
-    // Listen for data on input if provided
-    if (opts.input?.on) {
-      this._onData = (chunk) => {
-        if (this._closed) return;
-        const lines = String(chunk).split(/\r?\n/);
-        for (const line of lines) {
-          if (line !== '') {
-            this._lines.push(line);
-            this.emit('line', line);
-          }
+    const input = opts.input;
+    if (input?.on) {
+      if (this.terminal) {
+        // Terminal mode, like Node: read keypresses and edit `line` in place. clack and
+        // inquirer read `rl.line` / `rl.cursor` from their own keypress handlers, which run
+        // after this one because it was attached first.
+        emitKeypressEvents(input);
+        this._onKeypress = (s, key) => {
+          if (!this._closed) this._ttyWrite(typeof s === 'string' ? s : undefined, (key ?? {}) as Key);
+        };
+        input.on('keypress', this._onKeypress);
+        if (input.isTTY && typeof input.setRawMode === 'function') {
+          input.setRawMode(true);
+          this._rawModeSet = true;
         }
-      };
-      opts.input.on('data', this._onData);
+        input.resume?.();
+      } else {
+        this._onData = (chunk) => {
+          if (this._closed) return;
+          const lines = String(chunk).split(/\r?\n/);
+          for (const line of lines) {
+            if (line !== '') {
+              this._lines.push(line);
+              this.emit('line', line);
+            }
+          }
+        };
+        input.on('data', this._onData);
+      }
 
       this._onEnd = () => {
         if (!this._closed) this.close();
       };
-      opts.input.on('end', this._onEnd);
+      input.on('end', this._onEnd);
+
+      const counted = input as unknown as Record<symbol, number | undefined>;
+      counted[OPEN_READLINE_INTERFACES] = (counted[OPEN_READLINE_INTERFACES] ?? 0) + 1;
     }
   }
 
@@ -75,8 +123,18 @@ export class Interface extends EventEmitter {
     this._output?.write?.(this._prompt);
   }
 
-  write(data: string): void {
+  /**
+   * In terminal mode this is typed input: `write('abc')` inserts text and
+   * `write(null, { ctrl: true, name: 'u' })` runs a key (clack clears and edits its field
+   * this way). Otherwise each line becomes a 'line' event.
+   */
+  write(data: string | null | undefined, key?: Key): void {
     if (this._closed) return;
+    if (this.terminal) {
+      this._ttyWrite(data ?? undefined, key ?? {});
+      return;
+    }
+    if (typeof data !== 'string') return;
     const lines = data.split(/\r?\n/);
     for (const line of lines) {
       if (line !== '') {
@@ -84,6 +142,141 @@ export class Interface extends EventEmitter {
         this.emit('line', line);
       }
     }
+  }
+
+  /** Node's terminal line editing, minus history and completion. */
+  private _ttyWrite(s: string | undefined, key: Key): void {
+    const name = key.name;
+    if (key.ctrl) {
+      switch (name) {
+        case 'c':
+          // Node: hand Ctrl+C to a SIGINT listener, or else this interface is done.
+          if (this.listenerCount('SIGINT') > 0) this.emit('SIGINT');
+          else this.close();
+          return;
+        case 'd':
+          if (this.line.length === 0) this.close();
+          else this._deleteRight();
+          return;
+        case 'h': this._deleteLeft(); return;
+        case 'u': this._setLine(this.line.slice(this.cursor), 0); return;
+        case 'k': this._setLine(this.line.slice(0, this.cursor), this.cursor); return;
+        case 'a': this._moveTo(0); return;
+        case 'e': this._moveTo(this.line.length); return;
+        case 'b': this._moveTo(this.cursor - 1); return;
+        case 'f': this._moveTo(this.cursor + 1); return;
+        case 'w':
+        case 'backspace': this._deleteWordLeft(); return;
+        case 'left': this._moveTo(this._wordLeft()); return;
+        case 'right': this._moveTo(this._wordRight()); return;
+        default: return;
+      }
+    }
+    switch (name) {
+      case 'return':
+      case 'enter': {
+        // A CR LF pair is one Enter.
+        const lf = key.sequence === '\n' || name === 'enter';
+        if (lf && this._sawReturnAt && Date.now() - this._sawReturnAt <= this._crlfDelay) {
+          this._sawReturnAt = 0;
+          return;
+        }
+        this._sawReturnAt = lf ? 0 : Date.now();
+        this._submitLine();
+        return;
+      }
+      case 'backspace': this._deleteLeft(); return;
+      case 'delete': this._deleteRight(); return;
+      case 'left': this._moveTo(this.cursor - 1); return;
+      case 'right': this._moveTo(this.cursor + 1); return;
+      case 'home': this._moveTo(0); return;
+      case 'end': this._moveTo(this.line.length); return;
+      case 'up':
+      case 'down':
+      case 'pageup':
+      case 'pagedown':
+      case 'escape':
+        return;
+    }
+    if (key.meta) {
+      if (name === 'b') this._moveTo(this._wordLeft());
+      else if (name === 'f') this._moveTo(this._wordRight());
+      else if (name === 'backspace') this._deleteWordLeft();
+      return;
+    }
+    if (typeof s === 'string' && s) {
+      // Pasted text may hold line breaks: each one submits the line so far.
+      const parts = s.split(/\r\n|\n|\r/);
+      for (let i = 0; i < parts.length; i++) {
+        if (i > 0) this._submitLine();
+        this._insert(parts[i]);
+      }
+    }
+  }
+
+  private _insert(text: string): void {
+    if (!text) return;
+    const atEnd = this.cursor === this.line.length;
+    this.line = this.line.slice(0, this.cursor) + text + this.line.slice(this.cursor);
+    this.cursor += text.length;
+    if (atEnd) this._output?.write?.(text);
+    else this._refreshLine();
+  }
+
+  private _setLine(line: string, cursor: number): void {
+    this.line = line;
+    this.cursor = Math.max(0, Math.min(cursor, line.length));
+    this._refreshLine();
+  }
+
+  private _moveTo(cursor: number): void {
+    const next = Math.max(0, Math.min(cursor, this.line.length));
+    if (next === this.cursor) return;
+    this.cursor = next;
+    this._refreshLine();
+  }
+
+  private _deleteLeft(): void {
+    if (this.cursor === 0) return;
+    this._setLine(this.line.slice(0, this.cursor - 1) + this.line.slice(this.cursor), this.cursor - 1);
+  }
+
+  private _deleteRight(): void {
+    if (this.cursor >= this.line.length) return;
+    this._setLine(this.line.slice(0, this.cursor) + this.line.slice(this.cursor + 1), this.cursor);
+  }
+
+  private _wordLeft(): number {
+    const before = this.line.slice(0, this.cursor);
+    const m = before.match(/\S+\s*$/);
+    return m ? this.cursor - m[0].length : 0;
+  }
+
+  private _wordRight(): number {
+    const m = this.line.slice(this.cursor).match(/^\s*\S+/);
+    return m ? this.cursor + m[0].length : this.line.length;
+  }
+
+  private _deleteWordLeft(): void {
+    const to = this._wordLeft();
+    this._setLine(this.line.slice(0, to) + this.line.slice(this.cursor), to);
+  }
+
+  /** Echo the edited line (terminal mode, when there is an output to echo to). */
+  private _refreshLine(): void {
+    if (!this._output?.write) return;
+    const prompt = this._prompt.slice(this._prompt.lastIndexOf('\n') + 1);
+    const back = this.line.length - this.cursor;
+    this._output.write(`\r\x1b[K${prompt}${this.line}${back > 0 ? `\x1b[${back}D` : ''}`);
+  }
+
+  private _submitLine(): void {
+    const line = this.line;
+    this.line = '';
+    this.cursor = 0;
+    this._output?.write?.('\r\n');
+    this._lines.push(line);
+    this.emit('line', line);
   }
 
   question(query: string, cb: (answer: string) => void): void;
@@ -103,16 +296,19 @@ export class Interface extends EventEmitter {
   close(): void {
     if (this._closed) return;
     this._closed = true;
-    // Detach from the input and stop its flow, as Node's readline does.
-    // Leaving the stream flowing kept the interactive stdin "active" forever,
-    // so `npx <cli>` runs never went quiescent after the CLI finished — the
-    // node command's completion-wait saw a live stdin and waited until Ctrl+C.
     const input = this._input;
     if (input) {
-      if (this._onData && typeof input.removeListener === 'function') input.removeListener('data', this._onData);
-      if (this._onEnd && typeof input.removeListener === 'function') input.removeListener('end', this._onEnd);
-      const remaining = typeof input.listenerCount === 'function' ? input.listenerCount('data') : 0;
-      if (remaining === 0 && typeof input.pause === 'function') input.pause();
+      if (this._onData) input.removeListener?.('data', this._onData);
+      if (this._onEnd) input.removeListener?.('end', this._onEnd);
+      if (this._onKeypress) input.removeListener?.('keypress', this._onKeypress);
+      if (this._rawModeSet) input.setRawMode?.(false);
+      const counted = input as unknown as Record<symbol, number | undefined>;
+      if (counted[OPEN_READLINE_INTERFACES]) counted[OPEN_READLINE_INTERFACES]! -= 1;
+      // Stop the input's flow, as Node's readline does, once nothing else reads it. The
+      // keypress translator from emitKeypressEvents doesn't count: it outlives every prompt
+      // and only feeds 'keypress' listeners. Leaving the stream flowing kept the
+      // interactive stdin "active", so `npx <cli>` runs never went quiescent.
+      if (!readersLeft(input)) input.pause?.();
     }
     this.emit('close');
   }
@@ -181,6 +377,16 @@ export class Interface extends EventEmitter {
       [Symbol.asyncIterator]() { return this; },
     };
   }
+}
+
+/** Whether anything besides the keypress translator still consumes this input. */
+function readersLeft(input: NonNullable<InterfaceOptions['input']>): boolean {
+  const keypress = typeof input.listenerCount === 'function' ? input.listenerCount('keypress') : 0;
+  if (keypress > 0) return true;
+  if (typeof input.listeners === 'function') {
+    return input.listeners('data').some((fn) => !(fn as { __lifoKeypressSource?: boolean }).__lifoKeypressSource);
+  }
+  return typeof input.listenerCount === 'function' ? input.listenerCount('data') > 0 : false;
 }
 
 export function createInterface(opts: InterfaceOptions): Interface;

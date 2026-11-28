@@ -26,6 +26,22 @@ Memory                             ~60 MB rss
 Numbers vary by machine; treat them as relative, and re-run on the same box to
 catch regressions.
 
+## Vite 8 (Rolldown as wasm)
+
+`vite8-smoke.mjs` installs a Vite 8 + React + TypeScript app in a Node-hosted box, starts the
+dev server, fetches a transformed `.tsx` module and the Rolldown-pre-bundled react-dom, then runs
+`vite build`. It checks the napi-rs `wasm32-wasi` support end to end (Rolldown and Oxc run as
+WebAssembly with real threads). Needs the npm registry; set `VITE8_SMOKE_CACHE=<file.tgz>` to
+reuse the install between runs.
+
+```bash
+pnpm --filter @lifo-sh/core build
+node bench/vite8-smoke.mjs
+```
+
+Example (M-series laptop, Node 24): dev server ready in ~430 ms, `vite build` ~160 ms,
+470-620 MB host rss with the dev server up (more right after a fresh `npm install`).
+
 ## Browser (planned)
 
 A headless-Chrome harness that mirrors the Node metrics inside a page (boot,

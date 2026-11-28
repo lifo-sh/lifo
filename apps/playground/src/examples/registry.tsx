@@ -16,6 +16,11 @@ const FfmpegExample = lazy(() => import('@/examples/ffmpeg'));
 const PythonExample = lazy(() => import('@/examples/python'));
 const ViteReactExample = lazy(() => import('@/examples/vite-react'));
 const ViteReactTsExample = lazy(() => import('@/examples/vite-react-ts'));
+const NextAppExample = lazy(() => import('@/examples/next-app'));
+const CreateNextAppExample = lazy(() => import('@/examples/create-next-app'));
+const StaticAssetsExample = lazy(() => import('@/examples/static-assets'));
+const TanStackStartExample = lazy(() => import('@/examples/tanstack-start'));
+const CreateTanStackExample = lazy(() => import('@/examples/create-tanstack'));
 const CreateViteExample = lazy(() => import('@/examples/create-vite'));
 const TinbaseExample = lazy(() => import('@/examples/tinbase'));
 const LifoNewsExample = lazy(() => import('@/examples/lifo-news'));
@@ -54,9 +59,14 @@ export const examples: ExampleConfig[] = [
   { id: 'npm', label: 'npm', group: 'Examples', Component: NpmExample },
   { id: 'cli', label: 'CLI (Node.js)', group: 'Examples', hideCode: true, Component: CliExample },
   // ── Real-World Stacks ──
+  { id: 'create-vite', label: 'create-vite (1:1)', group: 'Real-World Stacks', subgroup: 'Frontend', Component: CreateViteExample },
   { id: 'vite-react', label: 'Vite with React', group: 'Real-World Stacks', subgroup: 'Frontend', Component: ViteReactExample },
   { id: 'vite-react-ts', label: 'Vite with React + TS', group: 'Real-World Stacks', subgroup: 'Frontend', Component: ViteReactTsExample },
-  { id: 'create-vite', label: 'create-vite (1:1)', group: 'Real-World Stacks', subgroup: 'Frontend', Component: CreateViteExample },
+  { id: 'create-next-app', label: 'create-next-app (1:1)', group: 'Real-World Stacks', subgroup: 'Frontend', Component: CreateNextAppExample },
+  { id: 'next-app', label: 'Next.js (App Router)', group: 'Real-World Stacks', subgroup: 'Frontend', Component: NextAppExample },
+  { id: 'create-tanstack', label: 'TanStack CLI (1:1)', group: 'Real-World Stacks', subgroup: 'Frontend', Component: CreateTanStackExample },
+  { id: 'tanstack-start', label: 'TanStack Start', group: 'Real-World Stacks', subgroup: 'Frontend', Component: TanStackStartExample },
+  { id: 'static-assets', label: 'Static assets (absolute URLs)', group: 'Real-World Stacks', subgroup: 'Frontend', Component: StaticAssetsExample },
   { id: 'express', label: 'Node.js + Express', group: 'Real-World Stacks', subgroup: 'Backend & Data', Component: ExpressExample },
   { id: 'pglite', label: 'Postgres (PGlite)', group: 'Real-World Stacks', subgroup: 'Backend & Data', Component: PgliteExample },
   { id: 'tinbase', label: 'Supabase (tinbase)', group: 'Real-World Stacks', subgroup: 'Fullstack Web', Component: TinbaseExample },

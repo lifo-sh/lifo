@@ -7,13 +7,14 @@ export default function ViteReactTsExample() {
       title="Vite with React + TS"
       subtitle={
         <>
-          The same Vite + React app with TypeScript — <code>npm install &amp;&amp; npm run dev</code>{' '}
-          and edit the <code>.tsx</code> files with full type-checking in the VM.
+          The same Vite 8 + React 19 app with TypeScript: <code>npm install &amp;&amp; npm run dev</code>,{' '}
+          then edit the <code>.tsx</code> files (and type-check with <code>npx tsc</code>) in the box.
         </>
       }
-      files={viteReactAppFiles('/home/user/react-ts-app', true)}
+      files={viteReactAppFiles('/home/user/react-ts-app', true, 8)}
       cwd="/home/user/react-ts-app"
       previewPort={5173}
+      worker
     />
   );
 }

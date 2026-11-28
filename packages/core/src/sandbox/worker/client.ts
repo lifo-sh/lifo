@@ -364,6 +364,54 @@ export class WorkerSandbox {
 		term.focus();
 	}
 
+	/**
+	 * Open another shell on this box in a terminal in the page (an element or selector, or your
+	 * own ITerminal): its own prompt and working directory, sharing the box's files, commands,
+	 * environment and processes. For extra terminal tabs. `exit` (or Ctrl+D at an empty prompt)
+	 * ends it and calls `onExit`; `close()` ends it from here.
+	 */
+	async openShell(
+		target: HTMLElement | string | ITerminal,
+		options: { cwd?: string; env?: Record<string, string>; fontSize?: number; onExit?: (code: number) => void } = {},
+	): Promise<{ close(): void }> {
+		let term: ITerminal;
+		let own: { dispose?: () => void } | null = null;
+		if (isTerminal(target)) term = target;
+		else {
+			const { Terminal } = await import('@lifo-sh/ui');
+			const t = new Terminal(resolveElement(target), { fontSize: options.fontSize });
+			term = t;
+			own = t as { dispose?: () => void };
+		}
+		const { port1, port2 } = new MessageChannel();
+		const channel = new RpcChannel(port1 as unknown as Endpoint);
+		const unwire = wireTerminal(channel, term);
+		let open = true;
+		const end = () => {
+			if (!open) return;
+			open = false;
+			unwire();
+			channel.close();
+			own?.dispose?.();
+		};
+		channel.on('shell.exit', (code: number) => {
+			end();
+			options.onExit?.(code);
+		});
+		const motd = await this.rpc.call<string>(
+			'openShell',
+			[port2, { cols: term.cols, rows: term.rows, cwd: options.cwd, env: options.env }],
+			[port2],
+		);
+		if (own) term.write(motd.replace(/\r\n/g, '\n').replace(/\n/g, '\r\n'));
+		term.focus();
+		return {
+			close: () => {
+				if (open) void channel.call('close').catch(() => {}).finally(end);
+			},
+		};
+	}
+
 	/** Disconnect the terminal (the box keeps running headless). */
 	detach(): void {
 		this.detachTerminal();
