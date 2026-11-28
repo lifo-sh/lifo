@@ -11,6 +11,7 @@ const AgentExample = lazy(() => import('@/examples/agent'));
 const HttpExample = lazy(() => import('@/examples/http'));
 const ExpressExample = lazy(() => import('@/examples/express'));
 const NpmExample = lazy(() => import('@/examples/npm'));
+const BunExample = lazy(() => import('@/examples/bun'));
 const ExplorerExample = lazy(() => import('@/examples/explorer'));
 const FfmpegExample = lazy(() => import('@/examples/ffmpeg'));
 const PythonExample = lazy(() => import('@/examples/python'));
@@ -57,6 +58,7 @@ export const examples: ExampleConfig[] = [
   { id: 'http', label: 'HTTP Server', group: 'Examples', Component: HttpExample },
   { id: 'explorer', label: 'File Explorer', group: 'Examples', Component: ExplorerExample },
   { id: 'npm', label: 'npm', group: 'Examples', Component: NpmExample },
+  { id: 'bun', label: 'Bun', group: 'Examples', Component: BunExample },
   { id: 'cli', label: 'CLI (Node.js)', group: 'Examples', hideCode: true, Component: CliExample },
   // ── Real-World Stacks ──
   { id: 'create-vite', label: 'create-vite (1:1)', group: 'Real-World Stacks', subgroup: 'Frontend', Component: CreateViteExample },

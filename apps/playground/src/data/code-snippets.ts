@@ -408,6 +408,25 @@ const CODE_VITE_REACT_TS = `\
 <span class="code-comment"># preview pane → /_sw/5173/ (service-worker transport)</span>
 <span class="code-fn">sed</span> -i <span class="code-string">'s/React inside Lifo/Hello HMR/'</span> src/App.tsx`;
 
+const CODE_BUN = `\
+<span class="code-comment"># Bun's CLI, mapped onto Lifo's npm and node (real</span>
+<span class="code-comment"># Bun is a native binary with no WebAssembly build).</span>
+
+<span class="code-fn">bun</span> greet.ts           <span class="code-comment"># TypeScript runs directly, .env loaded</span>
+<span class="code-fn">bun</span> run greet          <span class="code-comment"># a package.json script</span>
+
+<span class="code-comment"># A real app, 1:1 with your machine. create-vite sees</span>
+<span class="code-comment"># Bun's user agent, so it suggests bun commands:</span>
+<span class="code-fn">cd</span> ~
+<span class="code-fn">bun</span> create vite my-app --template react-ts
+<span class="code-fn">cd</span> my-app
+<span class="code-fn">bun</span> install
+<span class="code-fn">bun</span> dev                <span class="code-comment"># Vite 8 on :5173, in the preview</span>
+
+<span class="code-comment"># Also: bun add -d / remove / update, bunx &lt;pkg&gt;,</span>
+<span class="code-comment"># bun init, bun create next-app (it runs bun install).</span>
+<span class="code-comment"># Not yet: Bun.serve, bun:sqlite, bun test, bun build.</span>`;
+
 const CODE_CREATE_VITE = `\
 <span class="code-comment"># Prove it's the real Vite: scaffold an untouched app</span>
 <span class="code-comment"># with create-vite and run it 1:1, its own vite.config,</span>
@@ -759,6 +778,7 @@ export const codeSnippets: Record<string, string> = {
 	'build-pkg': CODE_BUILD_PKG,
 	'vite-react': CODE_VITE_REACT,
 	'vite-react-ts': CODE_VITE_REACT_TS,
+	bun: CODE_BUN,
 	'create-vite': CODE_CREATE_VITE,
 	'create-next-app': CODE_CREATE_NEXT_APP,
 	'next-app': CODE_NEXT_APP,
