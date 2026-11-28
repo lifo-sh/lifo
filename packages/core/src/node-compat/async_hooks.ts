@@ -1,71 +1,63 @@
-// Minimal `async_hooks` shim. There is no real async-context tracking in the
-// browser, so AsyncLocalStorage propagates its store synchronously within
-// run()/enterWith(); context is not carried across independent await points.
-// This is sufficient for consumers like undici that read the store defensively.
+// `async_hooks`: AsyncLocalStorage and AsyncResource on Lifo's async context (async-context.ts),
+// which carries the active stores across await, promise callbacks, timers and nextTick.
+import { activateAsyncContext, bindToFrame, currentFrame, runInFrame, setFrame, type Frame } from './async-context.js';
+
+const withStore = (frame: Frame, key: object, store: unknown): Frame => new Map(frame).set(key, store);
+const withoutStore = (frame: Frame, key: object): Frame => {
+  if (!frame?.has(key)) return frame;
+  const next = new Map(frame);
+  next.delete(key);
+  return next.size > 0 ? next : undefined;
+};
 
 export class AsyncLocalStorage<T = unknown> {
-  private _store: T | undefined = undefined;
-  private _hasStore = false;
-
   run<R>(store: T, callback: (...args: unknown[]) => R, ...args: unknown[]): R {
-    const prevStore = this._store;
-    const prevHas = this._hasStore;
-    this._store = store;
-    this._hasStore = true;
-    try {
-      return callback(...args);
-    } finally {
-      this._store = prevStore;
-      this._hasStore = prevHas;
-    }
+    activateAsyncContext();
+    return runInFrame(withStore(currentFrame(), this, store), callback, undefined, args);
   }
 
   getStore(): T | undefined {
-    return this._hasStore ? this._store : undefined;
+    return currentFrame()?.get(this) as T | undefined;
   }
 
+  /** The store for the rest of this synchronous run and the async work it starts. */
   enterWith(store: T): void {
-    this._store = store;
-    this._hasStore = true;
+    activateAsyncContext();
+    setFrame(withStore(currentFrame(), this, store));
   }
 
   exit<R>(callback: (...args: unknown[]) => R, ...args: unknown[]): R {
-    const prevStore = this._store;
-    const prevHas = this._hasStore;
-    this._store = undefined;
-    this._hasStore = false;
-    try {
-      return callback(...args);
-    } finally {
-      this._store = prevStore;
-      this._hasStore = prevHas;
-    }
+    return runInFrame(withoutStore(currentFrame(), this), callback, undefined, args);
   }
 
   disable(): void {
-    this._store = undefined;
-    this._hasStore = false;
+    setFrame(withoutStore(currentFrame(), this));
   }
 
+  /** `fn`, run in the context active now whenever it's called. */
   static bind<F extends (...args: unknown[]) => unknown>(fn: F): F {
-    return fn;
+    return bindToFrame(fn);
   }
 
+  /** A function that runs any function in the context active now. */
   static snapshot(): <R>(fn: (...args: unknown[]) => R, ...args: unknown[]) => R {
-    return (fn, ...args) => fn(...args);
+    const frame = currentFrame();
+    return (fn, ...args) => runInFrame(frame, fn, undefined, args);
   }
 }
 
 export class AsyncResource {
   readonly type: string;
+  private readonly frame: Frame = currentFrame();
   constructor(type: string, _opts?: unknown) {
     this.type = type;
   }
   runInAsyncScope<R>(fn: (...args: unknown[]) => R, thisArg?: unknown, ...args: unknown[]): R {
-    return fn.apply(thisArg, args);
+    return runInFrame(this.frame, fn, thisArg, args);
   }
   bind<F extends (...args: unknown[]) => unknown>(fn: F): F {
-    return fn;
+    const bound = (...args: unknown[]) => this.runInAsyncScope(fn, undefined, ...args);
+    return bound as F;
   }
   emitDestroy(): this {
     return this;
@@ -76,8 +68,8 @@ export class AsyncResource {
   triggerAsyncId(): number {
     return 0;
   }
-  static bind<F extends (...args: unknown[]) => unknown>(fn: F): F {
-    return fn;
+  static bind<F extends (...args: unknown[]) => unknown>(fn: F, type = 'bound-anonymous-fn'): F {
+    return new AsyncResource(type).bind(fn);
   }
 }
 

@@ -58,6 +58,9 @@ export class ExitSignal {
 /** Shell pids for `$$`: each interpreter gets its own, stable for its lifetime. */
 let nextShellPid = 1000;
 
+/** A command named by its path in a system bin directory: /bin/x, /usr/bin/x, /usr/local/sbin/x. */
+const SYSTEM_BIN = /^\/(?:usr\/(?:local\/)?)?s?bin\/([^/]+)$/;
+
 export type BuiltinFn = (
   args: string[],
   stdout: CommandOutputStream,
@@ -844,7 +847,14 @@ export class Interpreter {
       ? [...redirect.runAs, ...expandedArgs.slice(1)]
       : expandedArgs;
 
-    const [name, ...args] = effectiveArgs;
+    const [given, ...args] = effectiveArgs;
+    // `/usr/bin/node`, `/bin/sh`, `/usr/bin/env`: a box's commands have no files in the system
+    // bin directories, so a path there runs the command of that name. Programs spawn
+    // process.execPath (/usr/bin/node) and scripts name /usr/bin/env.
+    const systemBin = SYSTEM_BIN.exec(given)?.[1];
+    const name = systemBin && (this.config.builtins.has(systemBin) || this.config.registry.has(systemBin))
+      ? systemBin
+      : given;
 
     // Check alias expansion
     const aliases = this.config.aliases;
@@ -980,6 +990,10 @@ export class Interpreter {
                 : undefined,
               executeCapture: (captureInput, captureOpts) => this.executeCapture(captureInput, captureOpts),
               executeCaptureResult: (captureInput, captureOpts) => this.executeCaptureResult(captureInput, captureOpts),
+              runInherited: (childInput, childOpts) => this.executeInherited(childInput, terminalStdin, {
+                stdout, stderr, stdin, abortSignal: abortController.signal,
+                scope: { cwd: childOpts?.cwd ?? cwd },
+              }),
             };
 
             // Register process BEFORE executing so ps can see itself
@@ -1154,6 +1168,22 @@ export class Interpreter {
     }
 
     return { stdout: captured, stderr: capturedErr, code };
+  }
+
+  /**
+   * Run a command line for a running command, on that command's streams, terminal input, abort
+   * signal and working directory (CommandContext.runInherited). `exit` ends only this line.
+   */
+  private async executeInherited(input: string, terminalStdin: TerminalStdin | undefined, defaults: StreamDefaults): Promise<number> {
+    this.scriptDepth++;
+    try {
+      return await this.executeLine(input, terminalStdin, defaults);
+    } catch (e) {
+      if (e instanceof ExitSignal) return e.exitCode;
+      throw e;
+    } finally {
+      this.scriptDepth--;
+    }
   }
 
   private createExpandContext(cwd: string = this.config.getCwd()): ExpandContext {

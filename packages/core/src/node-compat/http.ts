@@ -6,6 +6,35 @@ import { makeProxyingFetch } from './proxy-fetch.js';
 import type { ActivityTracker } from './activity.js';
 import { dispatchRequest, LIFO_HEADER } from '../kernel/network/dispatch.js';
 
+type HeaderValue = string | number | string[];
+/** What Node's writeHead/setHeaders take: an object, a flat [name, value, …] list, [name, value] pairs, a Headers or a Map. */
+type HeaderInput = Record<string, HeaderValue> | Array<string | string[]> | Headers | Map<string, HeaderValue>;
+
+/** The headers as [name, value] entries; a name given more than once collects its values. */
+function headerEntries(input: HeaderInput): Array<[string, string | string[]]> {
+  const out = new Map<string, string | string[]>();
+  const add = (name: string, value: unknown) => {
+    const v = Array.isArray(value) ? value.map(String) : String(value);
+    const key = name.toLowerCase();
+    const prev = out.get(key);
+    if (prev === undefined) out.set(key, v);
+    else out.set(key, ([] as string[]).concat(prev, v));
+  };
+  if (Array.isArray(input)) {
+    if (input.length > 0 && Array.isArray(input[0])) for (const pair of input as string[][]) add(pair[0], pair[1]);
+    else for (let i = 0; i + 1 < input.length; i += 2) add(String(input[i]), input[i + 1]);
+  } else if (typeof Headers !== 'undefined' && input instanceof Headers) {
+    const cookies = typeof input.getSetCookie === 'function' ? input.getSetCookie() : [];
+    input.forEach((value, name) => { if (name !== 'set-cookie' || cookies.length === 0) add(name, value); });
+    if (cookies.length > 0) out.set('set-cookie', cookies);
+  } else if (input instanceof Map) {
+    for (const [name, value] of input) add(name, value);
+  } else {
+    for (const [name, value] of Object.entries(input)) if (value !== undefined) add(name, value);
+  }
+  return [...out];
+}
+
 /**
  * @deprecated `_donePromise` now lives on `VirtualResponse` itself, so this
  * alias adds nothing. Kept as a re-export because it was public API; use
@@ -391,9 +420,9 @@ class ServerResponse extends EventEmitter {
     this.socket = sock;
   }
 
-  writeHead(statusCode: number, reasonOrHeaders?: string | Record<string, string | string[]>, headers?: Record<string, string | string[]>): this {
+  writeHead(statusCode: number, reasonOrHeaders?: string | HeaderInput, headers?: HeaderInput): this {
     this.statusCode = statusCode;
-    let h: Record<string, string | string[]> | undefined;
+    let h: HeaderInput | undefined;
     if (typeof reasonOrHeaders === 'string') {
       this.statusMessage = reasonOrHeaders;
       h = headers;
@@ -401,11 +430,15 @@ class ServerResponse extends EventEmitter {
       h = reasonOrHeaders;
     }
     if (h) {
-      for (const [k, v] of Object.entries(h)) {
-        this._headers[k.toLowerCase()] = v;
-      }
+      for (const [k, v] of headerEntries(h)) this._headers[k.toLowerCase()] = v;
     }
     this.headersSent = true;
+    return this;
+  }
+
+  /** Node 18.15+: several headers at once, from a Headers or a Map (srvx sends Start's this way). */
+  setHeaders(headers: HeaderInput): this {
+    for (const [k, v] of headerEntries(headers)) this._headers[k.toLowerCase()] = v;
     return this;
   }
 
@@ -451,9 +484,19 @@ class ServerResponse extends EventEmitter {
     this.headersSent = true;
   }
 
-  write(data: string | Uint8Array): boolean {
-    this._chunks.push(typeof data === 'string' ? this._enc.encode(data) : data);
+  /** Node's write(chunk[, encoding][, callback]): the callback runs once the chunk is taken. */
+  write(data: string | Uint8Array, encodingOrCb?: string | ((err?: Error | null) => void), cb?: (err?: Error | null) => void): boolean {
+    const encoding = typeof encodingOrCb === 'string' ? encodingOrCb : undefined;
+    const done = typeof encodingOrCb === 'function' ? encodingOrCb : cb;
+    if (!this.headersSent) this._implicitHeader();
+    this._chunks.push(typeof data === 'string' ? (encoding && encoding !== 'utf8' && encoding !== 'utf-8' ? Buffer.from(data, encoding as BufferEncoding) : this._enc.encode(data)) : data);
+    if (done) queueMicrotask(() => done(null));
     return true;
+  }
+
+  /** Node-internal: send the head with the current status (middleware such as `compression` calls it). */
+  _implicitHeader(): void {
+    this.writeHead(this.statusCode);
   }
 
   private _enc = new TextEncoder();
@@ -601,6 +644,9 @@ class Server extends EventEmitter {
       const msg = new IncomingMessage(0, '', req.headers);
       msg.method = req.method;
       msg.url = req.url;
+      // As in Node, the request's socket is the upgraded one (Next.js hands req.socket, not the
+      // socket argument, to its WebSocket server for the HMR connection).
+      Object.assign(msg, { socket, connection: socket });
       this.emit('upgrade', msg, socket, head);
       return true;
     });

@@ -1,34 +1,133 @@
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
+type Encoding = 'utf8' | 'utf16le' | 'latin1' | 'ascii' | 'base64' | 'base64url' | 'hex';
+
+/** Node's encoding names and aliases; null for one Node doesn't know. */
+function normalizeEncoding(enc: unknown): Encoding | null {
+  if (enc === undefined || enc === null) return 'utf8';
+  switch (String(enc).toLowerCase()) {
+    case 'utf8': case 'utf-8': return 'utf8';
+    case 'utf16le': case 'utf-16le': case 'ucs2': case 'ucs-2': return 'utf16le';
+    case 'latin1': case 'binary': return 'latin1';
+    case 'ascii': return 'ascii';
+    case 'base64': return 'base64';
+    case 'base64url': return 'base64url';
+    case 'hex': return 'hex';
+    default: return null;
+  }
+}
+
+function base64Bytes(str: string): Uint8Array {
+  // Node accepts both alphabets and skips what isn't base64; atob does neither.
+  let clean = str.replace(/-/g, '+').replace(/_/g, '/').replace(/[^A-Za-z0-9+/]/g, '');
+  if (clean.length % 4 === 1) clean = clean.slice(0, -1);
+  while (clean.length % 4 !== 0) clean += '=';
+  const binary = atob(clean);
+  const out = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
+  return out;
+}
+
+/** A string's bytes in `enc`, as Node encodes them. */
+function encodeString(str: string, enc: Encoding): Uint8Array {
+  switch (enc) {
+    case 'utf16le': {
+      const out = new Uint8Array(str.length * 2);
+      for (let i = 0; i < str.length; i++) {
+        const c = str.charCodeAt(i);
+        out[i * 2] = c & 0xff;
+        out[i * 2 + 1] = c >> 8;
+      }
+      return out;
+    }
+    case 'latin1':
+    case 'ascii': {
+      const out = new Uint8Array(str.length);
+      for (let i = 0; i < str.length; i++) out[i] = str.charCodeAt(i) & 0xff;
+      return out;
+    }
+    case 'base64':
+    case 'base64url':
+      return base64Bytes(str);
+    case 'hex': {
+      const n = Math.floor(str.length / 2);
+      const out = new Uint8Array(n);
+      for (let i = 0; i < n; i++) {
+        const byte = parseInt(str.substring(i * 2, i * 2 + 2), 16);
+        if (Number.isNaN(byte)) return out.subarray(0, i); // Node stops at the first bad pair
+        out[i] = byte;
+      }
+      return out;
+    }
+    default:
+      return encoder.encode(str);
+  }
+}
+
+/** Bytes as a string in `enc`, as Node decodes them. */
+function decodeBytes(bytes: Uint8Array, enc: Encoding): string {
+  switch (enc) {
+    case 'utf16le': {
+      let out = '';
+      for (let i = 0; i + 1 < bytes.length; i += 2) out += String.fromCharCode(bytes[i] | (bytes[i + 1] << 8));
+      return out;
+    }
+    case 'latin1': {
+      let out = '';
+      for (let i = 0; i < bytes.length; i++) out += String.fromCharCode(bytes[i]);
+      return out;
+    }
+    case 'ascii': {
+      let out = '';
+      for (let i = 0; i < bytes.length; i++) out += String.fromCharCode(bytes[i] & 0x7f);
+      return out;
+    }
+    case 'base64':
+    case 'base64url': {
+      let binary = '';
+      for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+      const b64 = btoa(binary);
+      return enc === 'base64' ? b64 : b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    }
+    case 'hex': {
+      let hex = '';
+      for (let i = 0; i < bytes.length; i++) hex += bytes[i].toString(16).padStart(2, '0');
+      return hex;
+    }
+    default:
+      return decoder.decode(bytes);
+  }
+}
+
+function unknownEncoding(enc: unknown): TypeError {
+  const err = new TypeError(`Unknown encoding: ${String(enc)}`) as TypeError & { code: string };
+  err.code = 'ERR_UNKNOWN_ENCODING';
+  return err;
+}
+
+const dataView = (b: Uint8Array) => new DataView(b.buffer, b.byteOffset, b.byteLength);
+/** Two's complement of a `byteLength`-byte unsigned value, and back. */
+const signed = (v: number, byteLength: number) => (v >= 2 ** (8 * byteLength - 1) ? v - 2 ** (8 * byteLength) : v);
+const unsigned = (v: number, byteLength: number) => (v < 0 ? v + 2 ** (8 * byteLength) : v);
+
 export class Buffer extends Uint8Array {
   // Use overloaded signatures to satisfy Uint8Array's static from
-  static from(value: string | Uint8Array | number[] | ArrayBuffer | ArrayLike<number> | Iterable<number>, encodingOrMapFn?: string | ((v: number, k: number) => number), _thisArg?: unknown): Buffer {
+  static from(value: string | Uint8Array | number[] | ArrayBuffer | SharedArrayBuffer | ArrayLike<number> | Iterable<number>, encodingOrMapFn?: string | number | ((v: number, k: number) => number), _thisArg?: unknown): Buffer {
     if (typeof value === 'string') {
-      const encoding = encodingOrMapFn as string | undefined;
-      if (encoding === 'base64') {
-        const binary = atob(value);
-        const buf = new Buffer(binary.length);
-        for (let i = 0; i < binary.length; i++) buf[i] = binary.charCodeAt(i);
-        return buf;
-      }
-      if (encoding === 'hex') {
-        const buf = new Buffer(value.length / 2);
-        for (let i = 0; i < value.length; i += 2) {
-          buf[i / 2] = parseInt(value.substring(i, i + 2), 16);
-        }
-        return buf;
-      }
-      // utf-8 default
-      const bytes = encoder.encode(value);
+      const enc = normalizeEncoding(encodingOrMapFn);
+      if (!enc) throw unknownEncoding(encodingOrMapFn);
+      const bytes = encodeString(value, enc);
       const buf = new Buffer(bytes.length);
       buf.set(bytes);
       return buf;
     }
-    if (value instanceof ArrayBuffer) {
-      const buf = new Buffer(value.byteLength);
-      buf.set(new Uint8Array(value));
-      return buf;
+    if (value instanceof ArrayBuffer || (typeof SharedArrayBuffer !== 'undefined' && value instanceof SharedArrayBuffer)) {
+      // Node: a view sharing the memory, not a copy. es-module-lexer (in Vite) writes its
+      // input into wasm memory through Buffer.from(memory.buffer, offset, length).write(...).
+      const byteOffset = typeof encodingOrMapFn === 'number' ? encodingOrMapFn : 0;
+      const length = typeof _thisArg === 'number' ? _thisArg : value.byteLength - byteOffset;
+      return new Buffer(value as ArrayBuffer, byteOffset, length);
     }
     if (value instanceof Uint8Array) {
       const buf = new Buffer(value.length);
@@ -77,60 +176,59 @@ export class Buffer extends Uint8Array {
     return result;
   }
 
-  static byteLength(str: string, encoding?: string): number {
-    if (encoding === 'base64') {
-      // Remove padding and compute
-      const cleaned = str.replace(/[^A-Za-z0-9+/]/g, '');
+  static byteLength(str: string | ArrayBufferView | ArrayBuffer, encoding?: string): number {
+    if (typeof str !== 'string') return str.byteLength;
+    if (encoding === 'base64' || encoding === 'base64url') {
+      const cleaned = str.replace(/[^A-Za-z0-9+/_-]/g, '');
       return Math.floor(cleaned.length * 3 / 4);
     }
-    if (encoding === 'hex') {
-      return str.length / 2;
-    }
-    return encoder.encode(str).length;
+    return encodeString(str, normalizeEncoding(encoding) ?? 'utf8').length;
   }
 
   toString(encoding?: string, start?: number, end?: number): string {
+    const enc = normalizeEncoding(encoding);
+    if (!enc) throw unknownEncoding(encoding);
     const slice = (start !== undefined || end !== undefined)
       ? this.subarray(start ?? 0, end ?? this.length)
       : this;
-    if (encoding === 'base64') {
-      let binary = '';
-      for (let i = 0; i < slice.length; i++) binary += String.fromCharCode(slice[i]);
-      return btoa(binary);
-    }
-    if (encoding === 'hex') {
-      let hex = '';
-      for (let i = 0; i < slice.length; i++) hex += slice[i].toString(16).padStart(2, '0');
-      return hex;
-    }
-    // utf-8 default
-    return decoder.decode(slice);
+    return decodeBytes(slice, enc);
   }
 
-  write(str: string, offset?: number, length?: number, encoding?: string): number {
-    const start = offset ?? 0;
-    const maxLen = length ?? this.length - start;
-
-    let bytes: Uint8Array;
-    if (encoding === 'hex') {
-      // Each pair of hex chars = 1 byte
-      const byteLen = Math.min(Math.floor(str.length / 2), maxLen);
-      bytes = new Uint8Array(byteLen);
-      for (let i = 0; i < byteLen; i++) {
-        bytes[i] = parseInt(str.substring(i * 2, i * 2 + 2), 16);
-      }
-    } else if (encoding === 'base64') {
-      const binary = atob(str);
-      const byteLen = Math.min(binary.length, maxLen);
-      bytes = new Uint8Array(byteLen);
-      for (let i = 0; i < byteLen; i++) bytes[i] = binary.charCodeAt(i);
+  /** Node's forms: write(string[, offset[, length]][, encoding]). */
+  write(str: string, offsetOrEncoding?: number | string, lengthOrEncoding?: number | string, encodingArg?: string): number {
+    let offset = 0;
+    let length: number | undefined;
+    let encoding: unknown = encodingArg;
+    if (typeof offsetOrEncoding === 'string') {
+      encoding = offsetOrEncoding;
     } else {
-      bytes = encoder.encode(str);
+      offset = offsetOrEncoding ?? 0;
+      if (typeof lengthOrEncoding === 'string') encoding = lengthOrEncoding;
+      else length = lengthOrEncoding;
     }
-
-    const toWrite = Math.min(bytes.length, maxLen);
-    this.set(bytes.subarray(0, toWrite), start);
-    return toWrite;
+    const enc = normalizeEncoding(encoding);
+    if (!enc) throw unknownEncoding(encoding);
+    const room = Math.max(0, this.length - offset);
+    const maxLen = Math.min(length ?? room, room);
+    let bytes = encodeString(str, enc);
+    if (bytes.length > maxLen) {
+      bytes = bytes.subarray(0, maxLen);
+      // Node doesn't write half a character.
+      if (enc === 'utf16le') bytes = bytes.subarray(0, maxLen - (maxLen % 2));
+      else if (enc === 'utf8') {
+        let end = maxLen;
+        let i = end - 1;
+        while (i >= 0 && (bytes[i] & 0xc0) === 0x80) i--; // back to the last lead byte
+        if (i >= 0) {
+          const lead = bytes[i];
+          const need = lead >= 0xf0 ? 4 : lead >= 0xe0 ? 3 : lead >= 0xc0 ? 2 : 1;
+          if (i + need > end) end = i;
+        }
+        bytes = bytes.subarray(0, end);
+      }
+    }
+    this.set(bytes, offset);
+    return bytes.length;
   }
 
   toJSON(): { type: 'Buffer'; data: number[] } {
@@ -363,6 +461,31 @@ export class Buffer extends Uint8Array {
     return offset + 4;
   }
 
+  // ─── Floats, doubles, 64-bit and signed variable-width integers ───
+  // (webpack's cache serializer writes doubles; out of range throws a RangeError, as in Node)
+
+  readFloatLE(offset = 0): number { return dataView(this).getFloat32(offset, true); }
+  readFloatBE(offset = 0): number { return dataView(this).getFloat32(offset, false); }
+  readDoubleLE(offset = 0): number { return dataView(this).getFloat64(offset, true); }
+  readDoubleBE(offset = 0): number { return dataView(this).getFloat64(offset, false); }
+  writeFloatLE(value: number, offset = 0): number { dataView(this).setFloat32(offset, value, true); return offset + 4; }
+  writeFloatBE(value: number, offset = 0): number { dataView(this).setFloat32(offset, value, false); return offset + 4; }
+  writeDoubleLE(value: number, offset = 0): number { dataView(this).setFloat64(offset, value, true); return offset + 8; }
+  writeDoubleBE(value: number, offset = 0): number { dataView(this).setFloat64(offset, value, false); return offset + 8; }
+  readBigInt64LE(offset = 0): bigint { return dataView(this).getBigInt64(offset, true); }
+  readBigInt64BE(offset = 0): bigint { return dataView(this).getBigInt64(offset, false); }
+  readBigUInt64LE(offset = 0): bigint { return dataView(this).getBigUint64(offset, true); }
+  readBigUInt64BE(offset = 0): bigint { return dataView(this).getBigUint64(offset, false); }
+  writeBigInt64LE(value: bigint, offset = 0): number { dataView(this).setBigInt64(offset, value, true); return offset + 8; }
+  writeBigInt64BE(value: bigint, offset = 0): number { dataView(this).setBigInt64(offset, value, false); return offset + 8; }
+  writeBigUInt64LE(value: bigint, offset = 0): number { dataView(this).setBigUint64(offset, value, true); return offset + 8; }
+  writeBigUInt64BE(value: bigint, offset = 0): number { dataView(this).setBigUint64(offset, value, false); return offset + 8; }
+
+  readIntLE(offset = 0, byteLength = 1): number { return signed(this.readUIntLE(offset, byteLength), byteLength); }
+  readIntBE(offset = 0, byteLength = 1): number { return signed(this.readUIntBE(offset, byteLength), byteLength); }
+  writeIntLE(value: number, offset = 0, byteLength = 1): number { return this.writeUIntLE(unsigned(value, byteLength), offset, byteLength); }
+  writeIntBE(value: number, offset = 0, byteLength = 1): number { return this.writeUIntBE(unsigned(value, byteLength), offset, byteLength); }
+
   // ─── Search methods ───
 
   indexOf(value: number | Uint8Array | string, byteOffset?: number, encoding?: string): number {
@@ -412,6 +535,16 @@ export class Buffer extends Uint8Array {
 
   includes(value: number | Uint8Array | string, byteOffset?: number, encoding?: string): boolean {
     return this.indexOf(value, byteOffset, encoding) !== -1;
+  }
+}
+
+// ─── Node's lowercase "Uint" aliases ───
+// readUint8, writeUint32LE, readBigUint64LE, ...: the same methods under Node's other spelling.
+for (const name of Object.getOwnPropertyNames(Buffer.prototype)) {
+  if (!/^(read|write)(Big)?UInt/.test(name)) continue;
+  const alias = name.replace('UInt', 'Uint');
+  if (!(alias in Buffer.prototype)) {
+    Object.defineProperty(Buffer.prototype, alias, { value: (Buffer.prototype as unknown as Record<string, unknown>)[name], writable: true, configurable: true });
   }
 }
 

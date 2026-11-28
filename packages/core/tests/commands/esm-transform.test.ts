@@ -11,6 +11,19 @@ function noEsmSyntax(out: string): boolean {
 }
 
 describe('transformEsmToCjs', () => {
+  it('re-exports a namespace under one name (export * as X from)', () => {
+    // yoctocolors' index.js, which execa loads.
+    const out = transformEsmToCjs(`export * from './base.js';\nexport * as default from './base.js';\nexport * as 'odd name' from "./x.js";`);
+    expect(out).not.toMatch(/export\s*\*/);
+    const exports: Record<string, unknown> = {};
+    const base = { red: () => 'r' };
+    const x = { y: 1 };
+    new Function('exports', 'require', out)(exports, (m: string) => (m === './base.js' ? base : x));
+    expect(exports.red).toBe(base.red);
+    expect(exports.default).toBe(base);
+    expect(exports['odd name']).toBe(x);
+  });
+
   it('transforms a plain default + named imports', () => {
     const out = transformEsmToCjs(`import fs from "fs/promises";\nimport { a, b as c } from "m";\nexport const x = 1;`);
     expect(out).toContain('require("fs/promises")');
@@ -85,4 +98,39 @@ describe('transformEsmToCjs', () => {
     expect(out).toContain('require("y")');
     expect(noEsmSyntax(out)).toBe(true);
   });
+});
+
+describe('transformEsmToCjs: wrapper-parameter names (Vite 8, oxc-parser)', () => {
+	it('leaves a nested `let exports` alone instead of hoisting it as var', () => {
+		// Vite 8's module-runner: a block-scoped `exports` inside an `if`, and another one in
+		// the enclosing method. As `var` the inner one clashed with the outer `let`.
+		const src = [
+			'export class Runner {',
+			'\tasync run(r) {',
+			'\t\tif (r.ext) {',
+			'\t\t\tlet exports = await r.load();',
+			'\t\t\treturn exports;',
+			'\t\t}',
+			'\t\tlet meta = 1, exports = Object.create(null);',
+			'\t\treturn exports;',
+			'\t}',
+			'}',
+		].join('\n');
+		const out = transformEsmToCjs(src);
+		expect(out).toContain('let exports = await r.load();');
+		expect(() => new Function('exports', 'require', 'module', out)).not.toThrow();
+	});
+
+	it('still turns a module-level declaration of a wrapper name into var', () => {
+		const out = transformEsmToCjs('const __dirname = "/x";\nexport const a = __dirname;');
+		expect(out).toContain('var __dirname = "/x"');
+		expect(() => new Function('exports', 'require', 'module', '__filename', '__dirname', out)).not.toThrow();
+	});
+
+	it('handles a trailing comma in `export { … } from`', () => {
+		const out = transformEsmToCjs('export {\n  ParseResult,\n  Severity,\n} from "./bindings.js";');
+		expect(out).not.toContain("exports, ''");
+		expect(out).toContain("'Severity'");
+		expect(() => new Function('exports', 'require', 'module', out)).not.toThrow();
+	});
 });

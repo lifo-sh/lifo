@@ -86,13 +86,52 @@ function formatValue(value: unknown, depth: number): string {
   return String(value);
 }
 
+const PROMISIFY_CUSTOM = Symbol.for('nodejs.util.promisify.custom');
+
+/** Node's: a function's own promise form (`fn[util.promisify.custom]`) when it has one. */
 export function promisify<T>(fn: (...args: [...unknown[], (err: unknown, result: T) => void]) => void): (...args: unknown[]) => Promise<T> {
+  // A function a box lacks (undefined) still gives a promise function, failing only if called.
+  const custom = fn == null ? undefined : (fn as unknown as Record<symbol, unknown>)[PROMISIFY_CUSTOM];
+  if (typeof custom === 'function') return custom as (...args: unknown[]) => Promise<T>;
   return (...args: unknown[]) => new Promise<T>((resolve, reject) => {
     fn(...args, (err: unknown, result: T) => {
       if (err) reject(err);
       else resolve(result);
     });
   });
+}
+promisify.custom = PROMISIFY_CUSTOM;
+
+/** Node's util.aborted(signal, resource): a promise that settles when the signal aborts. */
+export function aborted(signal: AbortSignal, _resource: unknown): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) resolve();
+    else signal.addEventListener('abort', () => resolve(), { once: true });
+  });
+}
+
+/**
+ * Node's: an async function as one that takes a callback last. The callback runs on a later
+ * tick; a falsy rejection reason becomes an Error carrying it as `reason`, as in Node.
+ */
+export function callbackify(original: (...args: unknown[]) => Promise<unknown>): (...args: unknown[]) => void {
+  if (typeof original !== 'function') {
+    throw Object.assign(new TypeError('The "original" argument must be of type function'), { code: 'ERR_INVALID_ARG_TYPE' });
+  }
+  return function (this: unknown, ...args: unknown[]) {
+    const callback = args.pop();
+    if (typeof callback !== 'function') {
+      throw Object.assign(new TypeError('The last argument must be of type function'), { code: 'ERR_INVALID_ARG_TYPE' });
+    }
+    const later = (fn: () => void) => queueMicrotask(fn);
+    Promise.resolve(original.apply(this, args)).then(
+      (value) => later(() => callback(null, value)),
+      (reason) => {
+        const err = reason ? reason : Object.assign(new Error('Promise was rejected with a falsy value'), { code: 'ERR_FALSY_VALUE_REJECTION', reason });
+        later(() => callback(err));
+      },
+    );
+  };
 }
 
 export function inherits(ctor: { prototype: object; super_?: unknown }, superCtor: { prototype: object } | null | undefined): void {
@@ -217,7 +256,180 @@ interface DebugLogger { (...args: unknown[]): void; enabled: boolean; }
 
 export const debug = debuglog;
 
+/**
+ * Structural deep equality with Node's semantics: `strict` compares primitives with ===
+ * (NaN equals NaN) and requires matching prototypes, as assert.deepStrictEqual does.
+ */
+export function deepEqual(a: unknown, b: unknown, strict: boolean, seen: WeakMap<object, unknown> = new WeakMap()): boolean {
+  if (a === b) return true;
+  // NaN
+  if (typeof a === 'number' && typeof b === 'number' && Number.isNaN(a) && Number.isNaN(b)) return true;
+  if (a === null || b === null || typeof a !== 'object' || typeof b !== 'object') {
+    // primitives / mixed
+    return strict ? a === b : a == b; // eslint-disable-line eqeqeq
+  }
+  const oa = a as Record<string, unknown> & object;
+  const ob = b as Record<string, unknown> & object;
+  if (strict && Object.getPrototypeOf(oa) !== Object.getPrototypeOf(ob)) return false;
+  // cycle guard
+  const prev = seen.get(oa);
+  if (prev === ob) return true;
+  seen.set(oa, ob);
+  if (a instanceof Date || b instanceof Date) {
+    return a instanceof Date && b instanceof Date && a.getTime() === b.getTime();
+  }
+  if (a instanceof RegExp || b instanceof RegExp) {
+    return a instanceof RegExp && b instanceof RegExp && a.source === b.source && a.flags === b.flags;
+  }
+  const aArr = Array.isArray(a), bArr = Array.isArray(b);
+  if (aArr !== bArr) return false;
+  if (aArr && bArr) {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (!deepEqual(a[i], b[i], strict, seen)) return false;
+    return true;
+  }
+  if (a instanceof Map || b instanceof Map) {
+    if (!(a instanceof Map && b instanceof Map) || a.size !== b.size) return false;
+    for (const [k, v] of a) { if (!b.has(k) || !deepEqual(v, b.get(k), strict, seen)) return false; }
+    return true;
+  }
+  if (a instanceof Set || b instanceof Set) {
+    if (!(a instanceof Set && b instanceof Set) || a.size !== b.size) return false;
+    for (const v of a) if (!b.has(v)) return false;
+    return true;
+  }
+  const ka = Object.keys(oa), kb = Object.keys(ob);
+  if (ka.length !== kb.length) return false;
+  for (const k of ka) {
+    if (!Object.prototype.hasOwnProperty.call(ob, k)) return false;
+    if (!deepEqual(oa[k], ob[k], strict, seen)) return false;
+  }
+  return true;
+}
+
+/** util.isDeepStrictEqual (Vite 8 compares resolved configs with it). */
+export function isDeepStrictEqual(a: unknown, b: unknown): boolean {
+  return deepEqual(a, b, true);
+}
+
+// ─── parseArgs (Node 18.3+) ───
+// Node's command-line parser: long and short options, inline values (`--a=1`, `-a1`), short
+// groups (`-abc`), `--`, `--no-x` with allowNegative, defaults, `multiple`, tokens, and the
+// strict-mode errors. Next.js reads NODE_OPTIONS with it.
+
+interface ParseArgsOptionConfig { type: 'string' | 'boolean'; short?: string; multiple?: boolean; default?: unknown }
+interface ParseArgsConfig {
+  args?: string[];
+  options?: Record<string, ParseArgsOptionConfig>;
+  strict?: boolean;
+  allowPositionals?: boolean;
+  allowNegative?: boolean;
+  tokens?: boolean;
+}
+type ParseArgsToken =
+  | { kind: 'option'; name: string; rawName: string; index: number; value: string | undefined; inlineValue: boolean | undefined }
+  | { kind: 'positional'; index: number; value: string }
+  | { kind: 'option-terminator'; index: number };
+
+function parseArgsError(code: string, message: string): TypeError {
+  return Object.assign(new TypeError(message), { code });
+}
+
+export function parseArgs(config: ParseArgsConfig = {}) {
+  const proc = (globalThis as { process?: { argv?: string[] } }).process;
+  const args = config.args ?? (proc?.argv ?? []).slice(2);
+  const options = config.options ?? {};
+  const strict = config.strict ?? true;
+  const allowPositionals = config.allowPositionals ?? !strict;
+  const allowNegative = config.allowNegative ?? false;
+  const byShort = new Map<string, string>();
+  for (const [name, opt] of Object.entries(options)) if (opt.short) byShort.set(opt.short, name);
+
+  const tokens: ParseArgsToken[] = [];
+  const takesValue = (name: string) => options[name]?.type === 'string';
+  const isOptionLike = (a: string | undefined) => a !== undefined && a.length > 1 && a.startsWith('-');
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '--') {
+      tokens.push({ kind: 'option-terminator', index: i });
+      for (let j = i + 1; j < args.length; j++) tokens.push({ kind: 'positional', index: j, value: args[j] });
+      break;
+    }
+    if (arg.startsWith('--') && arg.length > 2) {
+      const eq = arg.indexOf('=');
+      if (eq !== -1) {
+        tokens.push({ kind: 'option', name: arg.slice(2, eq), rawName: arg.slice(0, eq), index: i, value: arg.slice(eq + 1), inlineValue: true });
+        continue;
+      }
+      const name = arg.slice(2);
+      if (takesValue(name) && i + 1 < args.length) {
+        tokens.push({ kind: 'option', name, rawName: arg, index: i, value: args[i + 1], inlineValue: false });
+        i++;
+      } else {
+        tokens.push({ kind: 'option', name, rawName: arg, index: i, value: undefined, inlineValue: undefined });
+      }
+      continue;
+    }
+    if (arg.startsWith('-') && arg.length > 1 && arg !== '-') {
+      const letters = arg.slice(1);
+      for (let k = 0; k < letters.length; k++) {
+        const letter = letters[k];
+        const name = byShort.get(letter) ?? letter;
+        const rawName = `-${letter}`;
+        if (takesValue(name)) {
+          const rest = letters.slice(k + 1);
+          if (rest) tokens.push({ kind: 'option', name, rawName, index: i, value: rest, inlineValue: true });
+          else if (i + 1 < args.length) { tokens.push({ kind: 'option', name, rawName, index: i, value: args[i + 1], inlineValue: false }); i++; }
+          else tokens.push({ kind: 'option', name, rawName, index: i, value: undefined, inlineValue: undefined });
+          break;
+        }
+        tokens.push({ kind: 'option', name, rawName, index: i, value: undefined, inlineValue: undefined });
+      }
+      continue;
+    }
+    tokens.push({ kind: 'positional', index: i, value: arg });
+  }
+
+  const values: Record<string, unknown> = Object.create(null);
+  const positionals: string[] = [];
+  const store = (name: string, value: unknown) => {
+    if (options[name]?.multiple) ((values[name] ??= []) as unknown[]).push(value);
+    else values[name] = value;
+  };
+  for (const token of tokens) {
+    if (token.kind === 'positional') {
+      if (!allowPositionals) throw parseArgsError('ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL', `Unexpected argument '${token.value}'. This command does not take positional arguments`);
+      positionals.push(token.value);
+      continue;
+    }
+    if (token.kind !== 'option') continue;
+    let { name } = token;
+    let negated = false;
+    if (allowNegative && name.startsWith('no-') && options[name.slice(3)]?.type === 'boolean') {
+      name = name.slice(3);
+      negated = true;
+    }
+    const opt = options[name];
+    if (strict) {
+      if (!opt) throw parseArgsError('ERR_PARSE_ARGS_UNKNOWN_OPTION', `Unknown option '${token.rawName}'`);
+      if (opt.type === 'string' && (token.value === undefined || (!token.inlineValue && isOptionLike(token.value)))) {
+        throw parseArgsError('ERR_PARSE_ARGS_INVALID_OPTION_VALUE', `Option '${token.rawName} <value>' argument missing`);
+      }
+      if (opt.type === 'boolean' && token.value !== undefined) {
+        throw parseArgsError('ERR_PARSE_ARGS_INVALID_OPTION_VALUE', `Option '${token.rawName}' does not take an argument`);
+      }
+    }
+    if (negated) store(name, false);
+    else if (opt?.type === 'boolean') store(name, true);
+    else store(name, token.value ?? true);
+  }
+  for (const [name, opt] of Object.entries(options)) {
+    if (opt.default !== undefined && values[name] === undefined) values[name] = opt.default;
+  }
+  return config.tokens ? { values, positionals, tokens } : { values, positionals };
+}
+
 export const TextDecoder = globalThis.TextDecoder;
 export const TextEncoder = globalThis.TextEncoder;
 
-export default { format, formatWithOptions, inspect, promisify, inherits, deprecate, types, styleText, stripVTControlCharacters, debuglog, debug, TextDecoder, TextEncoder };
+export default { format, formatWithOptions, inspect, promisify, callbackify, aborted, inherits, deprecate, types, styleText, stripVTControlCharacters, debuglog, debug, isDeepStrictEqual, parseArgs, TextDecoder, TextEncoder };

@@ -26,6 +26,7 @@ import type { SnapshotOptions } from '../types.js';
 import { Buffer } from '../../node-compat/buffer.js';
 import { ServiceWorkerBridge } from '../../kernel/network/ServiceWorkerBridge.js';
 import { RpcChannel, transfer, ownBuffer, HOST_VFS_WRITES, type Endpoint } from './rpc.js';
+import { setPlatformFetch } from '../../cloud/platform-fetch.js';
 
 export interface ServeSandboxOptions {
 	/**
@@ -123,7 +124,12 @@ export function lockDownCredentials(scope: typeof globalThis = globalThis): void
 	const realFetch = g.fetch?.bind(g);
 	if (realFetch) {
 		const safeFetch = (input: RequestInfo | URL, init?: RequestInit) => realFetch(input, { ...init, credentials: 'omit' });
-		Object.defineProperty(g, 'fetch', { value: safeFetch, writable: false, configurable: false });
+		// Lifo's own requests (Lifo Cloud, with the person's token) use this one whatever programs do
+		// to the global (platform-fetch.ts). Programs may wrap the global, as in Node (Next.js
+		// installs its caching fetch over it): writable, but not configurable, so it can't be
+		// deleted to uncover the realm's own.
+		setPlatformFetch(safeFetch);
+		Object.defineProperty(g, 'fetch', { value: safeFetch, writable: true, configurable: false });
 	}
 	const XHR = g.XMLHttpRequest as (typeof XMLHttpRequest) | undefined;
 	if (XHR) {
@@ -321,6 +327,29 @@ export function serveSandbox(endpoint: Endpoint, options: ServeSandboxOptions = 
 	});
 	rpc.handle('detach', () => {
 		need().detach();
+	});
+
+	// Another shell on this box (an extra terminal tab), talking over its own channel: the page
+	// keeps the other end of `port` and wires its terminal to it as attach() does.
+	rpc.handle('openShell', async (port: MessagePort, opts: { cols: number; rows: number; cwd?: string; env?: Record<string, string> }) => {
+		const b = need();
+		const channel = new RpcChannel(port as unknown as Endpoint);
+		const term = new RemoteTerminal(channel);
+		term.cols = opts.cols;
+		term.rows = opts.rows;
+		const opened = await b.openShell(term, {
+			cwd: opts.cwd,
+			env: opts.env,
+			onExit: (code) => {
+				channel.emit('shell.exit', code);
+				channel.close();
+			},
+		});
+		channel.handle('close', () => {
+			opened.dispose();
+			queueMicrotask(() => channel.close());
+		});
+		return b.kernel.vfs.readFileString('/etc/motd');
 	});
 
 	// Previews: the page registers the preview service worker and hands this box one end of a

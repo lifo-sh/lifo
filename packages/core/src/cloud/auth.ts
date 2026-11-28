@@ -12,6 +12,7 @@
  * revocable `lifo_` key (it shows up under API keys on the dashboard), and logout
  * revokes it on the server.
  */
+import { platformFetch } from './platform-fetch.js';
 
 export const DEFAULT_BASE_URL = 'https://lifo.sh';
 
@@ -122,7 +123,7 @@ export async function exchangeCode(
 	baseUrl: string,
 	p: { code: string; verifier: string; client: string },
 ): Promise<{ token: string; email: string }> {
-	const res = await fetch(new URL('/api/cli/token', baseUrl), {
+	const res = await platformFetch(new URL('/api/cli/token', baseUrl), {
 		method: 'POST',
 		headers: { 'content-type': 'application/json' },
 		body: JSON.stringify({ code: p.code.trim(), verifier: p.verifier, client: p.client }),
@@ -133,7 +134,7 @@ export async function exchangeCode(
 
 /** The signed-in user, or null if the key is unknown or revoked. Throws if the website can't be reached. */
 export async function fetchMe(baseUrl: string, token: string): Promise<{ email: string } | null> {
-	const res = await fetch(new URL('/api/me', baseUrl), { headers: { authorization: `Bearer ${token}` } });
+	const res = await platformFetch(new URL('/api/me', baseUrl), { headers: { authorization: `Bearer ${token}` } });
 	if (res.status === 401) return null;
 	if (!res.ok) throw new Error(await errorText(res));
 	return (await res.json()) as { email: string };
@@ -142,7 +143,7 @@ export async function fetchMe(baseUrl: string, token: string): Promise<{ email: 
 /** Revoke the key on the server. Best effort: logout still forgets it locally. */
 export async function revokeToken(baseUrl: string, token: string): Promise<boolean> {
 	try {
-		const res = await fetch(new URL('/api/cli/token', baseUrl), {
+		const res = await platformFetch(new URL('/api/cli/token', baseUrl), {
 			method: 'DELETE',
 			headers: { authorization: `Bearer ${token}` },
 		});
@@ -162,7 +163,8 @@ export interface CliConfig {
 }
 
 export async function fetchCliConfig(baseUrl: string): Promise<CliConfig> {
-	const res = await fetch(new URL('/api/cli/config', baseUrl));
+	const res = await platformFetch(new URL('/api/cli/config', baseUrl));
 	if (!res.ok) throw new Error(`${baseUrl}/api/cli/config: ${await errorText(res)}`);
 	return (await res.json()) as CliConfig;
 }
+

@@ -1,5 +1,8 @@
+import { bindToFrame } from './async-context.js';
+import { scheduleTick } from './event-loop.js';
 import type { CommandOutputStream, CommandInputStream } from '../commands/types.js';
 import { Buffer } from './buffer.js';
+import { OPEN_READLINE_INTERFACES } from './readline.js';
 
 /**
  * Build a Node-like `process.stdin` backed by the shell's terminal input.
@@ -25,13 +28,32 @@ export function createInteractiveStdin(
     (listeners[event] ? [...listeners[event]] : []).forEach((fn) => fn(...args));
   };
 
+  // Input that arrived while paused, handed out on the next resume() (Node buffers a paused
+  // stream the same way). Without it, a key typed between two prompts reached no one.
+  const held: string[] = [];
+  let pumping = false;
+
+  const deliver = (chunk: string) => {
+    stdin.inputSeq++; // bump so the node runner sees stdin is actively read
+    emit('data', encoding ? chunk : Buffer.from(chunk));
+  };
+
   async function pump() {
-    while (flowing && !ended && input) {
-      const chunk = await input.read();
-      if (chunk === null) { ended = true; emit('end'); break; }
-      if (chunk === '') continue;
-      stdin.inputSeq++; // bump so the node runner sees stdin is actively read
-      emit('data', encoding ? chunk : Buffer.from(chunk));
+    // One reader at a time: pause() can't cancel a read in flight, so a quick
+    // pause/resume would otherwise start a second loop next to the first.
+    if (pumping) return;
+    pumping = true;
+    try {
+      while (flowing && held.length > 0) deliver(held.shift()!);
+      while (flowing && !ended && input) {
+        const chunk = await input.read();
+        if (chunk === null) { ended = true; emit('end'); break; }
+        if (chunk === '') continue;
+        if (!flowing) { held.push(chunk); break; }
+        deliver(chunk);
+      }
+    } finally {
+      pumping = false;
     }
   }
 
@@ -73,6 +95,7 @@ export function createInteractiveStdin(
     listeners: (event: string) => (listeners[event] ? [...listeners[event]] : []),
     listenerCount: (event: string) => listeners[event]?.length ?? 0,
     pipe: () => stdin,
+    unpipe: () => stdin,
     destroy() { ended = true; flowing = false; return stdin; },
     /**
      * True while something is actively reading stdin (an interactive prompt is
@@ -99,6 +122,14 @@ export function createInteractiveStdin(
         (listeners['keypress']?.length ?? 0) > 0
       );
     },
+    /**
+     * True while a readline interface is open on this terminal: a prompt is waiting for
+     * the user. Prompt libraries (clack, prompts, inquirer) open one per question and
+     * close it once answered, so unlike a stray listener this has a clear end.
+     */
+    isPrompting: () =>
+      interactive && !ended && !!input &&
+      ((stdin as unknown as Record<symbol, number | undefined>)[OPEN_READLINE_INTERFACES] ?? 0) > 0,
   };
   return stdin;
 }
@@ -121,7 +152,12 @@ export class ProcessExitError extends Error {
 function makeTtyStream(write: (data: string) => void, fd: number, isTTY: boolean) {
   const cb = (maybeCb: unknown) => { if (typeof maybeCb === 'function') (maybeCb as () => void)(); };
   return {
-    write: (data: string, ...rest: unknown[]) => { write(data); cb(rest[rest.length - 1]); return true; },
+    // Strings, Buffers and Uint8Arrays, as Node's (Next.js forwards its server's output as Buffers).
+    write: (data: unknown, ...rest: unknown[]) => {
+      write(typeof data === 'string' ? data : data instanceof Uint8Array ? Buffer.from(data.buffer, data.byteOffset, data.byteLength).toString('utf8') : String(data));
+      cb(rest[rest.length - 1]);
+      return true;
+    },
     isTTY,
     fd,
     bytesWritten: 0,
@@ -144,8 +180,16 @@ function makeTtyStream(write: (data: string) => void, fd: number, isTTY: boolean
     getColorDepth: () => (isTTY ? 8 : 1),
     hasColors: () => isTTY,
     getWindowSize: () => [80, 24],
-    on: () => {},
-    once: () => {},
+    // No events ever fire ('resize' included), but listeners must still attach and detach:
+    // clack calls output.off('resize', ...) when a prompt is answered.
+    on() { return this; },
+    once() { return this; },
+    off() { return this; },
+    addListener() { return this; },
+    removeListener() { return this; },
+    removeAllListeners() { return this; },
+    listenerCount: () => 0,
+    emit: () => false,
     end: () => {},
   };
 }
@@ -153,7 +197,10 @@ function makeTtyStream(write: (data: string) => void, fd: number, isTTY: boolean
 export interface ProcessOptions {
   argv: string[];
   env: Record<string, string>;
-  cwd: string;
+  /** The working directory, or a getter for one that process.chdir() moves. */
+  cwd: string | (() => string);
+  /** Changes the run's working directory (absent: chdir throws). */
+  chdir?: (dir: string) => void;
   stdout: CommandOutputStream;
   stderr: CommandOutputStream;
   /** Interactive terminal stdin (built via createInteractiveStdin) shared across the run. */
@@ -175,6 +222,13 @@ export interface ProcessOptions {
 export function createProcess(opts: ProcessOptions) {
   const startTime = Date.now();
   const listeners: Record<string, Array<(...args: unknown[]) => void>> = {};
+  const onceWrapper = (event: string, fn: (...args: unknown[]) => void) => {
+    const wrapped = Object.assign((...args: unknown[]) => {
+      proc.removeListener(event, wrapped);
+      fn(...args);
+    }, { listener: fn });
+    return wrapped;
+  };
 
   const proc = {
     argv: ['/usr/bin/node', ...opts.argv],
@@ -185,8 +239,11 @@ export function createProcess(opts: ProcessOptions) {
     // here would isolate each module, so `process.env.X = ...` set in an entry
     // script wouldn't be visible to required modules.
     env: opts.env,
-    cwd: () => opts.cwd,
-    chdir: (_dir: string) => { throw new Error('process.chdir() is not supported in Lifo'); },
+    cwd: () => (typeof opts.cwd === 'function' ? opts.cwd() : opts.cwd),
+    chdir: (dir: string) => {
+      if (!opts.chdir) throw new Error('process.chdir() is not supported here');
+      opts.chdir(dir);
+    },
     exit: (code = 0) => {
       // If the run can end the process asynchronously (long-running server,
       // main script already settled), let it — returning instead of throwing
@@ -232,6 +289,8 @@ export function createProcess(opts: ProcessOptions) {
     ppid: 0,
     title: 'node',
     execPath: '/usr/bin/node',
+    // Node's own flags (none here). napi-rs wasm loaders copy them onto their threads.
+    execArgv: [] as string[],
     hrtime: Object.assign(
       (prev?: [number, number]): [number, number] => {
         const now = performance.now();
@@ -250,7 +309,8 @@ export function createProcess(opts: ProcessOptions) {
       },
     ),
     nextTick: (fn: (...args: unknown[]) => void, ...args: unknown[]) => {
-      queueMicrotask(() => fn(...args));
+      const run = bindToFrame(fn); // in the async context it was scheduled in
+      scheduleTick(() => run(...args));
     },
     // Event-loop introspection (Node 17+). expo's CLI calls this on exit to
     // report lingering handles; there is no real libuv loop here, so report none.
@@ -300,16 +360,11 @@ export function createProcess(opts: ProcessOptions) {
     addListener: (event: string, fn: (...args: unknown[]) => void) => {
       return proc.on(event, fn);
     },
-    once: (event: string, fn: (...args: unknown[]) => void) => {
-      const wrapped = (...args: unknown[]) => {
-        proc.removeListener(event, wrapped);
-        fn(...args);
-      };
-      return proc.on(event, wrapped);
-    },
+    once: (event: string, fn: (...args: unknown[]) => void) => proc.on(event, onceWrapper(event, fn)),
     off: (event: string, fn: (...args: unknown[]) => void) => {
       if (listeners[event]) {
-        listeners[event] = listeners[event].filter((f) => f !== fn);
+        // A once() listener goes by the function it wraps too, as in Node.
+        listeners[event] = listeners[event].filter((f) => f !== fn && (f as { listener?: unknown }).listener !== fn);
       }
       return proc;
     },
@@ -334,6 +389,7 @@ export function createProcess(opts: ProcessOptions) {
       listeners[event].unshift(fn);
       return proc;
     },
+    prependOnceListener: (event: string, fn: (...args: unknown[]) => void) => proc.prependListener(event, onceWrapper(event, fn)),
     rawListeners: (event: string) => listeners[event] ? [...listeners[event]] : [],
     eventNames: () => Object.keys(listeners),
     // Feature detection flags

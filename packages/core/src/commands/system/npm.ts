@@ -37,6 +37,9 @@ interface RegistryVersionInfo {
 	scripts?: Record<string, string>;
 	dependencies?: Record<string, string>;
 	devDependencies?: Record<string, string>;
+	optionalDependencies?: Record<string, string>;
+	peerDependencies?: Record<string, string>;
+	peerDependenciesMeta?: Record<string, { optional?: boolean }>;
 	dist: {
 		tarball: string;
 		shasum?: string;
@@ -100,6 +103,46 @@ function compareVersions(a: [number, number, number], b: [number, number, number
 	return a[2] - b[2];
 }
 
+/** The prerelease part of a version ("next.11" of 3.0.0-next.11), or null for a release. */
+function prereleaseOf(v: string): string | null {
+	const m = v.match(/^v?\d+\.\d+\.\d+-([0-9A-Za-z.-]+)/);
+	return m ? m[1] : null;
+}
+
+/** semver's order of prerelease identifiers: numbers numerically and below words; a longer set wins a tie. */
+function comparePrerelease(a: string, b: string): number {
+	const pa = a.split('.');
+	const pb = b.split('.');
+	for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+		if (pa[i] === undefined) return -1;
+		if (pb[i] === undefined) return 1;
+		const na = /^\d+$/.test(pa[i]);
+		const nb = /^\d+$/.test(pb[i]);
+		if (na && nb) {
+			const d = Number(pa[i]) - Number(pb[i]);
+			if (d !== 0) return d;
+		} else if (na !== nb) {
+			return na ? -1 : 1;
+		} else if (pa[i] !== pb[i]) {
+			return pa[i] < pb[i] ? -1 : 1;
+		}
+	}
+	return 0;
+}
+
+/** Full semver order: x.y.z first, then a release above its prereleases, then prerelease identifiers. */
+export function compareFull(a: string, b: string): number {
+	const va = parseVersion(a);
+	const vb = parseVersion(b);
+	if (!va || !vb) return 0;
+	const d = compareVersions(va, vb);
+	if (d !== 0) return d;
+	const pa = prereleaseOf(a);
+	const pb = prereleaseOf(b);
+	if (pa === null || pb === null) return pa === pb ? 0 : pa === null ? 1 : -1;
+	return comparePrerelease(pa, pb);
+}
+
 function isVersionRange(version: string): boolean {
 	// Range operators, wildcards, ||, or spaces (hyphen/compound ranges).
 	if (/[\^~><=|*x\s]/i.test(version)) return true;
@@ -108,7 +151,7 @@ function isVersionRange(version: string): boolean {
 	return /^\d+(\.\d+)?$/.test(version);
 }
 
-function satisfiesRange(version: string, range: string): boolean {
+export function satisfiesRange(version: string, range: string): boolean {
 	const v = parseVersion(version);
 	if (!v) return false;
 
@@ -120,9 +163,20 @@ function satisfiesRange(version: string, range: string): boolean {
 	if (version.includes('-')) {
 		if (range === version) return true;
 		if (!range.includes('-')) return false;
-		const r = parseVersion(range.replace(/^[\^~>=<\s]+/, ''));
+		const op = range.match(/^[\^~>=<\s]*/)![0].replace(/\s/g, '');
+		const base = range.replace(/^[\^~>=<\s]+/, '').replace(/^v/, '');
+		const r = parseVersion(base);
 		if (!r || v[0] !== r[0] || v[1] !== r[1] || v[2] !== r[2]) return false;
-		return true;
+		const vp = prereleaseOf(version);
+		const rp = prereleaseOf(base);
+		if (vp === null || rp === null) return false;
+		// An exact prerelease (3.0.0-next.11) is only itself; with an operator, the same x.y.z
+		// at or above the range's prerelease (^3.0.0-next.5 takes next.11, not next.0).
+		if (op === '' || op === '=') return comparePrerelease(vp, rp) === 0;
+		if (op === '<') return comparePrerelease(vp, rp) < 0;
+		if (op === '<=') return comparePrerelease(vp, rp) <= 0;
+		if (op === '>') return comparePrerelease(vp, rp) > 0;
+		return comparePrerelease(vp, rp) >= 0;
 	}
 
 	// Exact
@@ -221,7 +275,7 @@ async function fetchWithRange(
 		.filter((v) => satisfiesRange(v, range))
 		.map((v) => ({ version: v, parsed: parseVersion(v)! }))
 		.filter((v) => v.parsed !== null)
-		.sort((a, b) => compareVersions(b.parsed, a.parsed)); // highest first
+		.sort((a, b) => compareFull(b.version, a.version)); // highest first, prereleases in order
 
 	if (matching.length === 0) {
 		throw new Error(`No version of '${name}' satisfies '${range}'`);
@@ -367,6 +421,8 @@ interface InstallState {
 	pendingTop: Map<string, Promise<string | null>>;
 	/** In-flight installs keyed by absolute target dir → resolves to count. */
 	inFlight: Map<string, Promise<number>>;
+	/** Peer dependencies installed packages asked for, resolved once their own install is done. */
+	peers: Array<{ name: string; range: string; from: string }>;
 }
 
 function createInstallState(
@@ -386,7 +442,32 @@ function createInstallState(
 		topVersions: new Map(),
 		pendingTop: new Map(),
 		inFlight: new Map(),
+		peers: [],
 	};
+}
+
+/**
+ * npm 7+ installs a package's required (not optional) peer dependencies too, next to it, unless
+ * a copy is already there: @napi-rs/wasm-runtime needs @emnapi/core and @emnapi/runtime this way
+ * (oxc-parser's WebAssembly build, which TanStack's devtools load). They're resolved after the
+ * install that asked for them, so a project's own versions (react) claim their places first; a
+ * peer that conflicts with an installed copy is left to it, as npm does with --legacy-peer-deps.
+ */
+async function installPeers(state: InstallState): Promise<number> {
+	let count = 0;
+	while (state.peers.length > 0) {
+		const batch = state.peers.splice(0);
+		const results = await Promise.all(batch.map(async ({ name, range, from }) => {
+			const res = findResolution(state, name, range, from);
+			if (res.resolved || res.conflict) return 0;
+			return installDep(state, name, range, from).catch((e) => {
+				state.stderr.write(`  warn: could not install peer ${name}: ${e instanceof Error ? e.message : String(e)}\n`);
+				return 0;
+			});
+		}));
+		for (const n of results) count += n;
+	}
+	return count;
 }
 
 /** Given a `.../node_modules` dir, return the next node_modules up the chain, or null at the root. */
@@ -472,6 +553,67 @@ function linkGlobalBins(state: InstallState, info: RegistryVersionInfo, targetDi
 	}
 }
 
+// Packages whose native addon Lifo already replaces with a JS shim (node.ts), so their
+// wasm build would be downloaded and never loaded.
+const SHIMMED_NATIVE_PACKAGES = new Set(['@tailwindcss/oxide']);
+
+/**
+ * The optional dependencies to install in a box. Native addons ship one optional package per
+ * platform, and a box can load none of them, except the napi-rs WebAssembly build
+ * (`<pkg>-wasm32-wasi`, e.g. `@rolldown/binding-wasm32-wasi`), which Lifo runs
+ * (node-compat/napi-wasi). Every other optional dependency stays skipped, as before.
+ */
+export function boxOptionalDependencies(info: { name?: string; optionalDependencies?: Record<string, string> }): [string, string][] {
+	if (!info.optionalDependencies || (info.name && SHIMMED_NATIVE_PACKAGES.has(info.name))) return [];
+	return Object.entries(info.optionalDependencies).filter(([dn]) => dn.endsWith('-wasm32-wasi'));
+}
+
+// napi-rs names its per-platform packages `<prefix>-<platform>-<arch>[-<abi>]`.
+const NAPI_PLATFORM_PACKAGE = /^(.+)-(?:darwin|linux|win32|android|freebsd|openharmony)-[a-z0-9]+(?:-[a-z0-9]+)?$/;
+
+/**
+ * The napi-rs WebAssembly build a package publishes without listing it. Some packages
+ * (oxc-parser) list only the native platform packages, but their loader still falls back to
+ * `<prefix>-wasm32-wasi`. Returns that name and the platform packages' version range when the
+ * optional dependencies look like a napi-rs set without one, for the caller to look up.
+ */
+export function unlistedWasiBinding(info: { name?: string; optionalDependencies?: Record<string, string> }): [string, string] | null {
+	if (!info.optionalDependencies || (info.name && SHIMMED_NATIVE_PACKAGES.has(info.name))) return null;
+	const entries = Object.entries(info.optionalDependencies);
+	if (entries.some(([dn]) => dn.endsWith('-wasm32-wasi'))) return null;
+	let prefix: string | null = null;
+	let range: string | null = null;
+	for (const [dn, dr] of entries) {
+		const m = NAPI_PLATFORM_PACKAGE.exec(dn);
+		if (!m) continue;
+		if (prefix !== null && m[1] !== prefix) return null; // more than one native package: don't guess
+		prefix = m[1];
+		range = dr;
+	}
+	return prefix && range ? [`${prefix}-wasm32-wasi`, range] : null;
+}
+
+/**
+ * WebAssembly builds a package downloads on first run when its native build can't load,
+ * installed with it where the package would put them (a box never loads a native build).
+ * Next.js fetches @next/swc-wasm-nodejs into next/wasm/ the first time `next dev` runs and
+ * skips the download when it's there. Its downloader needs synchronous zlib (tar), which a box
+ * doesn't have yet, and installing it here also saves that download on every fresh project.
+ */
+const FIRST_RUN_DOWNLOADS: Record<string, (version: string) => Array<[name: string, range: string, dir: string]>> = {
+	next: (version) => [['@next/swc-wasm-nodejs', version, 'wasm/@next/swc-wasm-nodejs']],
+};
+
+/** Whether the registry has `name@range` (for optional packages Lifo infers). */
+async function registryHas(state: InstallState, name: string, range: string): Promise<boolean> {
+	try {
+		await fetchPackageInfo(state.npmRegistry, name, range, state.signal);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 /** Extract into targetDir, link bins, and recurse into its dependencies. Deduped per target dir. */
 async function installInto(state: InstallState, name: string, range: string, targetDir: string): Promise<number> {
 	// Already present at a satisfying version → nothing to do.
@@ -490,10 +632,25 @@ async function installInto(state: InstallState, name: string, range: string, tar
 		const info = await fetchExtract(state, name, range, targetDir);
 		linkGlobalBins(state, info, targetDir);
 		let count = 1;
-		if (info.dependencies) {
+		const optional = boxOptionalDependencies(info);
+		const unlisted = optional.length === 0 ? unlistedWasiBinding(info) : null;
+		if (unlisted && await registryHas(state, unlisted[0], unlisted[1])) optional.push(unlisted);
+		const deps = [...Object.entries(info.dependencies ?? {}), ...optional];
+		const containingModules = targetDir.slice(0, -(name.length + 1));
+		for (const [pn, pr] of Object.entries(info.peerDependencies ?? {})) {
+			if (info.peerDependenciesMeta?.[pn]?.optional || deps.some(([dn]) => dn === pn)) continue;
+			state.peers.push({ name: pn, range: pr, from: containingModules });
+		}
+		const firstRun = (FIRST_RUN_DOWNLOADS[name]?.(info.version) ?? []).map(([dn, dr, dir]) =>
+			installInto(state, dn, dr, join(targetDir, dir)).catch((e) => {
+				state.stderr.write(`  warn: could not install ${dn}: ${e instanceof Error ? e.message : String(e)}\n`);
+				return 0;
+			}));
+		for (const n of await Promise.all(firstRun)) count += n;
+		if (deps.length > 0) {
 			const childModules = join(targetDir, 'node_modules');
 			const results = await Promise.all(
-				Object.entries(info.dependencies).map(([dn, dr]) =>
+				deps.map(([dn, dr]) =>
 					installDep(state, dn, dr, childModules).catch((e) => {
 						state.stderr.write(`  warn: could not install ${dn}: ${e instanceof Error ? e.message : String(e)}\n`);
 						return 0;
@@ -569,6 +726,8 @@ function printHelp(ctx: CommandContext): void {
 	ctx.stdout.write('Usage: npm <command> [args]\n\n');
 	ctx.stdout.write('Commands:\n');
 	ctx.stdout.write('  init [-y]                  create package.json\n');
+	ctx.stdout.write('  create <pkg> [args]        run create-<pkg> (e.g. npm create vite@latest my-app)\n');
+	ctx.stdout.write('  exec <pkg> [-- args]       run a package\'s binary (like npx)\n');
 	ctx.stdout.write('  install [pkg...] [-g] [-D] install packages\n');
 	ctx.stdout.write('  uninstall <pkg> [-g]       remove a package\n');
 	ctx.stdout.write('  list [-g]                  list installed packages\n');
@@ -679,6 +838,7 @@ async function npmInstall(ctx: CommandContext, registry: CommandRegistry, kernel
 			),
 		);
 		for (const n of results) installed += n;
+		installed += await installPeers(state);
 	} else {
 		// Install specified packages
 		ctx.stdout.write('Installing packages...\n');
@@ -690,6 +850,7 @@ async function npmInstall(ctx: CommandContext, registry: CommandRegistry, kernel
 			const { name, version } = parsePackageSpec(spec);
 			try {
 				installed += await installDep(state, name, version || 'latest', targetBase);
+				installed += await installPeers(state);
 
 				// Update package.json for local installs
 				if (!isGlobal) {
@@ -1160,9 +1321,43 @@ async function npmSearch(ctx: CommandContext): Promise<number> {
 	return 0;
 }
 
+// ─── npm create / npm init <initializer> / npm exec ───
+
+/**
+ * The package `npm init <initializer>` (and its alias `npm create`) runs, by npm's rules:
+ * `vite@latest` → `create-vite@latest`, `@scope/foo` → `@scope/create-foo`, `@scope` → `@scope/create`.
+ */
+export function initializerPackage(initializer: string): string {
+	const { name, version } = parsePackageSpec(initializer);
+	const ver = version ? `@${version}` : '';
+	if (name.startsWith('@')) {
+		const slash = name.indexOf('/');
+		if (slash === -1) return `${name}/create${ver}`;
+		return `${name.slice(0, slash)}/create-${name.slice(slash + 1)}${ver}`;
+	}
+	return `create-${name}${ver}`;
+}
+
+/**
+ * `npm create <initializer> [args]` / `npm init <initializer> [args]`: run `create-<initializer>`
+ * through npx, as npm does (`npm exec create-…`). Arguments after the initializer go to it; a
+ * lone `--` between them (`npm create vite@latest app -- --template react`) is dropped.
+ * Returns null when there's no initializer (plain `npm init` writes a package.json instead).
+ */
+function npmCreateArgs(args: string[]): string[] | null {
+	const rest = args.slice(1);
+	const at = rest.findIndex((a) => !a.startsWith('-'));
+	if (at === -1) return null;
+	const after = rest.slice(at + 1);
+	const dash = after.indexOf('--');
+	if (dash !== -1) after.splice(dash, 1);
+	return [initializerPackage(rest[at]), ...after];
+}
+
 // ─── Factory ───
 
 export function createNpmCommand(registry: CommandRegistry, shellExecute?: ShellExecuteFn, kernel?: Kernel): Command {
+	const npx = (ctx: CommandContext, args: string[]) => createNpxCommand(registry, shellExecute)({ ...ctx, args });
 	return async (ctx) => {
 		const subcommand = ctx.args[0];
 
@@ -1173,7 +1368,24 @@ export function createNpmCommand(registry: CommandRegistry, shellExecute?: Shell
 
 		switch (subcommand) {
 			case 'init':
+			case 'create':
+			case 'innit': {
+				const createArgs = npmCreateArgs(ctx.args);
+				if (createArgs) return npx(ctx, createArgs);
+				if (subcommand !== 'init') {
+					ctx.stderr.write('Usage: npm create <initializer> [args...]   (e.g. npm create vite@latest my-app)\n');
+					return 1;
+				}
 				return npmInit(ctx);
+			}
+			case 'exec':
+			case 'x': {
+				// npm exec <pkg> [-- args]: npx without the separator.
+				const args = ctx.args.slice(1);
+				const dash = args.indexOf('--');
+				if (dash !== -1) args.splice(dash, 1);
+				return npx(ctx, args);
+			}
 			case 'install':
 			case 'i':
 			case 'add':
@@ -1249,6 +1461,31 @@ function findBinScript(
 	}
 }
 
+/** The script of a command named `binName` from any package in `cwd`'s node_modules (npm's .bin). */
+function findLocalBinByName(vfs: VFS, cwd: string, binName: string): string | null {
+	const nmDir = join(cwd, 'node_modules');
+	if (!vfs.exists(nmDir)) return null;
+	const dirs: string[] = [];
+	try {
+		for (const entry of vfs.readdir(nmDir)) {
+			if (entry.name.startsWith('.')) continue;
+			if (!entry.name.startsWith('@')) { dirs.push(join(nmDir, entry.name)); continue; }
+			try {
+				for (const scoped of vfs.readdir(join(nmDir, entry.name))) dirs.push(join(nmDir, entry.name, scoped.name));
+			} catch { /* not a directory */ }
+		}
+	} catch {
+		return null;
+	}
+	for (const dir of dirs) {
+		try {
+			const bin = getBinEntries(JSON.parse(vfs.readFileString(join(dir, 'package.json'))))[binName];
+			if (bin) return resolve(dir, bin);
+		} catch { /* no package.json */ }
+	}
+	return null;
+}
+
 export function createNpxCommand(
 	registry: CommandRegistry,
 	shellExecute?: ShellExecuteFn,
@@ -1315,9 +1552,12 @@ export function createNpxCommand(
 		// The bin name to look for: if --package was used, spec is the bin name; otherwise derive from package name
 		const binName = explicitPkg ? spec : parsedName.split('/').pop()!;
 
-		// 1. Check local node_modules
+		// 1. Check local node_modules: the package itself, then (for a bare name) a command of
+		// that name from any installed package, as npm finds it in node_modules/.bin
+		// (`npx tsc` runs the project's typescript, not the registry's "tsc" package).
 		const localPkgDir = join(ctx.cwd, 'node_modules', parsedName);
 		let scriptPath = findBinScript(ctx.vfs, localPkgDir, binName);
+		if (!scriptPath && !explicitPkg && !version) scriptPath = findLocalBinByName(ctx.vfs, ctx.cwd, spec);
 
 		// 2. Check global modules
 		if (!scriptPath) {
@@ -1336,6 +1576,7 @@ export function createNpxCommand(
 						false, registry, createLimiter(INSTALL_CONCURRENCY),
 					);
 					await installDep(state, parsedName, version || 'latest', NPX_CACHE);
+					await installPeers(state);
 				} catch (e) {
 					ctx.stderr.write(`npx: could not install ${parsedName}: ${e instanceof Error ? e.message : String(e)}\n`);
 					return 1;
@@ -1398,7 +1639,7 @@ export async function npmInstallGlobal(
 			GLOBAL_MODULES, ctx.vfs, npmRegistry, ctx.signal, ctx.stdout, ctx.stderr,
 			true, registry, createLimiter(INSTALL_CONCURRENCY), kernel,
 		);
-		const installed = await installDep(state, packageName, 'latest', GLOBAL_MODULES);
+		const installed = await installDep(state, packageName, 'latest', GLOBAL_MODULES) + await installPeers(state);
 
 		const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
 		ctx.stdout.write(`\nadded ${installed} package${installed !== 1 ? 's' : ''} in ${elapsed}s\n`);

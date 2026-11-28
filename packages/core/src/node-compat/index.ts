@@ -4,15 +4,17 @@ import { createFs } from './fs.js';
 import { createPathModule } from './path.js';
 import { createOs } from './os.js';
 import { createProcess } from './process.js';
-import { EventEmitter } from './events.js';
+import { EventEmitter, once as eventsOnce, on as eventsOn, setMaxListeners, getEventListeners, addAbortListener } from './events.js';
 import { Buffer } from './buffer.js';
 import * as utilModule from './util.js';
+import querystringModule from './querystring.js';
 import { createHttp } from './http.js';
 import type { VirtualRequestHandler } from '../kernel/index.js';
 import { createChildProcess } from './child_process.js';
 import * as streamModule from './stream.js';
 import { createNet, getBoxNet } from './net.js';
 import * as urlModule from './url.js';
+import { deepEqual } from './util.js';
 import * as timersModule from './timers.js';
 import type { NodeTimers } from './timers.js';
 import type { ActivityTracker } from './activity.js';
@@ -70,9 +72,21 @@ function withRealNet(ctx: { vfs: VFS; activity?: ActivityTracker }, kind: 'net' 
   return { ...stub, TLSSocket: real.TLSSocket, connect: real.tlsConnect };
 }
 
+/**
+ * A built-in module as an ordinary object, like Node's: programs replace its functions and every
+ * module of the run sees the change (Next.js wraps crypto.randomUUID and friends). An ES module
+ * namespace is read-only, so assigning to one threw. The run caches the copy (one per run).
+ */
+function mutableModule<T extends object>(ns: T): T {
+  return { ...ns };
+}
+
 export interface NodeContext {
   vfs: VFS;
+  /** The run's working directory. A node run makes this a getter that process.chdir() moves. */
   cwd: string;
+  /** process.chdir() for the run (absent: chdir throws, as before). */
+  chdir?: (dir: string) => void;
   env: Record<string, string>;
   stdout: CommandOutputStream;
   stderr: CommandOutputStream;
@@ -82,6 +96,10 @@ export interface NodeContext {
   signal: AbortSignal;
   executeCapture?: (input: string, opts?: { cwd?: string }) => Promise<string>;
   executeCaptureResult?: (input: string, opts?: { cwd?: string }) => Promise<{ stdout: string; stderr: string; code: number }>;
+  /** Queue a command line to run on the program's terminal after it ends (spawnSync with inherited output). */
+  runAfterExit?: (line: string, cwd?: string) => void;
+  /** child_process.fork(): another node run in this box with an IPC channel to this one. */
+  forkNode?: import('./child_process.js').ForkNode;
   portRegistry?: Map<number, VirtualRequestHandler>;
   /**
    * Execute CJS source in the VM's module system and return its module.exports.
@@ -97,22 +115,33 @@ export interface NodeContext {
 
 export function createModuleMap(ctx: NodeContext): Record<string, () => unknown> {
   const map: Record<string, () => unknown> = {
-    fs: () => createFs(ctx.vfs, ctx.cwd),
-    'fs/promises': () => createFs(ctx.vfs, ctx.cwd).promises,
+    fs: () => createFs(ctx.vfs, () => ctx.cwd, { stdout: ctx.stdout, stderr: ctx.stderr }),
+    'fs/promises': () => createFs(ctx.vfs, () => ctx.cwd, { stdout: ctx.stdout, stderr: ctx.stderr }).promises,
     path: () => createPathModule(() => ctx.cwd),
+    'path/posix': () => (map.path() as { posix: unknown }).posix,
+    'path/win32': () => (map.path() as { win32: unknown }).win32,
     os: () => createOs(ctx.env),
     process: () => createProcess({
       argv: ctx.argv,
       env: ctx.env,
-      cwd: ctx.cwd,
+      cwd: () => ctx.cwd,
+      chdir: ctx.chdir,
       stdout: ctx.stdout,
       stderr: ctx.stderr,
     }),
     events: () => {
       // Node.js CJS: require('events') returns the EventEmitter constructor itself
-      const mod = EventEmitter as typeof EventEmitter & { EventEmitter: typeof EventEmitter; default: typeof EventEmitter };
+      const mod = EventEmitter as typeof EventEmitter & {
+        EventEmitter: typeof EventEmitter; default: typeof EventEmitter; once: typeof eventsOnce; on: typeof eventsOn;
+        setMaxListeners: typeof setMaxListeners; getEventListeners: typeof getEventListeners; addAbortListener: typeof addAbortListener;
+      };
       mod.EventEmitter = EventEmitter;
       mod.default = EventEmitter;
+      mod.once = eventsOnce;
+      mod.on = eventsOn;
+      mod.setMaxListeners = setMaxListeners;
+      mod.getEventListeners = getEventListeners;
+      mod.addAbortListener = addAbortListener;
       return mod;
     },
     buffer: () => {
@@ -129,12 +158,28 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
         kMaxLength: 0x7fffffff,
         kStringMaxLength: 0x1fffffe8,
         constants: { MAX_LENGTH: 0x7fffffff, MAX_STRING_LENGTH: 0x1fffffe8 },
+        // Next.js checks each chunk of React's flight data with isUtf8 before inlining it.
+        isUtf8: (input: ArrayBufferView | ArrayBuffer) => {
+          try {
+            new TextDecoder('utf-8', { fatal: true }).decode(input);
+            return true;
+          } catch {
+            return false;
+          }
+        },
+        isAscii: (input: ArrayBufferView | ArrayBuffer) => {
+          const bytes = input instanceof ArrayBuffer ? new Uint8Array(input) : new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
+          for (const b of bytes) if (b > 0x7f) return false;
+          return true;
+        },
       };
     },
-    util: () => utilModule,
+    util: () => mutableModule(utilModule),
     http: () => createHttp(ctx.portRegistry, 'http:', ctx.env, ctx.activity),
     https: () => createHttp(ctx.portRegistry, 'https:', ctx.env, ctx.activity),
-    child_process: () => createChildProcess(ctx.executeCapture, ctx.executeCaptureResult),
+    child_process: () => createChildProcess(ctx.executeCapture, ctx.executeCaptureResult, {
+      runAfterExit: ctx.runAfterExit, forkNode: ctx.forkNode, env: ctx.env, cwd: () => ctx.cwd,
+    }),
     stream: () => {
       // Node.js CJS: require('stream') returns the Stream base class with
       // .Readable, .Writable, .Duplex, .PassThrough, .Stream attached
@@ -162,6 +207,14 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
       S.isErrored = (_s: AnyStream) => false;
       S.isReadable = (s: AnyStream) => !!(s && s.readable);
       S.isWritable = (s: AnyStream) => !!(s && s.writable);
+      // Node 22's defaults (execa sizes its buffers with them).
+      let defaultHighWaterMark = 65536;
+      let defaultObjectHighWaterMark = 16;
+      S.getDefaultHighWaterMark = (objectMode?: boolean) => (objectMode ? defaultObjectHighWaterMark : defaultHighWaterMark);
+      S.setDefaultHighWaterMark = (objectMode: boolean, value: number) => {
+        if (objectMode) defaultObjectHighWaterMark = value;
+        else defaultHighWaterMark = value;
+      };
       S.finished = (stream: AnyStream, optsOrCb: unknown, cb?: (err?: Error | null) => void) => {
         const callback = (typeof optsOrCb === 'function' ? optsOrCb : cb) as ((err?: Error | null) => void) | undefined;
         let done = false;
@@ -214,6 +267,18 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
       return Stream;
     },
     'stream/promises': () => (map.stream() as unknown as { promises: unknown }).promises,
+    // Web Streams: the platform's own classes, as Node's stream/web re-exports its globals.
+    'stream/web': () => {
+      const g = globalThis as unknown as Record<string, unknown>;
+      const names = [
+        'ReadableStream', 'ReadableStreamDefaultReader', 'ReadableStreamBYOBReader', 'ReadableStreamBYOBRequest',
+        'ReadableByteStreamController', 'ReadableStreamDefaultController', 'TransformStream',
+        'TransformStreamDefaultController', 'WritableStream', 'WritableStreamDefaultWriter',
+        'WritableStreamDefaultController', 'ByteLengthQueuingStrategy', 'CountQueuingStrategy',
+        'TextEncoderStream', 'TextDecoderStream', 'CompressionStream', 'DecompressionStream',
+      ];
+      return Object.fromEntries(names.filter((n) => n in g).map((n) => [n, g[n]]));
+    },
     // require('stream/consumers') — buffer/text/json/arrayBuffer/blob of a
     // stream. fetch-nodeshim (pulled in by @expo/cli's fetch wrapper) needs it.
     // Accepts a Node Readable ('data'/'end'), a WHATWG ReadableStream
@@ -262,19 +327,24 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
         blob: (s: unknown) => collect(s).then((b) => new Blob([b])),
       };
     },
-    url: () => urlModule,
+    // pathToFileURL resolves relative paths against the run's cwd, as Node does.
+    url: () => {
+      const pathToFileURL = (p: string) => urlModule.pathToFileURL(p, ctx.cwd);
+      return { ...urlModule, pathToFileURL, default: { ...urlModule.default, pathToFileURL } };
+    },
     timers: () => ctx.timers ?? timersModule,
-    crypto: () => cryptoModule,
-    zlib: () => zlibModule,
-    string_decoder: () => stringDecoderModule,
-    tty: () => ttyModule,
-    dns: () => dnsModule,
+    'timers/promises': () => timersModule.createTimersPromises(ctx.timers ?? timersModule),
+    crypto: () => mutableModule(cryptoModule),
+    zlib: () => mutableModule(zlibModule),
+    string_decoder: () => mutableModule(stringDecoderModule),
+    tty: () => mutableModule(ttyModule),
+    dns: () => mutableModule(dnsModule),
     'dns/promises': () => dnsModule.promises,
-    dgram: () => dgramModule,
-    readline: () => readlineModule,
+    dgram: () => mutableModule(dgramModule),
+    readline: () => mutableModule(readlineModule),
     'readline/promises': () => readlineModule.promises,
-    diagnostics_channel: () => diagnosticsChannelModule,
-    async_hooks: () => asyncHooksModule,
+    diagnostics_channel: () => mutableModule(diagnosticsChannelModule),
+    async_hooks: () => mutableModule(asyncHooksModule),
     'util/types': () => (utilModule as { typesImpl: unknown }).typesImpl,
     console: () => {
       const fmt = (utilModule as { format: (...a: unknown[]) => string }).format;
@@ -309,16 +379,11 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
       return Object.assign(instance, { Console });
     },
     constants: () => {
-      const fs = createFs(ctx.vfs, ctx.cwd);
+      const fs = createFs(ctx.vfs, () => ctx.cwd);
       const os = createOs(ctx.env);
       return { ...os.constants, ...fs.constants };
     },
-    querystring: () => ({
-      parse: (str: string) => Object.fromEntries(new URLSearchParams(str)),
-      stringify: (obj: Record<string, string>) => new URLSearchParams(obj).toString(),
-      escape: encodeURIComponent,
-      unescape: decodeURIComponent,
-    }),
+    querystring: () => mutableModule(querystringModule),
     assert: () => {
       // Real AssertionError class so `err instanceof assert.AssertionError`
       // checks (e.g. in @expo/cli's error handler) don't throw on undefined.
@@ -346,56 +411,10 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
       // is not a valid substitute (key order, undefined, NaN, cycles), so walk
       // the values. `strict` toggles ===/SameValueZero vs == for primitives and
       // whether prototypes must match.
-      const deepEq = (a: unknown, b: unknown, strict: boolean, seen: WeakMap<object, unknown>): boolean => {
-        if (a === b) return true;
-        // NaN
-        if (typeof a === 'number' && typeof b === 'number' && Number.isNaN(a) && Number.isNaN(b)) return true;
-        if (a === null || b === null || typeof a !== 'object' || typeof b !== 'object') {
-          // primitives / mixed
-          return strict ? a === b : a == b; // eslint-disable-line eqeqeq
-        }
-        const oa = a as Record<string, unknown> & object;
-        const ob = b as Record<string, unknown> & object;
-        if (strict && Object.getPrototypeOf(oa) !== Object.getPrototypeOf(ob)) return false;
-        // cycle guard
-        const prev = seen.get(oa);
-        if (prev === ob) return true;
-        seen.set(oa, ob);
-        if (a instanceof Date || b instanceof Date) {
-          return a instanceof Date && b instanceof Date && a.getTime() === b.getTime();
-        }
-        if (a instanceof RegExp || b instanceof RegExp) {
-          return a instanceof RegExp && b instanceof RegExp && a.source === b.source && a.flags === b.flags;
-        }
-        const aArr = Array.isArray(a), bArr = Array.isArray(b);
-        if (aArr !== bArr) return false;
-        if (aArr && bArr) {
-          if (a.length !== b.length) return false;
-          for (let i = 0; i < a.length; i++) if (!deepEq(a[i], b[i], strict, seen)) return false;
-          return true;
-        }
-        if (a instanceof Map || b instanceof Map) {
-          if (!(a instanceof Map && b instanceof Map) || a.size !== b.size) return false;
-          for (const [k, v] of a) { if (!b.has(k) || !deepEq(v, b.get(k), strict, seen)) return false; }
-          return true;
-        }
-        if (a instanceof Set || b instanceof Set) {
-          if (!(a instanceof Set && b instanceof Set) || a.size !== b.size) return false;
-          for (const v of a) if (!b.has(v)) return false;
-          return true;
-        }
-        const ka = Object.keys(oa), kb = Object.keys(ob);
-        if (ka.length !== kb.length) return false;
-        for (const k of ka) {
-          if (!Object.prototype.hasOwnProperty.call(ob, k)) return false;
-          if (!deepEq(oa[k], ob[k], strict, seen)) return false;
-        }
-        return true;
-      };
-      assert.deepEqual = (a: unknown, b: unknown, msg?: string) => { if (!deepEq(a, b, false, new WeakMap())) throw new AssertionError(msg || 'deepEqual failed'); };
-      assert.deepStrictEqual = (a: unknown, b: unknown, msg?: string) => { if (!deepEq(a, b, true, new WeakMap())) throw new AssertionError(msg || 'deepStrictEqual failed'); };
-      assert.notDeepEqual = (a: unknown, b: unknown, msg?: string) => { if (deepEq(a, b, false, new WeakMap())) throw new AssertionError(msg || 'notDeepEqual failed'); };
-      assert.notDeepStrictEqual = (a: unknown, b: unknown, msg?: string) => { if (deepEq(a, b, true, new WeakMap())) throw new AssertionError(msg || 'notDeepStrictEqual failed'); };
+      assert.deepEqual = (a: unknown, b: unknown, msg?: string) => { if (!deepEqual(a, b, false)) throw new AssertionError(msg || 'deepEqual failed'); };
+      assert.deepStrictEqual = (a: unknown, b: unknown, msg?: string) => { if (!deepEqual(a, b, true)) throw new AssertionError(msg || 'deepStrictEqual failed'); };
+      assert.notDeepEqual = (a: unknown, b: unknown, msg?: string) => { if (deepEqual(a, b, false)) throw new AssertionError(msg || 'notDeepEqual failed'); };
+      assert.notDeepStrictEqual = (a: unknown, b: unknown, msg?: string) => { if (deepEqual(a, b, true)) throw new AssertionError(msg || 'notDeepStrictEqual failed'); };
       assert.throws = (fn: () => void, msg?: string) => {
         try { fn(); throw new Error(msg || 'Expected function to throw'); } catch (e) { if (e instanceof Error && e.message === (msg || 'Expected function to throw')) throw e; }
       };

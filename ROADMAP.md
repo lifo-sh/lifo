@@ -35,7 +35,7 @@ Runs in the browser and in Node today — the same VM, client-side or server-sid
 - [x] 60+ coreutils (ls, grep, sed, awk, find, tar, curl, …) and Git in every shell.
 - [x] Node.js compatibility layer (http, fs, net, child_process, streams, crypto, readline, …).
 - [x] Real npm & npx from the registry.
-- [x] Real stacks unmodified: create-expo-app (SDK 54 & 57), Vite + React, Expo Router, Supabase (tinbase).
+- [x] Real stacks unmodified: create-expo-app (SDK 54 & 57), Vite + React (Vite 7, and Vite 8 on Rolldown's wasm build in Node-hosted boxes and in browser boxes running in a Web Worker), Next.js (create-next-app, App Router, Fast Refresh), TanStack Start (the TanStack CLI's scaffold, server functions, HMR), Expo Router, Supabase (tinbase).
 - [x] Live previews — in-VM ports served over a service worker with HMR.
 - [x] Snapshot & restore a box's disk state.
 - [x] Per-box process manager (list, kill, stop, restart).
@@ -128,6 +128,7 @@ Turn the playground's building blocks into reusable components so anyone can emb
 - [ ] `ssh` client (as an installable package). Needs a WebSocket/tunnel transport for the connection — ties into phase 5 (tunnelling & network).
 - [x] **Command redirects ("the Lifo way").** When a user runs a tool Lifo can't run natively that has an in-VM equivalent, print a one-line note and transparently run the equivalent: `supabase …` → `npx tinbase …`, `npx supabase …` → `npx tinbase …` (tinbase is Supabase-compatible). Tools with no equivalent (docker) get a note only, and `npm install supabase` notes tinbase (guarding the legit `@supabase/supabase-js` client). Curated map in `shell/command-suggestions.ts`; extensible.
 - [ ] Pluggable WASM runtimes so more binaries (ffmpeg, Python, native CLIs) run inside the VM.
+- [x] **Rust addons as wasm (napi-rs `wasm32-wasi`).** Rust tools on npm ship a native `.node` per platform, which a box can't load, plus a napi-rs WebAssembly build with threads. Lifo now runs that build: `npm install` fetches the `<pkg>-wasm32-wasi` package (listed, or inferred when a package publishes it without listing it, like oxc-parser), and the package's own generated loader gets a WASI on the box's filesystem and real threads (Node `worker_threads`, or Web Workers) that reach the VFS over a blocking SharedArrayBuffer channel. Each binding runs on the napi-rs runtime it shipped with: its `@napi-rs/wasm-runtime`, or the copy newer loaders bundle inside themselves (rolldown 1.3.4+). Unlocks Vite 8 (Rolldown + Oxc: dev server and `vite build`), oxc-parser/transform/resolver/minify, unrs-resolver and the rest of that family. Code in `node-compat/napi-wasi/`; end-to-end check `bench/vite8-smoke.mjs`. *Works in Node-hosted boxes and, in Chromium, in a box running in a Web Worker (`WorkerSandbox`) on a cross-origin isolated page: a React app's install, dev server with Rolldown pre-bundling, and `vite build`. A box on the page's main thread can't (browsers refuse `Atomics.wait` and synchronous compiles of large wasm there), so it stops with a one-line `[lifo]` explanation. The playground's terminals still run on the main thread. Lifo Cloud's workerd boxes have no threads, so such projects belong on the container runtime.*
 
 ### 9. Broader Node & serverless coverage — *planned*
 

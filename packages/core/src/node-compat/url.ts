@@ -1,3 +1,5 @@
+import { resolve as resolvePath } from '../utils/path.js';
+
 // Re-export native URL and URLSearchParams
 const _URL = globalThis.URL;
 const _URLSearchParams = globalThis.URLSearchParams;
@@ -121,8 +123,24 @@ export function fileURLToPath(url: string | URL): string {
   return decodeURIComponent(urlStr.slice(7));
 }
 
-export function pathToFileURL(path: string): URL {
-  return new URL('file://' + encodeURI(path));
+/**
+ * Node's url.pathToFileURL (POSIX): a relative path resolves against `cwd`, and the
+ * characters a path may hold but a URL can't are percent-encoded. Rolldown's virtual
+ * modules (`\0rolldown/runtime.js`) reach it from Vite 8's config bundler, so a plain
+ * `'file://' + path` made the NUL-prefixed name the URL's host and threw "Invalid URL".
+ */
+export function pathToFileURL(path: string, cwd = '/'): URL {
+  let resolved = resolvePath(cwd, path);
+  if (path.endsWith('/') && !resolved.endsWith('/')) resolved += '/';
+  const url = new _URL('file://');
+  // The pathname setter encodes the rest (spaces, NUL, '?', '#').
+  url.pathname = resolved
+    .replace(/%/g, '%25')
+    .replace(/\\/g, '%5C')
+    .replace(/\n/g, '%0A')
+    .replace(/\r/g, '%0D')
+    .replace(/\t/g, '%09');
+  return url;
 }
 
 /**
