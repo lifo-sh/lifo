@@ -30,18 +30,9 @@ import {
   type Kernel,
 } from '@lifo-sh/core';
 import type { ITerminal } from '@lifo-sh/core';
-import gitCommand from 'lifo-pkg-git';
-import ffmpegCommand from 'lifo-pkg-ffmpeg';
-import fastfetchCommand from 'lifo-pkg-fastfetch';
-import nanoCommand from 'lifo-pkg-nano';
-import lessCommand from 'lifo-pkg-less';
-import viCommand from 'lifo-pkg-vi';
-import calCommand from 'lifo-pkg-cal';
-import bcCommand from 'lifo-pkg-bc';
-import manCommand from 'lifo-pkg-man';
 import { registerAgentCommands } from './agent';
+import { registerBoxCommands } from './box-commands';
 import { SITE_ORIGIN, askSite } from './site';
-import orchdCommand from 'orchd/lifo';
 
 /**
  * CORS-proxy env for every browser box (git clone, expo, etc. can't reach
@@ -124,32 +115,8 @@ export async function bootShell(
   opts: BootShellOptions = {},
 ): Promise<Shell> {
   const registry = createDefaultRegistry();
-  // git in every shell — it's statically imported anyway, and users expect
-  // `git init`/`git status` to work in all examples.
-  registry.register('git', gitCommand);
-  // fastfetch/neofetch moved to lifo-pkg-fastfetch (keep-core-light); keep them
-  // available in the playground shells for the demo.
-  registry.register('fastfetch', fastfetchCommand);
-  registry.register('neofetch', fastfetchCommand);
-  // Editors/pagers + cal/bc/man moved to installable lifo-pkg-* packages
-  // (keep-core-light); keep them available in the playground shells.
-  registry.register('nano', nanoCommand);
-  registry.register('less', lessCommand);
-  registry.register('vi', viCommand);
-  registry.register('vim', viCommand);
-  registry.register('cal', calCommand);
-  registry.register('bc', bcCommand);
-  registry.register('man', manCommand);
-  // Python (Pyodide) in every shell, loaded the first time it runs: the package is a few KB and
-  // the interpreter (about 6 MB) comes from the CDN only when someone types `python3`.
-  for (const name of ['python', 'python3']) {
-    registry.register(name, async (ctx) => (await import('lifo-pkg-python')).default(ctx));
-  }
-  for (const name of ['pip', 'pip3']) {
-    registry.register(name, async (ctx) => (await import('lifo-pkg-python')).pip(ctx));
-  }
-  if (opts.pkgs?.includes('ffmpeg')) registry.register('ffmpeg', ffmpegCommand);
-  if (opts.pkgs?.includes('orchd')) registry.register('orchd', orchdCommand);
+  // git, editors, pagers, Python and the rest: the same in every playground box (box-commands.ts).
+  registerBoxCommands((name, command) => registry.register(name, command), opts.pkgs);
   if (opts.pkgs?.includes('agent')) registerAgentCommands(registry);
   bootLifoPackages(kernel.vfs, registry);
 

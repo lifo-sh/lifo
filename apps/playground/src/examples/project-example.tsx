@@ -1,21 +1,21 @@
-import { type ReactNode, useRef, useState } from 'react';
+import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { PanelTopOpen, PanelTopClose } from 'lucide-react';
 import { Panel as RawPanel, type ImperativePanelHandle } from 'react-resizable-panels';
-import { Sandbox, ServiceWorkerBridge, pruneExpoModules } from '@lifo-sh/core';
-import gitCommand from 'lifo-pkg-git';
-import orchdCommand from 'orchd/lifo';
+import { Sandbox, ServiceWorkerBridge, WorkerSandbox, pruneExpoModules } from '@lifo-sh/core';
+import { registerBoxCommands } from '@/lib/box-commands';
 import type { Terminal } from '@lifo-sh/ui';
 import { ExamplePanel } from '@/components/example-panel';
 import { PreviewTabs, type PreviewTab } from '@/components/preview-tabs';
 import { TerminalArea } from '@/components/terminal-area';
 import { bootShell, browserCorsEnv, playgroundAuth } from '@/lib/shell';
+import { connectWorkerPreviews } from '@/lib/worker-previews';
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable';
 
 export interface ProjectExampleProps {
   title: string;
   subtitle: ReactNode;
-  /** VFS files to seed into the sandbox. */
-  files: Record<string, string>;
+  /** VFS files to seed into the sandbox (text, or bytes for binary assets). */
+  files: Record<string, string | Uint8Array>;
   cwd: string;
   /** Virtual port to mount an iframe preview browser for (server examples). */
   previewPort?: number;
@@ -28,6 +28,13 @@ export interface ProjectExampleProps {
   pruneable?: boolean;
   /** Extra in-VM packages to register in this example's shells (git is always on). */
   pkgs?: Array<'git' | 'ffmpeg' | 'orchd'>;
+  /**
+   * Run the box in a Web Worker (WorkerSandbox) instead of the page. Needed for tools that
+   * use WebAssembly threads, which a page's main thread refuses: Vite 8 (Rolldown, Oxc) and
+   * other napi-rs wasm addons. Extra terminal tabs are more shells on the same worker box,
+   * previews go through the service worker only, and the box ends when the example unmounts.
+   */
+  worker?: boolean;
 }
 
 /**
@@ -36,7 +43,7 @@ export interface ProjectExampleProps {
  * preview, split by a resizable handle. The SW bridge serves /_sw/<boxId>/<port>/
  * so each example routes to its own VM.
  */
-export function ProjectExample({ title, subtitle, files, cwd, previewPort, previews, env, pruneable, pkgs }: ProjectExampleProps) {
+export function ProjectExample({ title, subtitle, files, cwd, previewPort, previews, env, pruneable, pkgs, worker }: ProjectExampleProps) {
   const hasPreview = !!(previews?.length || previewPort);
   // Always present the preview as Chrome-like tabs, even for a single port.
   const previewTabs: PreviewTab[] = previews?.length
@@ -55,6 +62,19 @@ export function ProjectExample({ title, subtitle, files, cwd, previewPort, previ
 
   const sandboxRef = useRef<Sandbox | null>(null);
   const bridgeRef = useRef<ServiceWorkerBridge | null>(null);
+  // `worker` mode: the box in a Web Worker, and its preview announcement.
+  const [workerBox, setWorkerBox] = useState<WorkerSandbox | null>(null);
+  const workerRef = useRef<WorkerSandbox | null>(null);
+  const workerPreviewsRef = useRef<{ disconnect(): void } | null>(null);
+
+  const endWorkerBox = () => {
+    workerPreviewsRef.current?.disconnect();
+    workerPreviewsRef.current = null;
+    workerRef.current?.destroy();
+    workerRef.current = null;
+  };
+  // A worker box holds a thread (and a wasm addon's shared memory): end it with the example.
+  useEffect(() => endWorkerBox, []);
 
   // Fold/unfold the terminal panel (preview examples). The terminal panel is
   // *collapsed* (size 0), never unmounted, so the box/kernel/scrollback survive.
@@ -65,7 +85,28 @@ export function ProjectExample({ title, subtitle, files, cwd, previewPort, previ
 
   // The first terminal creates the Sandbox + SW bridge; extra terminals attach
   // a shell onto the shared kernel.
+  const bootWorkerBox = async (term: Terminal) => {
+    const box = await WorkerSandbox.create({
+      worker: () => new Worker(new URL('../lib/box.worker.ts', import.meta.url), { type: 'module', name: 'lifo-box' }),
+      terminal: term,
+      files,
+      cwd,
+      env: { ...browserCorsEnv(), ...env },
+      auth: await playgroundAuth(),
+      setup: { pkgs: pkgs ?? ['git'] },
+    });
+    workerRef.current = box;
+    setWorkerBox(box);
+    if (!hasPreview) return;
+    const previews = await connectWorkerPreviews(box);
+    if (workerRef.current !== box) return previews?.disconnect(); // restarted meanwhile
+    workerPreviewsRef.current = previews;
+    setBoxId(previews?.boxId ?? '');
+    setSwReady(!!previews);
+  };
+
   const bootFirstTerminal = async (term: Terminal) => {
+    if (worker) return bootWorkerBox(term);
     // Every box gets the same CORS proxies (expo /_cors + git proxy) so git
     // clone / expo / etc. behave the same in all terminals. Caller env wins.
     const sb = await Sandbox.create({
@@ -75,18 +116,10 @@ export function ProjectExample({ title, subtitle, files, cwd, previewPort, previ
       env: { ...browserCorsEnv(), ...env },
       auth: await playgroundAuth(),
     });
-    // Register the same packages the EXTRA terminals get (see bootExtraTerminal).
-    // Terminal 0 builds its registry through Sandbox.create rather than
-    // bootShell, so without this it silently lacked whatever `pkgs` asked for —
-    // the ORCHD example passed pkgs={['git','orchd']} and still answered
-    // "orchd: command not found" in the first terminal.
-    const wanted = pkgs ?? ['git'];
-    if (wanted.includes('git')) sb.commands.register('git', gitCommand);
-    if (wanted.includes('orchd')) sb.commands.register('orchd', orchdCommand);
-    if (wanted.includes('ffmpeg')) {
-      const { default: ffmpegCommand } = await import('lifo-pkg-ffmpeg');
-      sb.commands.register('ffmpeg', ffmpegCommand);
-    }
+    // The same commands the EXTRA terminals get (bootShell): terminal 0 builds its registry
+    // through Sandbox.create, so without this it lacked nano, vi, less, python and whatever
+    // `pkgs` asked for ("nano: command not found" in the first terminal of every project).
+    registerBoxCommands((name, command) => sb.commands.register(name, command), pkgs);
     sandboxRef.current = sb;
     setSandbox(sb);
 
@@ -99,6 +132,10 @@ export function ProjectExample({ title, subtitle, files, cwd, previewPort, previ
   };
 
   const bootExtraTerminal = (term: Terminal) => {
+    if (workerRef.current) {
+      void workerRef.current.openShell(term, { cwd });
+      return;
+    }
     const sb = sandboxRef.current;
     if (!sb) return;
     void bootShell(term, sb.kernel, {
@@ -117,12 +154,16 @@ export function ProjectExample({ title, subtitle, files, cwd, previewPort, previ
     sandboxRef.current?.destroy();
     sandboxRef.current = null;
     setSandbox(null);
+    endWorkerBox();
+    setWorkerBox(null);
     setBoxId('');
     setSwReady(hasPreview ? null : true);
     setBootNonce((n) => n + 1);
   };
 
-  const box = sandbox ? { kernel: sandbox.kernel, env: sandbox.env } : null;
+  const box = worker
+    ? (workerBox ? { worker: workerBox } : null)
+    : sandbox ? { kernel: sandbox.kernel, env: sandbox.env } : null;
   const terminalArea = (
     <TerminalArea
       key={bootNonce}
@@ -130,7 +171,7 @@ export function ProjectExample({ title, subtitle, files, cwd, previewPort, previ
       bootTab={(term) => {
         // The "+" is gated on `box`, so the first terminal always boots alone
         // and creates the sandbox; later terminals attach to its kernel.
-        if (sandboxRef.current) bootExtraTerminal(term);
+        if (sandboxRef.current || workerRef.current) bootExtraTerminal(term);
         else void bootFirstTerminal(term);
       }}
       onRestart={restart}
@@ -157,13 +198,14 @@ export function ProjectExample({ title, subtitle, files, cwd, previewPort, previ
   // Header actions: a preview-engine switch (SW ⇄ postMessage) + the fold toggle.
   const foldToggle = hasPreview ? (
     <div className="flex items-center gap-2">
-      <button
+      {/* The postMessage transport reads the box's kernel in the page; a worker box has none. */}
+      {!worker && <button
         onClick={() => setPreviewEngine((e) => (e === 'sw' ? 'postmessage' : 'sw'))}
         title="Switch preview transport (service worker ⇄ SW-free postMessage)"
         className="h-6 px-2 grid place-items-center rounded bg-tokyo-bg-dark border border-tokyo-border cursor-pointer text-[10px] font-mono text-tokyo-comment hover:text-tokyo-fg-bright"
       >
         preview: {previewEngine === 'sw' ? 'SW' : 'postMessage'}
-      </button>
+      </button>}
       <button
         onClick={() => (terminalFolded ? termPanelRef.current?.expand() : termPanelRef.current?.collapse())}
         title={terminalFolded ? 'Show terminal' : 'Hide terminal'}

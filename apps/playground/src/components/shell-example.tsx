@@ -8,13 +8,13 @@ import { TerminalArea } from '@/components/terminal-area';
 import { UiPreviewBrowser } from '@/components/ui-preview-browser';
 import { NoSwPreview } from '@/components/nosw-preview';
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable';
-import type { InspectableBox } from '@/lib/process-inspector';
+import type { KernelBox } from '@/lib/process-inspector';
 
 interface ShellExampleProps {
   title: string;
   subtitle?: ReactNode;
   /** The box (null until the first terminal boots). */
-  box: InspectableBox | null;
+  box: KernelBox | null;
   bootTab: (term: Terminal) => void;
   onRestart?: () => void;
   /** Port the preview address bar starts on (editable in SW mode). Default 5173. */

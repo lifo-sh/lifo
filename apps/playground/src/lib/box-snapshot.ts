@@ -1,14 +1,14 @@
 import { exportVfsSnapshot, importVfsSnapshot } from '@lifo-sh/core';
-import type { VFS } from '@lifo-sh/core';
+import type { InspectableBox } from '@/lib/process-inspector';
 
 /**
  * Download the box's disk as a .tar.gz snapshot. Processes aren't captured —
  * only the VFS — so a restored box starts with the same files but no running
- * servers (re-run the dev command after restoring). Works off any box's VFS,
- * so every example can snapshot, not just the preview ones.
+ * servers (re-run the dev command after restoring). Works for any box (in the
+ * page or in a worker), so every example can snapshot, not just the preview ones.
  */
-export async function downloadSnapshot(vfs: VFS, name = 'lifo-box'): Promise<void> {
-  const data = await exportVfsSnapshot(vfs);
+export async function downloadSnapshot(box: InspectableBox, name = 'lifo-box'): Promise<void> {
+  const data = 'worker' in box ? await box.worker.exportSnapshot() : await exportVfsSnapshot(box.kernel.vfs);
   // Copy into a fresh ArrayBuffer so the Blob type is exactly BlobPart (the VFS
   // may hand back a view over a larger buffer).
   const buf = data.slice();
@@ -24,7 +24,7 @@ export async function downloadSnapshot(vfs: VFS, name = 'lifo-box'): Promise<voi
 }
 
 /** Prompt for a .tar.gz file and restore the box's disk from it. */
-export function pickAndRestoreSnapshot(vfs: VFS, onDone?: (ok: boolean) => void): void {
+export function pickAndRestoreSnapshot(box: InspectableBox, onDone?: (ok: boolean) => void): void {
   const input = document.createElement('input');
   input.type = 'file';
   input.accept = '.gz,.tgz,.tar,application/gzip';
@@ -36,7 +36,8 @@ export function pickAndRestoreSnapshot(vfs: VFS, onDone?: (ok: boolean) => void)
     }
     try {
       const buf = new Uint8Array(await file.arrayBuffer());
-      await importVfsSnapshot(vfs, buf);
+      if ('worker' in box) await box.worker.importSnapshot(buf);
+      else await importVfsSnapshot(box.kernel.vfs, buf);
       onDone?.(true);
     } catch {
       onDone?.(false);

@@ -3,11 +3,12 @@ import { Sandbox } from '@lifo-sh/core';
 import type { Terminal } from '@lifo-sh/ui';
 import { ShellExample } from '@/components/shell-example';
 import { bootShell, browserCorsEnv, playgroundAuth } from '@/lib/shell';
-import type { InspectableBox } from '@/lib/process-inspector';
+import type { KernelBox } from '@/lib/process-inspector';
+import { registerBoxCommands } from '@/lib/box-commands';
 
 export default function NpmExample() {
   const sandboxRef = useRef<Sandbox | null>(null);
-  const [box, setBox] = useState<InspectableBox | null>(null);
+  const [box, setBox] = useState<KernelBox | null>(null);
 
   const bootTab = async (term: Terminal) => {
     if (sandboxRef.current) {
@@ -15,6 +16,7 @@ export default function NpmExample() {
       return;
     }
     const sb = await Sandbox.create({ terminal: term, env: browserCorsEnv(), auth: await playgroundAuth() });
+    registerBoxCommands((name, command) => sb.commands.register(name, command));
     sandboxRef.current = sb;
     setBox({ kernel: sb.kernel, env: sb.env });
   };

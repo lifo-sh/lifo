@@ -1,5 +1,9 @@
-/* Vite + React VFS seed files, moved verbatim from the old main.ts. */
-export function viteReactAppFiles(root: string, ts: boolean): Record<string, string> {
+/**
+ * Vite + React VFS seed files. `vite: 8` is the current stack (Vite 8, React 19, plugin-react 6):
+ * Rolldown needs WebAssembly threads, so those examples run their box in a Web Worker. `vite: 7`
+ * (React 18) runs in a box on the page, as the Interactive example's seed does.
+ */
+export function viteReactAppFiles(root: string, ts: boolean, vite: 7 | 8 = 7): Record<string, string> {
 	const x = ts ? 'tsx' : 'jsx';
 	const files: Record<string, string> = {};
 
@@ -8,13 +12,23 @@ export function viteReactAppFiles(root: string, ts: boolean): Record<string, str
 		version: '1.0.0',
 		type: 'module',
 		scripts: { dev: 'vite', build: 'vite build' },
-		dependencies: {
-			react: '^18.3.1',
-			'react-dom': '^18.3.1',
-			vite: '^7.3.1',
-			'@vitejs/plugin-react': '^5.0.0',
-			...(ts ? { typescript: '~5.9.3', '@types/react': '^18.3.12', '@types/react-dom': '^18.3.1' } : {}),
-		},
+		dependencies: vite === 8
+			? {
+				react: '^19.3.1',
+				'react-dom': '^19.3.1',
+				vite: '^8.4.0',
+				'@vitejs/plugin-react': '^6.3.0',
+				// TypeScript 5 (JavaScript) rather than create-vite's 7: TypeScript 7 is a native
+				// binary, so `npx tsc` couldn't run in the box.
+				...(ts ? { typescript: '~5.9.3', '@types/react': '^19.3.0', '@types/react-dom': '^19.3.0' } : {}),
+			}
+			: {
+				react: '^18.3.1',
+				'react-dom': '^18.3.1',
+				vite: '^7.3.1',
+				'@vitejs/plugin-react': '^5.0.0',
+				...(ts ? { typescript: '~5.9.3', '@types/react': '^18.3.12', '@types/react-dom': '^18.3.1' } : {}),
+			},
 	}, null, 2);
 
 	// Stock Vite config — identical in shape to what create-vite scaffolds.

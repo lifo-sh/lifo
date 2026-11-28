@@ -410,18 +410,103 @@ const CODE_VITE_REACT_TS = `\
 
 const CODE_CREATE_VITE = `\
 <span class="code-comment"># Prove it's the real Vite: scaffold an untouched app</span>
-<span class="code-comment"># with create-vite and run it 1:1 — its own vite.config.js,</span>
+<span class="code-comment"># with create-vite and run it 1:1, its own vite.config,</span>
 <span class="code-comment"># its own scripts, zero Lifo-specific changes.</span>
 
-<span class="code-fn">npx</span> create-vite@7.1.3 my-app --template react
+<span class="code-fn">npm</span> create vite@latest my-app   <span class="code-comment"># answer the prompts</span>
 <span class="code-fn">cd</span> my-app
 <span class="code-fn">npm</span> install
-<span class="code-fn">npm</span> run dev &
+<span class="code-fn">npm</span> run dev
 
-<span class="code-comment"># the preview pane loads /_sw/5173/ — the scaffolded</span>
-<span class="code-comment"># app served by unmodified Vite from inside your browser,</span>
-<span class="code-comment"># HMR and all, with no host process. The service worker</span>
-<span class="code-comment"># tunnels HTTP + WebSocket frames to the in-VM server.</span>`;
+<span class="code-comment"># Vite 8: Rolldown and Oxc run as WebAssembly with threads,</span>
+<span class="code-comment"># so the box runs in a Web Worker. The preview loads</span>
+<span class="code-comment"># /_sw/&lt;box&gt;/5173/, served by unmodified Vite from inside</span>
+<span class="code-comment"># your browser, HMR and all. "Install and start now? Yes"</span>
+<span class="code-comment"># works too. Edit from a second tab ("+"):</span>
+<span class="code-fn">sed</span> -i <span class="code-string">'s/Get started/Hello HMR/'</span> src/App.tsx`;
+
+const CODE_CREATE_NEXT_APP = `\
+<span class="code-comment"># create-next-app, 1:1: the recommended defaults</span>
+<span class="code-comment"># (TypeScript, Tailwind CSS, ESLint, App Router,</span>
+<span class="code-comment"># Cache Components), no Lifo-specific edits.</span>
+
+<span class="code-fn">npx</span> create-next-app@latest my-app   <span class="code-comment"># Enter for the defaults</span>
+<span class="code-fn">cd</span> my-app
+<span class="code-fn">npm</span> run dev
+
+<span class="code-comment"># Turbopack is native only, so the box runs Next with</span>
+<span class="code-comment"># webpack and SWC's WebAssembly build. The project's</span>
+<span class="code-comment"># Turbopack loaders (turbopack.rules: Tailwind) carry over</span>
+<span class="code-comment"># to webpack, so the page is styled as it is locally.</span>
+
+<span class="code-comment"># Fast Refresh, from a second tab ("+"):</span>
+<span class="code-fn">sed</span> -i <span class="code-string">'s/To get started/Hello Next/'</span> app/page.tsx`;
+
+const CODE_NEXT_APP = `\
+<span class="code-comment"># Next.js 16 (App Router) in a box in a Web Worker:</span>
+<span class="code-comment"># server components render in the box, the client</span>
+<span class="code-comment"># component hydrates in the preview.</span>
+
+<span class="code-fn">npm</span> install      <span class="code-comment"># also fetches SWC's WebAssembly build</span>
+<span class="code-fn">npm</span> run dev      <span class="code-comment"># next dev on :3000 (webpack)</span>
+
+<span class="code-comment"># app/page.js        server component</span>
+<span class="code-comment"># app/counter.js     'use client': click it, then edit</span>
+<span class="code-comment">#                    and watch the count survive</span>
+
+<span class="code-fn">sed</span> -i <span class="code-string">'s/Next.js inside Lifo/Hello Next/'</span> app/page.js`;
+
+const CODE_TANSTACK_START = `\
+<span class="code-comment"># TanStack Start on Vite 8, in a box in a Web Worker.</span>
+
+<span class="code-fn">npm</span> install
+<span class="code-fn">npm</span> run dev      <span class="code-comment"># vite dev --port 3000</span>
+
+<span class="code-comment"># src/routes/index.tsx: the loader calls a server</span>
+<span class="code-comment"># function, which runs in the box while the page renders</span>
+<span class="code-comment"># on the server (and again on client navigation):</span>
+<span class="code-keyword">const</span> getServerInfo = <span class="code-fn">createServerFn</span>({ method: <span class="code-string">'GET'</span> })
+  .<span class="code-fn">handler</span>(<span class="code-keyword">async</span> () => ({ node: process.version }))
+
+<span class="code-comment"># Home / About are file-based routes; the counter shows</span>
+<span class="code-comment"># hydration. HMR, from a second tab ("+"):</span>
+<span class="code-fn">sed</span> -i <span class="code-string">'s/TanStack Start inside Lifo/Hello HMR/'</span> src/routes/index.tsx`;
+
+const CODE_CREATE_TANSTACK = `\
+<span class="code-comment"># The TanStack CLI, 1:1. It scaffolds, installs, runs</span>
+<span class="code-comment"># git init and generates the route tree with a full</span>
+<span class="code-comment"># vite build, all in the box.</span>
+
+<span class="code-fn">npx</span> @tanstack/cli@latest create my-app   <span class="code-comment"># or add --yes</span>
+<span class="code-fn">cd</span> my-app
+<span class="code-fn">npm</span> run dev
+
+<span class="code-comment"># The default template: TanStack Start, Tailwind CSS,</span>
+<span class="code-comment"># TanStack devtools. Edit from a second tab ("+"):</span>
+<span class="code-fn">sed</span> -i <span class="code-string">'s/Quick Start/Hello TanStack/'</span> src/routes/index.tsx`;
+
+const CODE_STATIC_ASSETS = `\
+<span class="code-comment"># How absolute URLs work in a preview.</span>
+
+<span class="code-fn">node</span> server.js   <span class="code-comment"># serves public/ on :8080, logs each request</span>
+
+<span class="code-comment"># The preview loads the page from /_sw/&lt;box&gt;/8080/, yet</span>
+<span class="code-comment"># everything it asks for by root-relative URL reaches the</span>
+<span class="code-comment"># box's server, which sees the plain paths it would get</span>
+<span class="code-comment"># on localhost:</span>
+&lt;img src=<span class="code-string">"/images/gradient.png"</span>&gt;          <span class="code-comment"># binary, from the box</span>
+background: <span class="code-fn">url</span>(<span class="code-string">/images/pattern.svg</span>)
+<span class="code-keyword">await</span> <span class="code-fn">fetch</span>(<span class="code-string">'/data/planets.json'</span>)
+<span class="code-keyword">await</span> <span class="code-fn">import</span>(<span class="code-string">'/js/lazy.js'</span>)
+<span class="code-keyword">new</span> <span class="code-fn">Worker</span>(<span class="code-string">'/js/worker.js'</span>)            <span class="code-comment"># its fetches too</span>
+<span class="code-fn">fetch</span>(<span class="code-string">'/api/echo'</span>, { method: <span class="code-string">'POST'</span> })
+&lt;a href=<span class="code-string">"/about.html"</span>&gt;                    <span class="code-comment"># navigation stays in</span>
+
+<span class="code-comment"># How: the service worker routes each request by the</span>
+<span class="code-comment"># page or worker that made it, not by its path. The page</span>
+<span class="code-comment"># runs a small script first that strips the prefix from</span>
+<span class="code-comment"># its own URL (routers see "/") and keeps links, forms,</span>
+<span class="code-comment"># reloads and new workers under its prefix.</span>`;
 
 const CODE_TINBASE = `\
 <span class="code-comment"># Local Supabase-style dev, entirely in Lifo: tinbase</span>
@@ -675,6 +760,11 @@ export const codeSnippets: Record<string, string> = {
 	'vite-react': CODE_VITE_REACT,
 	'vite-react-ts': CODE_VITE_REACT_TS,
 	'create-vite': CODE_CREATE_VITE,
+	'create-next-app': CODE_CREATE_NEXT_APP,
+	'next-app': CODE_NEXT_APP,
+	'create-tanstack': CODE_CREATE_TANSTACK,
+	'tanstack-start': CODE_TANSTACK_START,
+	'static-assets': CODE_STATIC_ASSETS,
 	express: CODE_EXPRESS,
 	tinbase: CODE_TINBASE,
 	pglite: CODE_PGLITE,

@@ -168,10 +168,10 @@ export function TerminalArea({ bootTab, box, initialLabels, canAdd = true, onRes
     ...(onRestart ? [{ label: 'Restart box', icon: RotateCcw, onClick: () => { setMenuOpen(false); onRestart(); } }] : []),
     // Prune node_modules (Expo examples) — shrinks the box before snapshotting.
     ...(onPrune ? [{ label: 'Prune node_modules', icon: Scissors, onClick: run('Pruning node_modules (~15s)…', onPrune) }] : []),
-    // Snapshot & restore work off any box's VFS, so every example gets them.
+    // Snapshot & restore work for any box (page or worker), so every example gets them.
     ...(box ? [
-      { label: 'Snapshot (download)', icon: Download, onClick: run('Snapshotting…', () => downloadSnapshot(box.kernel.vfs)) },
-      { label: 'Restore (upload)', icon: Upload, onClick: () => { setMenuOpen(false); pickAndRestoreSnapshot(box.kernel.vfs); } },
+      { label: 'Snapshot (download)', icon: Download, onClick: run('Snapshotting…', () => downloadSnapshot(box)) },
+      { label: 'Restore (upload)', icon: Upload, onClick: () => { setMenuOpen(false); pickAndRestoreSnapshot(box); } },
     ] : []),
   ];
 
