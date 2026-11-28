@@ -23,6 +23,8 @@ import {
   createSystemctlCommand,
   createNpmCommand,
   createNpxCommand,
+  createBunCommand,
+  createBunxCommand,
   createLifoPkgCommand,
   pageAuth,
   setBoxAuth,
@@ -143,6 +145,8 @@ export async function bootShell(
   };
   registry.register('npm', createNpmCommand(registry, shellExecute, kernel));
   registry.register('npx', createNpxCommand(registry, shellExecute));
+  registry.register('bun', createBunCommand(registry, shellExecute, kernel));
+  registry.register('bunx', createBunxCommand(registry, shellExecute, kernel));
   registry.register('lifo', createLifoPkgCommand(registry, shellExecute, kernel));
 
   if (opts.network) {

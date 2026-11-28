@@ -152,6 +152,7 @@ export { createPortsCommand } from './commands/net/ports.js';
 export { createTestRegistryCommand } from './commands/net/test-registry.js';
 export { createLifoPkgCommand, bootLifoPackages, rehydrateGlobalPackages } from './commands/system/lifo.js';
 export { createNpmCommand, createNpxCommand } from './commands/system/npm.js';
+export { createBunCommand, createBunxCommand, BUN_VERSION } from './commands/system/bun.js';
 export { createLogoutCommand } from './commands/system/logout.js';
 export { createSystemctlCommand } from './commands/system/systemctl.js';
 export { createNewtabCommand } from './commands/system/newtab.js';

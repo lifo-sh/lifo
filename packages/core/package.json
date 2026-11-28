@@ -52,6 +52,7 @@
   "dependencies": {
     "acorn": "^8.17.0",
     "browser-metro": "1.5.23",
+    "sucrase": "^3.35.1",
     "ws": "^8.19.0"
   },
   "peerDependencies": {

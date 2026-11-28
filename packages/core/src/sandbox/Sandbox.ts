@@ -20,6 +20,7 @@ import { createNetstatCommand } from '../commands/net/netstat.js';
 import { createHostCommand } from '../commands/net/host.js';
 import { createIPCommand } from '../commands/net/ip.js';
 import { createNpmCommand, createNpxCommand } from '../commands/system/npm.js';
+import { createBunCommand, createBunxCommand } from '../commands/system/bun.js';
 import { createLifoPkgCommand, bootLifoPackages } from '../commands/system/lifo.js';
 import { setBoxAuth } from '../cloud/box-auth.js';
 import { setBoxNet } from '../node-compat/net.js';
@@ -228,6 +229,8 @@ export class Sandbox {
 		};
 		registry.register('npm', createNpmCommand(registry, npmShellExecute, kernel));
 		registry.register('npx', createNpxCommand(registry, npmShellExecute));
+		registry.register('bun', createBunCommand(registry, npmShellExecute, kernel));
+		registry.register('bunx', createBunxCommand(registry, npmShellExecute, kernel));
 		registry.register('lifo', createLifoPkgCommand(registry, npmShellExecute, kernel));
 		// Tools too heavy for a box run on Lifo services, after asking (commands/system/remote-tool.ts)
 		for (const tool of REMOTE_TOOLS) registry.register(tool, createRemoteToolCommand(tool));

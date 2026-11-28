@@ -8,6 +8,7 @@ import { createKillCommand } from './commands/system/kill.js';
 import { createWatchCommand } from './commands/system/watch.js';
 import { createHelpCommand } from './commands/system/help.js';
 import { createNpmCommand, createNpxCommand } from './commands/system/npm.js';
+import { createBunCommand, createBunxCommand } from './commands/system/bun.js';
 import { createLifoPkgCommand, bootLifoPackages } from './commands/system/lifo.js';
 import { createSystemctlCommand } from './commands/system/systemctl.js';
 
@@ -57,6 +58,8 @@ async function boot(): Promise<void> {
 	};
 	registry.register('npm', createNpmCommand(registry, npmShellExecute, kernel));
 	registry.register('npx', createNpxCommand(registry, npmShellExecute));
+	registry.register('bun', createBunCommand(registry, npmShellExecute, kernel));
+	registry.register('bunx', createBunxCommand(registry, npmShellExecute, kernel));
 	registry.register('lifo', createLifoPkgCommand(registry, npmShellExecute, kernel));
 
 	// 5d. Service manager & systemctl
